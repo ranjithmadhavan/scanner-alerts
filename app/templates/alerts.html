@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Price alerts{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-4">
+  <div>
+    <h1 class="text-4xl font-bold">Price alerts</h1>
+    <p class="mt-2 text-[17px] text-ink-soft">Pick a stock and a level. You'll hear from us when price gets there.</p>
+  </div>
+</div>
+
+{% if broker.status != 'connected' %}
+<a href="/broker" class="mt-7 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-4 transition hover:border-marigold/60">
+  <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-[18px] w-[18px]') }}</span>
+  <span class="text-[15px]">
+    <strong class="font-semibold">{{ 'Your Kite session has expired.' if broker.status == 'expired' else 'Connect Kite to start scanning.' }}</strong>
+    <span class="text-ink-soft">Alerts are saved, but prices are only checked while Kite is connected.</span>
+  </span>
+</a>
+{% endif %}
+
+<form id="new-alert" class="panel mt-8 p-6 shadow-soft sm:p-7"
+      hx-post="/alerts" hx-target="#alert-list" hx-swap="outerHTML"
+      hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('[name=note]').value=''; this.querySelector('[name=symbol]').select(); }">
+  <h2 class="text-xl font-bold">New alert</h2>
+
+  <div class="mt-5 grid gap-5 sm:grid-cols-[1.3fr_1fr]">
+    <div>
+      <label for="symbol" class="label">Stock</label>
+      <div class="relative" id="symbol-box">
+        <input id="symbol" name="symbol" required autocomplete="off" spellcheck="false" placeholder="Search e.g. RELIANCE or Infosys"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="symbol-results"
+               class="field pr-10 uppercase placeholder:normal-case"
+               hx-get="/alerts/symbols" hx-trigger="input changed delay:250ms, focus[this.value.trim().length > 0]"
+               hx-target="#symbol-results" hx-swap="innerHTML" hx-sync="this:replace" hx-indicator="#symbol-spinner">
+        <span id="symbol-spinner" class="spinner pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2" aria-hidden="true"></span>
+        <div id="symbol-results" role="listbox" aria-label="Matching stocks"
+             class="absolute inset-x-0 top-[calc(100%+6px)] z-20 max-h-80 overflow-y-auto rounded-2xl border border-line bg-white p-1.5 shadow-soft"></div>
+      </div>
+    </div>
+    <div>
+      <label for="level" class="label">Price level (₹)</label>
+      <input id="level" name="level" type="number" step="0.05" min="0.05" required placeholder="0.00" class="field num">
+    </div>
+  </div>
+
+  <fieldset class="mt-5">
+    <legend class="label">Tell me when it…</legend>
+    <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {% for key, label in conditions.items() %}
+      <label class="cursor-pointer">
+        <input type="radio" name="condition" value="{{ key }}" class="peer sr-only" {{ 'checked' if loop.first }}>
+        <span class="flex h-full flex-col rounded-2xl border border-line px-4 py-3 transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">
+          <span class="text-[15px] font-semibold">{{ label }}</span>
+          <span class="mt-0.5 text-[13px] leading-snug text-ink-soft">
+            {%- if key == 'close_above' %}A candle closes over the level
+            {%- elif key == 'close_below' %}A candle closes under the level
+            {%- elif key == 'high_above' %}Any trade goes over the level
+            {%- else %}Any trade goes under the level{% endif -%}
+          </span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="mt-5 flex flex-col gap-5 sm:flex-row">
+    <div id="timeframe-field" class="sm:w-[180px] sm:shrink-0">
+      <label for="timeframe" class="label">Candle</label>
+      <select id="timeframe" name="timeframe" class="field">
+        {% for tf in timeframes %}<option value="{{ tf }}" {{ 'selected' if tf == '15m' }}>{{ {'1h': '1 hour', '1d': 'Daily'}.get(tf, tf|replace('m', ' min')) }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="flex-1">
+      <label for="note" class="label">Note <span class="font-normal text-ink-soft/70">(optional)</span></label>
+      <input id="note" name="note" maxlength="140" placeholder="Why this level matters" class="field">
+    </div>
+  </div>
+
+  <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-sm text-ink-soft">Send to</span>
+      {% for ch in channels %}
+      <label class="{{ 'cursor-pointer' if ch.ready else 'cursor-not-allowed' }}" title="{{ '' if ch.ready else ch.label ~ ' isn’t set up yet' }}">
+        <input type="checkbox" name="channels" value="{{ ch.key }}" class="peer sr-only" {{ 'checked' if ch.ready else 'disabled' }}>
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-sm font-medium text-ink-soft transition peer-checked:border-peacock/30 peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold peer-disabled:border-dashed peer-disabled:text-ink-soft/50">
+          <svg class="tick h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>{{ ch.label }}
+        </span>
+      </label>
+      {% endfor %}
+      {% if channels|rejectattr('ready')|list %}
+      <a href="/notifications" class="ml-1 text-sm font-medium text-peacock underline decoration-peacock/30 underline-offset-4 hover:decoration-peacock">Set up more</a>
+      {% endif %}
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <button type="button" class="btn-outline htmx-busy" hx-post="/alerts/simulate" hx-include="#new-alert"
+              hx-target="#sim-result" hx-swap="innerHTML" title="Replay this alert on the last trading day with real Kite prices and send yourself the result">
+        Simulate on last session
+      </button>
+      <button class="btn-primary htmx-busy">{{ icon('plus', 'h-4 w-4') }} Start watching</button>
+    </div>
+  </div>
+</form>
+
+<div id="sim-result" aria-live="polite"></div>
+
+{% include "partials/alert_list.html" %}
+{% endblock %}

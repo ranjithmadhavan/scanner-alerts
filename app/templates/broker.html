@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Broker{% endblock %}
+{% block content %}
+{% macro steps(items) -%}
+<ol class="space-y-2.5">
+  {% for item in items %}
+  <li class="flex gap-3 text-sm leading-relaxed text-ink-soft">
+    <span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white text-xs font-bold text-peacock">{{ loop.index }}</span>
+    <span class="min-w-0 pt-0.5">{{ item|safe }}</span>
+  </li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+{% set code = 'rounded bg-white px-1 py-0.5 font-mono text-[13px] text-ink' %}
+{% set link = 'font-medium text-peacock underline decoration-peacock/30 underline-offset-2 hover:decoration-peacock' %}
+{% macro guide(title) -%}
+<details class="group rounded-2xl bg-canvas px-5 py-4">
+  <summary class="flex cursor-pointer items-center justify-between gap-3 text-[15px] font-semibold text-ink">
+    {{ title }}
+    <svg class="h-4 w-4 shrink-0 text-ink-soft transition group-open:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+  </summary>
+  <div class="mt-4 space-y-5">{{ caller() }}</div>
+</details>
+{%- endmacro %}
+
+<h1 class="text-4xl font-bold">Broker</h1>
+<p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Prices for your alerts come from your own Zerodha Kite account. Kite ends every session around 6 AM, so you'll log in once each trading day.</p>
+
+{% if error %}<p class="mt-6 rounded-2xl bg-fall-50 px-5 py-3.5 font-medium text-fall">{{ error }}</p>{% endif %}
+
+{% include "partials/broker_status.html" %}
+
+<div class="panel mt-8 p-6 shadow-soft sm:p-7">
+  <h2 class="text-xl font-bold">How do you want to connect?</h2>
+  <form method="post" action="/broker/mode" class="mt-4 grid gap-2 sm:grid-cols-2">
+    {% for key, title, body in [('connect', 'Kite Connect API', 'Official API with your app key. Needs the Kite Connect plan for price history.'), ('enctoken', 'Browser session', 'Paste the enctoken from a logged-in kite.zerodha.com tab. Free, but unofficial.')] %}
+    <button name="mode" value="{{ key }}" class="rounded-2xl border px-4 py-3.5 text-left transition {{ 'border-peacock bg-peacock-50' if broker.mode == key else 'border-line hover:border-peacock/40' }}">
+      <span class="block text-[15px] font-semibold">{{ title }}</span>
+      <span class="mt-0.5 block text-[13px] leading-snug text-ink-soft">{{ body }}</span>
+    </button>
+    {% endfor %}
+  </form>
+
+  <div class="mt-7 border-t border-line pt-6">
+  {% if broker.mode == 'enctoken' %}
+    <form hx-post="/broker/enctoken" hx-target="#broker-status" hx-swap="outerHTML" class="space-y-5">
+      <div class="grid gap-5 sm:grid-cols-[200px_1fr]">
+        <div>
+          <label for="kite_user_id" class="label">Kite user ID</label>
+          <input id="kite_user_id" name="kite_user_id" value="{{ broker.kite_user_id or '' }}" required placeholder="AB1234" autocomplete="off" data-1p-ignore data-lpignore="true" class="field uppercase">
+        </div>
+        <div>
+          <label for="enctoken" class="label">Enctoken</label>
+          <input id="enctoken" name="enctoken" required autocomplete="off" placeholder="{{ 'A token is saved. Paste a new one to replace it.' if broker.status != 'not_set' else 'Paste today\'s enctoken' }}" class="field font-mono text-sm">
+        </div>
+      </div>
+      {% call guide('How do I get my enctoken?') %}
+        <div>
+          <p class="mb-3 text-sm font-semibold text-ink">Quickest: copy it with one line</p>
+          {{ steps([
+            'Log in at <a class="' ~ link ~ '" href="https://kite.zerodha.com" target="_blank" rel="noopener">kite.zerodha.com</a> in Chrome.',
+            'Open the console: <kbd class="' ~ code ~ '">⌥ ⌘ J</kbd> on Mac or <kbd class="' ~ code ~ '">Ctrl Shift J</kbd> on Windows.',
+            'Paste the line below and press Enter. If Chrome warns about pasting, type <code class="' ~ code ~ '">allow pasting</code> first. The token is now on your clipboard.',
+            'Come back here and paste it into the Enctoken box. Your Kite user ID is shown at the top right of Kite (e.g. AB1234).',
+          ]) }}
+          <div class="mt-3 flex items-center gap-2 rounded-xl border border-line bg-white py-2 pl-3 pr-2">
+            <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[13px] text-ink">copy(decodeURIComponent(document.cookie.match(/(?:^|; )enctoken=([^;]+)/)[1]))</code>
+            <button type="button" data-copy="copy(decodeURIComponent(document.cookie.match(/(?:^|; )enctoken=([^;]+)/)[1]))" class="btn-outline shrink-0 px-3 py-1.5 text-xs">{{ icon('copy', 'h-3.5 w-3.5') }} Copy</button>
+          </div>
+          <p class="mt-2 text-xs leading-relaxed text-ink-soft">It only reads the enctoken cookie in your own browser and copies it. Nothing is sent anywhere.</p>
+        </div>
+        <div class="border-t border-line pt-5">
+          <p class="mb-3 text-sm font-semibold text-ink">Or find it in the cookies yourself</p>
+          {{ steps([
+            'On kite.zerodha.com, open developer tools: <kbd class="' ~ code ~ '">⌥ ⌘ I</kbd> on Mac or <kbd class="' ~ code ~ '">F12</kbd> on Windows.',
+            'Go to the <strong class="text-ink">Application</strong> tab, then <strong class="text-ink">Storage → Cookies → https://kite.zerodha.com</strong>.',
+            'Click the row named <code class="' ~ code ~ '">enctoken</code>. Tick <strong class="text-ink">Show URL-decoded</strong> under Cookie Value.',
+            'Select the whole value in the Cookie Value box (it usually ends in <code class="' ~ code ~ '">==</code>), copy it, and paste it here.',
+          ]) }}
+        </div>
+        <p class="rounded-xl bg-marigold-50 px-3.5 py-2.5 text-sm leading-relaxed text-marigold-dark">Treat the enctoken like a password: anyone with it can use your Kite account until it expires. It changes every time you log in to Kite, and Kite ends sessions around 6 AM, so paste a fresh one each trading day.</p>
+      {% endcall %}
+      <button class="btn-primary htmx-busy">Save and check</button>
+    </form>
+  {% else %}
+    <form method="post" action="/broker/connect" class="space-y-5">
+      <div class="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label for="api_key" class="label">API key</label>
+          <input id="api_key" name="api_key" value="{{ broker.api_key or '' }}" required autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" class="field font-mono text-sm">
+        </div>
+        <div>
+          <label for="api_secret" class="label">API secret</label>
+          <input id="api_secret" name="api_secret" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="-webkit-text-security: disc" {{ '' if has_secret else 'required' }}
+                 placeholder="{{ 'Saved. Leave blank to keep it.' if has_secret else '' }}" class="field font-mono text-sm">
+        </div>
+      </div>
+      {% call guide('How do I create a Kite Connect app?') %}
+        {{ steps([
+          'Sign up or log in at <a class="' ~ link ~ '" href="https://developers.kite.trade" target="_blank" rel="noopener">developers.kite.trade</a>. This is a separate account from your Kite login.',
+          'Add credits and choose the <strong class="text-ink">Connect</strong> plan. The free Personal plan can place orders but has no price history, which the scanner needs.',
+          'Click <strong class="text-ink">Create new app</strong>. Pick type <strong class="text-ink">Connect</strong>, give it any name, and enter your Zerodha client ID (e.g. AB1234).',
+          'Set <strong class="text-ink">Redirect URL</strong> to the address shown below (use the copy button). Leave Postback URL empty.',
+          'Create the app, then open it. Copy the <strong class="text-ink">API key</strong> and <strong class="text-ink">API secret</strong> into the boxes above.',
+          'Tap <strong class="text-ink">Save and log in with Kite</strong>. Log in once each trading day; Kite ends sessions around 6 AM.',
+        ]) }}
+      {% endcall %}
+      <div class="rounded-2xl bg-canvas px-4 py-3.5 text-sm">
+        <p class="text-ink-soft">In your app on developers.kite.trade, set the redirect URL to:</p>
+        <div class="mt-1.5 flex items-center gap-2">
+          <code class="min-w-0 flex-1 truncate font-medium text-ink">{{ callback_url }}</code>
+          <button type="button" data-copy="{{ callback_url }}" class="rounded-full p-1.5 text-ink-soft hover:bg-white hover:text-ink" aria-label="Copy redirect URL">{{ icon('copy', 'h-4 w-4') }}</button>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <button class="btn-primary">Save and log in with Kite</button>
+        {% if broker.api_key and has_secret %}<a href="/broker/kite/login" class="btn-outline">Log in with Kite</a>{% endif %}
+      </div>
+    </form>
+  {% endif %}
+  </div>
+</div>
+{% endblock %}

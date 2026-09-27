@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<h1 class="text-4xl font-bold">Notifications</h1>
+<p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Tell us where to reach you. Each alert can use any of the places you set up here.</p>
+
+{% include "partials/channels.html" %}
+
+<section class="mt-12">
+  <h2 class="mb-3 px-1 text-lg font-bold">Recently sent</h2>
+  {% if events %}
+  <ul class="divide-y divide-line overflow-hidden rounded-3xl border border-line bg-white">
+    {% for e in events %}
+    <li class="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-3.5">
+      <span class="font-semibold">{{ e.summary }}</span>
+      <span class="text-sm text-ink-soft">{{ e.at|ist }}</span>
+      <span class="ml-auto flex flex-wrap gap-1.5">
+        {% for ch, res in e.delivery.items() %}
+        <span class="rounded-full px-2.5 py-0.5 text-xs font-medium {{ 'bg-rise-50 text-rise' if res == 'sent' else 'bg-fall-50 text-fall' }}" title="{{ res }}">{{ ch|capitalize }}{{ '' if res == 'sent' else ' failed' }}</span>
+        {% else %}<span class="text-xs text-ink-soft">No channels chosen</span>{% endfor %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="rounded-3xl border border-dashed border-line px-6 py-8 text-center text-ink-soft">When an alert fires, you'll see what was sent and whether it arrived.</p>
+  {% endif %}
+</section>
+{% endblock %}

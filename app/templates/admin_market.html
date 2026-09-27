@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Market hours{% endblock %}
+{% block content %}
+<h1 class="text-4xl font-bold">Market hours</h1>
+<p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Alerts are only checked inside these hours, Monday to Friday. Times are always India time, wherever the server runs.</p>
+
+<form class="panel mt-8 max-w-2xl p-6 shadow-soft sm:p-7" hx-post="/admin/market">
+  <div class="grid gap-5 sm:grid-cols-2">
+    <div><label class="label" for="o">Opens (IST)</label><input id="o" type="time" name="open_time" value="{{ s.open.strftime('%H:%M') }}" required class="field num"></div>
+    <div><label class="label" for="c">Closes (IST)</label><input id="c" type="time" name="close_time" value="{{ s.close.strftime('%H:%M') }}" required class="field num"></div>
+  </div>
+  <fieldset class="mt-6">
+    <legend class="label">Check prices every</legend>
+    <div class="flex flex-wrap gap-2">
+    {% for sec in intervals %}
+      <label class="cursor-pointer">
+        <input type="radio" name="scan_interval" value="{{ sec }}" class="peer sr-only" {{ 'checked' if sec == s.scan_interval }}>
+        <span class="inline-block rounded-full border border-line px-4 py-2 text-[15px] font-medium transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">{{ '%d sec'|format(sec) if sec < 60 else '%d min'|format(sec // 60) }}</span>
+      </label>
+    {% endfor %}
+    </div>
+    <p class="mt-2 text-sm text-ink-soft">“Trades above/below” alerts are checked this often. “Closes above/below” alerts are checked once each candle finishes.</p>
+  </fieldset>
+  <div class="mt-6 flex justify-end border-t border-line pt-5"><button class="btn-primary htmx-busy">Save hours</button></div>
+</form>
+{% endblock %}

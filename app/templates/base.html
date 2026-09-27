@@ -1,0 +1,77 @@
+{% from "partials/icons.html" import icon %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} · {{ app_name }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v={{ v }}">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
+  <script src="/static/app.js?v={{ v }}" defer></script>
+</head>
+<body class="min-h-screen">
+{% if user %}
+<div class="lg:grid lg:grid-cols-[260px_1fr] min-h-screen">
+  <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-[260px] -translate-x-full p-3 transition-transform duration-300 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0">
+   <div class="sidebar-panel relative flex h-full flex-col overflow-hidden rounded-[28px] bg-ink px-4 py-6 text-white">
+    <a href="/" class="flex items-center gap-3 px-2">
+      <span class="grid h-10 w-10 place-items-center rounded-2xl bg-marigold text-ink shadow-soft">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
+      </span>
+      <span class="font-display text-[19px] font-bold leading-tight">{{ app_name }}</span>
+    </a>
+
+    <nav class="mt-10 space-y-1" aria-label="Main">
+      {% for m in nav %}
+        {% set here = path.startswith(m.path) %}
+        <a href="{{ m.path }}" {{ 'aria-current="page"' if here }} class="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[15px] font-medium transition {{ 'bg-canvas text-ink' if here else 'text-white/70 hover:bg-white/[.06] hover:text-white' }}">
+          <span class="{{ 'text-marigold-dark' if here else 'text-white/50 group-hover:text-marigold' }}">{{ icon(m.icon) }}</span>{{ m.label }}
+        </a>
+      {% endfor %}
+      {% if user.role == 'superadmin' %}
+        <p class="px-3 pb-1 pt-7 text-sm font-medium text-white/40">Admin</p>
+        {% for href, label, ic in [('/admin/users', 'People & access', 'users'), ('/admin/market', 'Market hours', 'clock')] %}
+          {% set here = path.startswith(href) %}
+          <a href="{{ href }}" {{ 'aria-current="page"' if here }} class="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[15px] font-medium transition {{ 'bg-canvas text-ink' if here else 'text-white/70 hover:bg-white/[.06] hover:text-white' }}">
+            <span class="{{ 'text-marigold-dark' if here else 'text-white/50 group-hover:text-marigold' }}">{{ icon(ic) }}</span>{{ label }}
+          </a>
+        {% endfor %}
+      {% endif %}
+    </nav>
+
+    <div class="relative mt-auto flex items-center gap-3 rounded-2xl bg-white/[.06] px-3 py-3">
+      <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-marigold font-display font-bold text-ink">{{ (user.name or user.username)[:1]|upper }}</span>
+      <div class="min-w-0 flex-1">
+        <p class="truncate text-sm font-semibold">{{ user.name or user.username }}</p>
+        <p class="truncate text-xs text-white/55">{{ 'Super admin' if user.role == 'superadmin' else user.username }}</p>
+      </div>
+      <form method="post" action="/logout">
+        <button class="rounded-full p-2 text-white/60 hover:bg-white/10 hover:text-white" title="Sign out" aria-label="Sign out">{{ icon('logout', 'h-[18px] w-[18px]') }}</button>
+      </form>
+    </div>
+   </div>
+  </aside>
+  <div id="scrim" class="fixed inset-0 z-30 hidden bg-ink/20 backdrop-blur-sm lg:hidden"></div>
+
+  <main class="min-w-0 px-4 pb-16 pt-5 sm:px-8 lg:pl-4 lg:pr-10 lg:pt-7">
+    <header class="mb-8 flex items-center gap-3">
+      <button id="menu" class="rounded-full p-2 text-ink-soft hover:bg-white lg:hidden" aria-label="Open menu">{{ icon('menu') }}</button>
+      <div class="ml-auto flex items-center gap-2.5 rounded-full border border-line bg-white px-4 py-2 text-sm text-ink-soft">
+        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-rise breathe' if market_open else 'bg-ink-soft/30' }}"></span>
+        {{ market_text }}
+      </div>
+    </header>
+    <div class="mx-auto max-w-5xl">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% else %}
+  {% block bare %}{% endblock %}
+{% endif %}
+<div id="toasts" class="pointer-events-none fixed inset-x-4 bottom-5 z-50 flex flex-col items-center gap-2 sm:inset-x-auto sm:right-6 sm:items-end" aria-live="polite"></div>
+</body>
+</html>

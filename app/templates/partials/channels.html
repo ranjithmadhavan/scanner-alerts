@@ -1,0 +1,145 @@
+{% from "partials/icons.html" import icon %}
+{% macro steps(items) -%}
+<ol class="space-y-2.5">
+  {% for item in items %}
+  <li class="flex gap-3 text-sm leading-relaxed text-ink-soft">
+    <span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-peacock-50 text-xs font-bold text-peacock">{{ loop.index }}</span>
+    <span class="pt-0.5">{{ item|safe }}</span>
+  </li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+{% macro row(label, value, sub='', missing='') -%}
+<div class="flex items-start justify-between gap-4">
+  <dt class="shrink-0 text-ink-soft">{{ label }}</dt>
+  <dd class="min-w-0 text-right">
+    {% if missing %}<span class="text-sm text-marigold-dark">{{ missing }}</span>
+    {% else %}<span class="break-all font-semibold">{{ value }}</span>{% if sub %}<span class="block text-sm text-ink-soft">{{ sub }}</span>{% endif %}{% endif %}
+  </dd>
+</div>
+{%- endmacro %}
+
+{% macro test_status(t) -%}
+  {% if not t %}
+    <p class="mt-3 text-sm text-marigold-dark">Not tested yet. Send a test to be sure alerts reach you.</p>
+  {% elif t.ok %}
+    <p class="mt-3 flex items-center gap-1.5 text-sm text-rise">{{ icon('check', 'h-4 w-4') }} Test delivered {{ t.at|ist }}. If it didn't arrive, check the details.</p>
+  {% else %}
+    <p class="mt-3 text-sm text-fall">Last test failed {{ t.at|ist }}: {{ t.detail }}</p>
+  {% endif %}
+{%- endmacro %}
+
+{% macro fields(ch) -%}
+<div class="space-y-4">
+{% if ch.key == 'telegram' %}
+  <div>
+    <label class="label" for="tg-token">Bot token</label>
+    <input id="tg-token" name="telegram_bot_token" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true"
+           class="field font-mono text-sm" placeholder="{{ 'Paste a new token to replace the saved one' if contacts.telegram_bot_token else '123456789:AAF…' }}">
+  </div>
+  <div>
+    <label class="label" for="tg-chat">Chat ID</label>
+    <div class="flex gap-2">
+      <input id="tg-chat" name="telegram_chat_id" value="{{ contacts.telegram_chat_id or '' }}" autocomplete="off" data-1p-ignore data-lpignore="true" inputmode="numeric" class="field num" placeholder="Filled in by Find my chat ID">
+      <button type="button" class="btn-outline htmx-busy shrink-0 px-4 text-sm" hx-post="/notifications/telegram/detect" hx-include="#tg-token" hx-target="#channels" hx-swap="outerHTML">Find my chat ID</button>
+    </div>
+  </div>
+{% elif ch.key == 'email' %}
+  <div>
+    <label class="label" for="em">Email address</label>
+    <input id="em" name="email" type="email" autocomplete="email" value="{{ contacts.email or '' }}" class="field" placeholder="you@example.com" {{ 'disabled' if not ch.server_ready }}>
+  </div>
+{% else %}
+  <div>
+    <label class="label" for="wa">WhatsApp number</label>
+    <input id="wa" name="whatsapp_phone" type="tel" autocomplete="off" data-1p-ignore data-lpignore="true" value="{{ contacts.whatsapp_phone or '' }}" class="field num" placeholder="+91 98765 43210">
+  </div>
+  <div>
+    <label class="label" for="wak">CallMeBot API key</label>
+    <input id="wak" name="whatsapp_apikey" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" class="field font-mono text-sm" placeholder="{{ 'Paste a new key to replace the saved one' if contacts.whatsapp_apikey else '1234567' }}">
+  </div>
+{% endif %}
+</div>
+<div class="mt-5"><button class="btn-primary htmx-busy px-4 py-2 text-sm" {{ 'disabled' if not ch.server_ready }}>Save</button></div>
+{%- endmacro %}
+{% set link = 'font-medium text-peacock underline decoration-peacock/30 underline-offset-2 hover:decoration-peacock' %}
+
+<div id="channels" class="mt-8 space-y-5">
+{% for ch in channels %}
+  <form class="panel grid gap-x-10 gap-y-6 p-6 shadow-soft sm:p-7 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]"
+        hx-post="/notifications/{{ ch.key }}" hx-target="#channels" hx-swap="outerHTML" autocomplete="off">
+    <div>
+      <div class="flex items-center gap-3">
+        <h2 class="text-xl font-bold">{{ ch.label }}</h2>
+        {% if not ch.server_ready %}<span class="rounded-full bg-canvas px-2.5 py-1 text-xs font-medium text-ink-soft">Not available yet</span>
+        {% elif not ch.configured %}<span class="rounded-full bg-marigold-50 px-2.5 py-1 text-xs font-medium text-marigold-dark">Needs setting up</span>
+        {% elif not ch.ready %}<span class="rounded-full bg-marigold-50 px-2.5 py-1 text-xs font-medium text-marigold-dark">Almost there</span>
+        {% elif ch.last_test and ch.last_test.ok %}<span class="rounded-full bg-rise-50 px-2.5 py-1 text-xs font-medium text-rise">Tested</span>
+        {% elif ch.ready %}<span class="rounded-full bg-peacock-50 px-2.5 py-1 text-xs font-medium text-peacock">Saved, not tested</span>
+        {% endif %}
+      </div>
+      <div class="mt-4">
+      {% if ch.key == 'telegram' %}
+        {{ steps([
+          'In Telegram, open <a class="' ~ link ~ '" href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, send <code class="rounded bg-canvas px-1">/newbot</code> and pick any name.',
+          'BotFather replies with a token like <code class="rounded bg-canvas px-1">123456:ABC-…</code>. Paste it here.',
+          'Open your new bot in Telegram and send it any message, such as “hi”.',
+          'Tap <strong class="text-ink">Find my chat ID</strong>. We fill it in for you.',
+        ]) }}
+      {% elif ch.key == 'email' %}
+        <p class="text-sm leading-relaxed text-ink-soft">Emails come from the app's shared Gmail account, so you only need to give your address. Check your spam folder the first time.</p>
+        {% if not ch.server_ready %}<p class="mt-3 text-sm text-marigold-dark">Email needs a Gmail sender on the server. Ask your administrator to add one.</p>{% endif %}
+      {% else %}
+        {{ steps([
+          'Save <strong class="text-ink">+34 644 51 95 23</strong> in your phone contacts (name it CallMeBot).',
+          'Send it this WhatsApp message: <code class="rounded bg-canvas px-1">I allow callmebot to send me messages</code>',
+          'Within a couple of minutes it replies with your API key. Paste it here with your number, including +91.',
+          'Save, then send a test. <a class="' ~ link ~ '" href="https://www.callmebot.com/blog/free-api-whatsapp-messages/" target="_blank" rel="noopener">More about CallMeBot</a>',
+        ]) }}
+      {% endif %}
+      </div>
+    </div>
+
+    <div class="flex flex-col">
+    {% if ch.configured %}
+      {# What's saved, in plain words. Secrets only show their last characters. #}
+      <dl class="space-y-2.5 rounded-2xl bg-canvas p-4 text-[15px]">
+      {% if ch.key == 'telegram' %}
+        {{ row('Bot', ('@' ~ contacts.telegram_bot_username) if contacts.telegram_bot_username else ('Token ending ' ~ hints.telegram if hints.telegram else 'Saved'), contacts.telegram_bot_name) }}
+        {{ row('Sends to', contacts.telegram_chat_name or contacts.telegram_chat_id, ('Chat ID ' ~ contacts.telegram_chat_id) if contacts.telegram_chat_name else '', missing='Not linked yet. Message your bot, then tap Find my chat ID.' if not contacts.telegram_chat_id) }}
+        {% if hints.telegram and contacts.telegram_bot_username %}{{ row('Token', '••••' ~ hints.telegram) }}{% endif %}
+      {% elif ch.key == 'email' %}
+        {{ row('Sends to', contacts.email) }}
+      {% else %}
+        {{ row('Sends to', contacts.whatsapp_phone, missing='Add your number' if not contacts.whatsapp_phone) }}
+        {{ row('API key', ('••••' ~ hints.whatsapp) if hints.whatsapp else ('Saved' if contacts.whatsapp_apikey else ''), missing='Add your CallMeBot key' if not contacts.whatsapp_apikey) }}
+      {% endif %}
+      </dl>
+
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        {% if ch.ready and ch.server_ready %}
+        <button type="button" class="btn-primary htmx-busy px-4 py-2 text-sm" hx-post="/notifications/{{ ch.key }}/test" hx-target="#channels" hx-swap="outerHTML">
+          {{ icon('send', 'h-4 w-4') }} Send test message
+        </button>
+        {% endif %}
+        {% if ch.key == 'telegram' and not contacts.telegram_chat_id %}
+        <button type="button" class="btn-primary htmx-busy px-4 py-2 text-sm" hx-post="/notifications/telegram/detect" hx-target="#channels" hx-swap="outerHTML">Find my chat ID</button>
+        {% endif %}
+        <button type="button" class="btn-quiet px-4 py-2 text-sm hover:bg-fall-50 hover:text-fall" hx-post="/notifications/{{ ch.key }}/remove" hx-target="#channels" hx-swap="outerHTML" hx-confirm="Remove your {{ ch.label }} details?">Remove</button>
+      </div>
+      {% if ch.ready and ch.server_ready %}{{ test_status(ch.last_test) }}{% endif %}
+
+      <details class="group mt-5 border-t border-line pt-4" {{ 'open' if not ch.ready and ch.server_ready }}>
+        <summary class="flex cursor-pointer items-center gap-1.5 text-sm font-semibold text-peacock">
+          Change details
+          <svg class="h-4 w-4 transition group-open:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+        <div class="mt-4">{{ fields(ch) }}</div>
+      </details>
+    {% else %}
+      {{ fields(ch) }}
+    {% endif %}
+    </div>
+  </form>
+{% endfor %}
+</div>

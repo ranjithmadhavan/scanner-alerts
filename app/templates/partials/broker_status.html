@@ -1,0 +1,25 @@
+{% from "partials/icons.html" import icon %}
+{% set st = 'stale' if stale else broker.status %}
+<div id="broker-status" class="mt-8 flex flex-wrap items-center gap-4 rounded-3xl border px-6 py-5
+  {{ {'connected': 'border-rise/20 bg-rise-50', 'stale': 'border-marigold/30 bg-marigold-50', 'expired': 'border-fall/20 bg-fall-50', 'error': 'border-fall/20 bg-fall-50'}.get(st, 'border-line bg-white') }}">
+  <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-white {{ {'connected': 'text-rise', 'stale': 'text-marigold-dark'}.get(st, 'text-fall' if st in ('expired', 'error') else 'text-ink-soft') }}">
+    {{ icon('check' if st == 'connected' else 'link') }}
+  </span>
+  <div class="min-w-0 flex-1">
+    <p class="font-display text-lg font-bold">
+      {%- if st == 'connected' %}Connected{% if broker.kite_name %} as {{ broker.kite_name }}{% endif %}
+      {%- elif st == 'stale' %}Probably logged out
+      {%- elif st in ('expired', 'error') %}Kite needs you to log in again
+      {%- else %}Not connected yet{% endif -%}
+    </p>
+    <p class="text-sm text-ink-soft">
+      {%- if st == 'connected' %}{{ 'Kite Connect' if broker.mode == 'connect' else 'Browser session' }}, since {{ broker.status_at|ist }}
+      {%- elif st == 'stale' %}Last login was before today's 6 AM reset. Log in again to keep alerts running.
+      {%- elif broker.message %}{{ broker.message }}
+      {%- else %}Choose a way to connect below.{% endif -%}
+    </p>
+  </div>
+  {% if broker.status != 'not_set' %}
+  <button class="btn-outline htmx-busy text-sm" hx-post="/broker/test" hx-target="#broker-status" hx-swap="outerHTML">Check connection</button>
+  {% endif %}
+</div>

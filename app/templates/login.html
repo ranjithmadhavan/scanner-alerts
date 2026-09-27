@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block bare %}
+<div class="grid min-h-screen place-items-center px-4 py-12">
+  <div class="w-full max-w-[420px]">
+    <div class="mb-10 flex items-center gap-3">
+      <span class="grid h-11 w-11 place-items-center rounded-2xl bg-marigold/90 text-white shadow-soft">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
+      </span>
+      <span class="font-display text-xl font-bold">{{ app_name }}</span>
+    </div>
+
+    <h1 class="text-[2.6rem] font-bold leading-[1.05]">Set your levels.<br>We'll keep watch.</h1>
+    <p class="mt-4 max-w-sm text-[17px] leading-relaxed text-ink-soft">Get a message the moment an NSE stock crosses the price you care about.</p>
+
+    {# The one orchestrated moment: price drifts up to the level and meets it. #}
+    <div class="relative mt-9 h-10" aria-hidden="true">
+      <div class="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-line"></div>
+      <div class="absolute left-[68%] top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-full bg-marigold"></div>
+      <div class="login-dot absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white bg-peacock shadow-soft"></div>
+    </div>
+
+    <form method="post" action="/login" class="panel mt-9 space-y-5 p-7 shadow-soft">
+      {% if error %}<p class="rounded-xl bg-fall-50 px-3.5 py-2.5 text-sm font-medium text-fall">{{ error }}</p>{% endif %}
+      <div>
+        <label for="username" class="label">Username</label>
+        <input id="username" name="username" value="{{ username or '' }}" autocomplete="username" required autofocus class="field">
+      </div>
+      <div>
+        <label for="password" class="label">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required class="field">
+      </div>
+      <button class="btn-primary w-full py-3">Sign in</button>
+    </form>
+  </div>
+</div>
+<style>
+  @keyframes drift { 0% { left: 8%; } 70% { left: 68%; } 100% { left: 68%; } }
+  @keyframes meet { 0%, 70% { background: #0F5E5C; } 100% { background: #E9A23B; transform: translate(-50%,-50%) scale(1.25); } }
+  .login-dot { left: 68%; animation: drift 2.2s cubic-bezier(.3,.7,.2,1) .3s both, meet .5s ease-out 2.3s both; }
+</style>
+{% endblock %}

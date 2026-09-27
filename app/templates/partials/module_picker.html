@@ -1,0 +1,14 @@
+<fieldset class="mt-5">
+  <legend class="label">Can use</legend>
+  <div class="grid gap-2 sm:grid-cols-3">
+  {% for m in modules %}
+    <label class="cursor-pointer">
+      <input type="checkbox" name="modules" value="{{ m.key }}" class="peer sr-only" {{ 'checked' if m.key in checked }}>
+      <span class="flex h-full flex-col rounded-2xl border border-line px-4 py-3 transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">
+        <span class="text-[15px] font-semibold">{{ m.label }}</span>
+        <span class="mt-0.5 text-[13px] leading-snug text-ink-soft">{{ m.description }}</span>
+      </span>
+    </label>
+  {% endfor %}
+  </div>
+</fieldset>

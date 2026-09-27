@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body { @apply bg-canvas text-ink font-sans antialiased; font-feature-settings: "tnum" 0; }
+  h1, h2, h3 { @apply font-display tracking-tight; }
+  :focus-visible { @apply outline-none ring-2 ring-marigold ring-offset-2 ring-offset-canvas; }
+}
+
+@layer components {
+  .field { @apply w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-soft/60 transition focus:border-peacock focus:ring-4 focus:ring-peacock-50 focus:outline-none; }
+  .label { @apply mb-1.5 block text-sm font-medium text-ink-soft; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[15px] font-semibold transition active:scale-[.98] disabled:opacity-50; }
+  .btn-primary { @apply btn bg-peacock text-white hover:bg-peacock-dark shadow-sm; }
+  .btn-quiet { @apply btn text-ink-soft hover:bg-peacock-50 hover:text-ink; }
+  .btn-outline { @apply btn border border-line bg-white text-ink hover:border-peacock/40; }
+  .panel { @apply rounded-3xl border border-line bg-white; }
+  .num { font-variant-numeric: tabular-nums; }
+}
+
+/* Motion: only what answers an action, plus the market-open pulse. */
+@keyframes arrive { from { opacity: 0; transform: translateY(-6px) scale(.99); } to { opacity: 1; transform: none; } }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,139,87,.35); } 50% { box-shadow: 0 0 0 6px rgba(46,139,87,0); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.arrive { animation: arrive .45s cubic-bezier(.2,.8,.2,1) both; }
+.breathe { animation: breathe 2.4s ease-in-out infinite; }
+.toast-in { animation: toast-in .3s cubic-bezier(.2,.8,.2,1) both; }
+.htmx-request.htmx-busy, .htmx-request .htmx-busy { opacity: .6; pointer-events: none; }
+.rail-dot { transition: left .8s cubic-bezier(.2,.8,.2,1); }
+/* A low marigold glow at the foot of the sidebar: warmth without decoration elsewhere. */
+.sidebar-panel::after { content: ""; position: absolute; inset: auto -30% -35% -30%; height: 55%; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(233,162,59,.22), transparent); }
+.sidebar-panel > * { position: relative; z-index: 1; }
+/* Stock search: results panel hides when empty; spinner only while a search is in flight. */
+#symbol-results:empty { display: none; }
+.spinner { width: 16px; height: 16px; border-radius: 9999px; border: 2px solid #ECE6DC; border-top-color: #0F5E5C;
+  opacity: 0; transition: opacity .15s; animation: spin .7s linear infinite; }
+.spinner.htmx-request { opacity: 1; }
+@keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
+/* Channel chips show a tick only when selected. */
+.tick { display: none; }
+input:checked + span .tick { display: inline; }
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
