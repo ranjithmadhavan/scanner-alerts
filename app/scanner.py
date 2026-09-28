@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 import httpx
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -344,7 +345,8 @@ def session_restored(username: str) -> None:
 
 # ---- scheduler + keep-alive ----------------------------------------------------
 
-scheduler = BackgroundScheduler(timezone=IST)
+# One worker thread runs every scan, whatever the number of alerts (max_instances=1 below).
+scheduler = BackgroundScheduler(timezone=IST, executors={"default": ThreadPoolExecutor(max_workers=1)})
 _stop = threading.Event()
 
 

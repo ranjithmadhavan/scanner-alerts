@@ -291,3 +291,26 @@ def test_email_test_reminds_about_spam(client, monkeypatch):
     r = client.post("/notifications/email/test")
     assert "spam folder" in r.headers["HX-Trigger"]
     assert "Not spam" in r.text and "Test sent" in r.text
+
+
+def test_login_notice_only_on_weekdays_once_a_day(monkeypatch):
+    store.put("alerts", "w1", {"id": "w1", "user": "kiran", "symbol": "INFY", "token": 1, "condition": "high_above",
+                               "level": 1, "timeframe": "", "status": "active", "armed_at": "2026-09-25T10:00:00+05:30"})
+    store.put("contacts", "kiran", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    sent = []
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append(b))
+
+    saturday = datetime(2026, 10, 3, 9, 16, tzinfo=IST)
+    scanner.run_scan(saturday)
+    scanner.run_scan(saturday.replace(day=4))           # Sunday
+    assert sent == []                                   # no notices at weekends
+
+    monday = datetime(2026, 10, 5, 9, 15, 20, tzinfo=IST)
+    scanner.run_scan(monday.replace(hour=9, minute=10))  # before the open: nothing yet
+    assert sent == []
+    for minute in (15, 16, 30, 45):                      # first tick after 9:15 notifies, later ticks don't
+        scanner.run_scan(monday.replace(minute=minute))
+    assert len(sent) == 1 and "Kite" in sent[0]
+    scanner.run_scan(monday.replace(day=6))               # next day: one more
+    assert len(sent) == 2
+    store.delete("alerts", "w1")
