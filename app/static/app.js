@@ -11,7 +11,7 @@ document.body.addEventListener("toast", (e) => {
     el.style.transition = "opacity .3s";
     el.style.opacity = "0";
     setTimeout(() => el.remove(), 300);
-  }, kind === "error" ? 5000 : 2800);
+  }, Math.max(kind === "error" ? 5000 : 2800, message.length * 60)); // long messages stay up long enough to read
 });
 
 // Mobile sidebar

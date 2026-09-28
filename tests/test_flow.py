@@ -246,3 +246,45 @@ def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
     assert "ITC" in client.get("/alerts/list?tab=paused&q=").text
     for aid, *_ in rows:
         store.delete("alerts", aid)
+
+
+def test_email_via_brevo(monkeypatch):
+    posted = {}
+
+    class Resp:
+        status_code = 201
+        def json(self):
+            return {"messageId": "x"}
+
+    def fake_post(url, headers, json, timeout):
+        posted.update(url=url, headers=headers, json=json)
+        return Resp()
+
+    monkeypatch.setattr(config, "BREVO_API_KEY", "k-123")
+    monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setattr(notify.httpx, "post", fake_post)
+    store.put("contacts", "eve", {"email": "eve@example.com"})
+    assert notify.email_provider() == "brevo" and notify.sender_ready("email")
+    assert notify.send("eve", ["email"], "INFY hit <1500>", "Line one\nLine two") == {"email": "sent"}
+    assert posted["url"].endswith("/v3/smtp/email") and posted["headers"]["api-key"] == "k-123"
+    body = posted["json"]
+    assert body["sender"]["email"] == "alerts@example.com" and body["to"] == [{"email": "eve@example.com"}]
+    assert "&lt;1500&gt;" in body["htmlContent"] and body["textContent"] == "Line one\nLine two"
+
+    class Bad(Resp):
+        status_code = 400
+        def json(self):
+            return {"message": "sender not valid"}
+    monkeypatch.setattr(notify.httpx, "post", lambda *a, **k: Bad())
+    assert notify.send("eve", ["email"], "s", "b") == {"email": "sender not valid"}
+
+
+def test_email_test_reminds_about_spam(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    monkeypatch.setattr(config, "BREVO_API_KEY", "k")
+    monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setitem(notify._SENDERS, "email", lambda ct, s, b: None)
+    client.post("/notifications/email", data={"email": "boss@example.com"})
+    r = client.post("/notifications/email/test")
+    assert "spam folder" in r.headers["HX-Trigger"]
+    assert "Not spam" in r.text and "Test sent" in r.text

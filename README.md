@@ -33,7 +33,7 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 | Market hours (IST via `zoneinfo`, Mon–Fri, admin-editable) | `app/market.py` |
 | Scanner + scheduler (APScheduler, in-process) | `app/scanner.py` |
 | Kite client (Kite Connect **or** enctoken) + NSE instrument list | `app/kite.py` |
-| Telegram (each user's own bot) / Gmail SMTP (app-wide) / WhatsApp (CallMeBot) | `app/notify.py` |
+| Telegram (each user's own bot) / email via Brevo or Gmail SMTP (app-wide) / WhatsApp (CallMeBot) | `app/notify.py` |
 | Users, password hashing, permission guards | `app/security.py` |
 | Grantable app areas | `app/modules.py` |
 | Firestore / in-memory store (collections prefixed `ssa_`) | `app/store.py` |

@@ -8,7 +8,8 @@ load_dotenv()  # local .env; on Render the dashboard env is used
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
+    """Env value, treating a blank setting (NAME=) the same as a missing one."""
+    return (os.environ.get(name) or "").strip() or default
 
 
 APP_NAME = _env("APP_NAME", "Stock Scanner")
@@ -39,7 +40,11 @@ SCANNER_ENABLED = _env("SCANNER_ENABLED", "1") == "1"
 KEEP_ALIVE_URL = (_env("KEEP_ALIVE_URL") or _env("RENDER_EXTERNAL_URL")).rstrip("/")
 KEEP_ALIVE_SECONDS = int(_env("KEEP_ALIVE_SECONDS", "300"))
 
-# Email sender (app-wide Gmail). Telegram/WhatsApp are configured per user in the UI.
+# Email sender (app-wide). Telegram/WhatsApp are configured per user in the UI.
+# Brevo (HTTPS API, free 300/day) is used when BREVO_API_KEY is set; otherwise Gmail SMTP.
+BREVO_API_KEY = _env("BREVO_API_KEY")
+EMAIL_FROM = _env("EMAIL_FROM")            # must be a verified sender in Brevo
+EMAIL_FROM_NAME = _env("EMAIL_FROM_NAME", APP_NAME)
 SMTP_HOST = _env("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(_env("SMTP_PORT", "465"))
 SMTP_USER = _env("SMTP_USER")

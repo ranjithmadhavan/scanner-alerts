@@ -123,4 +123,10 @@ def test(request: Request, channel: str, user: dict = Depends(guard)):
     store.update("contacts", user["username"],
                  {f"test_{channel}": {"at": now.isoformat(), "ok": ok, "detail": "" if ok else result}})
     return toast(render(request, "partials/channels.html", _ctx(user)),
-                 f"Test sent. Check your {notify.CHANNELS.get(channel, channel)}." if ok else f"Couldn't send: {result}", "success" if ok else "error")
+                 _sent_message(channel) if ok else f"Couldn't send: {result}", "success" if ok else "error")
+
+
+def _sent_message(channel: str) -> str:
+    if channel == "email":
+        return "Test email sent. Check your inbox and spam folder. If it's in spam, mark it as not spam."
+    return f"Test sent. Check your {notify.CHANNELS.get(channel, channel)}."

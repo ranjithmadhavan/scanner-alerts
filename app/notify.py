@@ -1,9 +1,10 @@
-"""Free notification channels: Telegram bot, Gmail SMTP, WhatsApp via CallMeBot.
+"""Free notification channels: Telegram bot, email (Brevo or Gmail SMTP), WhatsApp via CallMeBot.
 
 Telegram and WhatsApp are fully per-user (each user brings their own bot / CallMeBot key).
 Email is sent from one app-wide Gmail account configured in env; users only give an address.
 """
 
+import html
 import smtplib
 from email.message import EmailMessage
 
@@ -22,7 +23,7 @@ CHANNELS = {
 
 def sender_ready(channel: str) -> bool:
     if channel == "email":
-        return bool(config.SMTP_USER and config.SMTP_PASSWORD)
+        return email_provider() is not None
     return True  # Telegram and CallMeBot need nothing app-wide
 
 
@@ -71,13 +72,64 @@ def _telegram(contacts: dict, subject: str, body: str) -> None:
         raise RuntimeError(_telegram_error(r))
 
 
-def _email(contacts: dict, subject: str, body: str) -> None:
+def email_provider() -> str | None:
+    if config.BREVO_API_KEY and config.EMAIL_FROM:
+        return "brevo"
+    if config.SMTP_USER and config.SMTP_PASSWORD:
+        return "smtp"
+    return None
+
+
+def _email_html(subject: str, body: str) -> str:
+    lines = "".join(f"<p style='margin:0 0 8px'>{html.escape(line)}</p>" for line in body.splitlines() if line.strip())
+    return (
+        "<div style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#16373A;max-width:520px;"
+        "padding:24px;border:1px solid #ECE6DC;border-radius:16px;background:#FFFFFF'>"
+        f"<p style='margin:0 0 14px;font-size:18px;font-weight:700'>{html.escape(subject)}</p>{lines}"
+        f"<p style='margin:18px 0 0;font-size:12px;color:#5F7476'>Sent by {html.escape(config.APP_NAME)}</p></div>"
+    )
+
+
+def _email_brevo(to: str, subject: str, body: str) -> None:
+    try:
+        r = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": config.BREVO_API_KEY, "accept": "application/json"},
+            json={
+                "sender": {"name": config.EMAIL_FROM_NAME, "email": config.EMAIL_FROM},
+                "to": [{"email": to}],
+                "subject": subject,
+                "textContent": body,
+                "htmlContent": _email_html(subject, body),
+            },
+            timeout=20,
+        )
+    except httpx.HTTPError:
+        raise RuntimeError("Couldn't reach Brevo") from None
+    if r.status_code >= 300:
+        try:
+            detail = r.json().get("message", "")
+        except ValueError:
+            detail = ""
+        if r.status_code == 401:
+            detail = "Brevo rejected the API key"
+        raise RuntimeError(detail or f"Brevo returned HTTP {r.status_code}")
+
+
+def _email_smtp(to: str, subject: str, body: str) -> None:
     msg = EmailMessage()
-    msg["From"], msg["To"], msg["Subject"] = config.SMTP_FROM, contacts["email"], subject
+    msg["From"], msg["To"], msg["Subject"] = config.SMTP_FROM, to, subject
     msg.set_content(body)
     with smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=20) as s:
         s.login(config.SMTP_USER, config.SMTP_PASSWORD)
         s.send_message(msg)
+
+
+def _email(contacts: dict, subject: str, body: str) -> None:
+    if email_provider() == "brevo":
+        _email_brevo(contacts["email"], subject, body)
+    else:
+        _email_smtp(contacts["email"], subject, body)
 
 
 def _whatsapp(contacts: dict, subject: str, body: str) -> None:
