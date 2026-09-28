@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css?v={{ v }}">
+  {# Apply the saved alerts layout before first paint so the page never flickers between layouts. #}
+  <script>try { document.documentElement.dataset.alertLayout = localStorage.getItem("alertLayout") === "cards" ? "cards" : "list"; } catch (e) { document.documentElement.dataset.alertLayout = "list"; }</script>
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
   <script src="/static/app.js?v={{ v }}" defer></script>
 </head>

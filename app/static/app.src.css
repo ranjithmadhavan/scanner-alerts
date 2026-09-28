@@ -45,6 +45,12 @@
 #chart-drawer.open .drawer-scrim { opacity: 1; }
 #chart-msg:empty { display: none; }
 .quote-in { animation: arrive .35s cubic-bezier(.2,.8,.2,1) both; }
+/* Alerts layout: list rows or cards, chosen per browser (localStorage) via <html data-alert-layout>. */
+.layout-cards { display: none; }
+html[data-alert-layout="cards"] .layout-list { display: none; }
+html[data-alert-layout="cards"] .layout-cards { display: grid; }
+html:not([data-alert-layout="cards"]) .layout-btn[data-layout-set="list"],
+html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"] { background: #16373A; color: #fff; }
 /* Channel chips show a tick only when selected. */
 .tick { display: none; }
 input:checked + span .tick { display: inline; }

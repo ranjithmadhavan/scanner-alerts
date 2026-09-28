@@ -237,6 +237,9 @@ def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
     assert page.index("TCS") < page.index("INFY")          # closest to level first
     assert "HDFCBANK" not in page and "ITC" not in page     # other tabs hidden
     assert "Checked" in page and "Not checked yet" in page and ", next" in page
+    # Both layouts are rendered (CSS picks one from localStorage), with the same alerts in each.
+    assert 'class="layout-list' in page and 'class="layout-cards' in page
+    assert page.count('data-chart="TCS"') == 2 and 'data-layout-set="cards"' in page
 
     page = client.get("/alerts/list?sort=symbol").text     # tab remembered from the session
     assert page.index("INFY") < page.index("TCS") and "HDFCBANK" not in page

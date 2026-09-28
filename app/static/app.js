@@ -264,3 +264,22 @@ const StockChart = (() => {
   } catch {}
   panel.addEventListener("toggle", () => { try { localStorage.setItem(KEY, panel.open ? "1" : "0"); } catch {} });
 })();
+
+// ---- Alerts layout: list or cards, remembered in this browser only -----------------
+(() => {
+  const KEY = "alertLayout";
+  const root = document.documentElement;
+  function syncButtons() {
+    document.querySelectorAll("[data-layout-set]").forEach((b) =>
+      b.setAttribute("aria-pressed", b.dataset.layoutSet === root.dataset.alertLayout ? "true" : "false"));
+  }
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-layout-set]");
+    if (!btn) return;
+    root.dataset.alertLayout = btn.dataset.layoutSet;
+    try { localStorage.setItem(KEY, btn.dataset.layoutSet); } catch {}
+    syncButtons();
+  });
+  syncButtons();
+  document.addEventListener("htmx:afterSwap", syncButtons); // the toolbar is re-rendered on every refresh
+})();
