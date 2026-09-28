@@ -1,10 +1,12 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import brokers, notify, prices
 from app import scanner
 from app.kite import TIMEFRAMES, KiteAuthError, KiteError, instruments, search_instruments
-from app.market import load_settings, now_ist
+from app.market import in_scan_window, load_settings, now_ist
 from app.scanner import CONDITIONS, last_prices, uses_close
 from app.security import require
 from app.store import new_id, store
@@ -12,9 +14,6 @@ from app.web import _company, fail, render, toast
 
 router = APIRouter(prefix="/alerts")
 guard = require("scanner")
-
-_STATUS_ORDER = {"active": 0, "triggered": 1, "paused": 2}
-
 
 def rail(alert: dict, price: float | None) -> dict | None:
     """Where to draw the last price relative to the level on a ±3% scale."""
@@ -29,38 +28,99 @@ def rail(alert: dict, price: float | None) -> dict | None:
             "side": "above" if price >= level else "below"}
 
 
-def _view(alerts: list[dict], username: str) -> list[dict]:
+TABS = {"active": "Watching", "triggered": "Triggered", "paused": "Paused", "all": "All"}
+SORTS = {"near": "Closest to level", "symbol": "Symbol A–Z", "new": "Newest first"}
+
+
+def _filters(request: Request) -> dict:
+    """Tab/search/sort live in the session so every refresh and action keeps the user's view."""
+    f = {"tab": "active", "q": "", "sort": "near", **request.session.get("alert_filters", {})}
+    changed = False
+    for key, allowed in (("tab", TABS), ("sort", SORTS), ("q", None)):
+        if key in request.query_params:
+            value = request.query_params[key].strip()[:40]
+            if allowed is None or value in allowed:
+                f[key], changed = value, True
+    if changed:
+        request.session["alert_filters"] = f
+    return f
+
+
+def _view(alerts: list[dict], username: str, broker_ok: bool, now) -> list[dict]:
+    s, tick = load_settings(), scanner.next_tick()
     out = []
-    for a in sorted(alerts, key=lambda a: (_STATUS_ORDER.get(a["status"], 9), a["symbol"])):
+    for a in alerts:
         price, as_of = last_prices.get((username, a["symbol"]), (None, None))
-        out.append({**a, "label": CONDITIONS[a["condition"]], "is_close": uses_close(a["condition"]),
-                    "price": price, "price_at": as_of, "rail": rail(a, price)})
+        r = rail(a, price)
+        out.append({
+            **a, "label": CONDITIONS[a["condition"]], "is_close": uses_close(a["condition"]),
+            "price": price, "price_at": as_of, "rail": r,
+            "checked_at": scanner.last_checked_at.get(a["id"]),
+            "next": scanner.next_check(a, s, now, tick) if a["status"] == "active" and broker_ok else None,
+        })
     return out
 
 
-def _page_ctx(user: dict) -> dict:
+def _sorted(alerts: list[dict], f: dict) -> list[dict]:
+    q = f["q"].lower()
+    if q:
+        alerts = [a for a in alerts if q in a["symbol"].lower() or q in a.get("name", "").lower()
+                  or q in a.get("note", "").lower()]
+    if f["tab"] != "all":
+        alerts = [a for a in alerts if a["status"] == f["tab"]]
+    if f["sort"] == "symbol":
+        return sorted(alerts, key=lambda a: (a["symbol"], a["level"]))
+    if f["sort"] == "new":
+        return sorted(alerts, key=lambda a: a.get("created_at", ""), reverse=True)
+    # Closest to level: triggered ones by most recent, then watching ones nearest to firing.
+    def near(a):
+        if a["status"] == "triggered":
+            return (0, -datetime.fromisoformat(a["triggered_at"]).timestamp() if a.get("triggered_at") else 0, "")
+        pct = a["rail"]["pct"] if a["rail"] and not a["rail"]["reached"] else (0 if a["rail"] else 1e9)
+        return (1 if a["status"] == "active" else 2, pct, a["symbol"])
+    return sorted(alerts, key=near)
+
+
+def _page_ctx(request: Request, user: dict) -> dict:
     username = user["username"]
     contacts = notify.load_contacts(username)
-    alerts = store.list("alerts", user=username)
+    broker = brokers.load(username)
+    broker_ok = broker.get("status") == "connected"
+    now = now_ist()
+    raw = store.list("alerts", user=username)
+    everything = _view(raw, username, broker_ok, now)
+    f = _filters(request)
+    s = load_settings()
     return {
-        "alerts": _view(alerts, username),
-        "counts": {s: sum(1 for a in alerts if a["status"] == s) for s in _STATUS_ORDER},
+        "alerts": _sorted(everything, f),
+        "total": len(everything),
+        "counts": {**{k: sum(1 for a in everything if a["status"] == k) for k in ("active", "triggered", "paused")},
+                   "all": len(everything)},
+        "filters": f, "tabs": TABS, "sorts": SORTS,
+        "scan": {
+            "running": scanner.scheduler.running,
+            "in_window": in_scan_window(s, now),
+            "last": scanner.last_run.get("at"),
+            "checked": scanner.last_run.get("alerts", 0),
+            "next": scanner.next_tick() if in_scan_window(s, now) else scanner.next_open(s, now),
+        },
+        "broker_ok": broker_ok,
         "conditions": CONDITIONS,
         "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"],
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],
-        "broker": brokers.load(username),
+        "broker": broker,
     }
 
 
 @router.get("")
 def page(request: Request, user: dict = Depends(guard)):
-    return render(request, "alerts.html", _page_ctx(user))
+    return render(request, "alerts.html", _page_ctx(request, user))
 
 
 @router.get("/list")
 def list_partial(request: Request, user: dict = Depends(guard)):
-    return render(request, "partials/alert_list.html", _page_ctx(user))
+    return render(request, "partials/alert_list.html", _page_ctx(request, user))
 
 
 @router.get("/symbols")
@@ -161,7 +221,9 @@ def create(
     if error:
         return fail(error)
     store.put("alerts", alert["id"], alert)
-    ctx = _page_ctx(user)
+    # Show the new alert even if the user was on another tab or searching.
+    request.session["alert_filters"] = {**request.session.get("alert_filters", {}), "tab": "active", "q": ""}
+    ctx = _page_ctx(request, user)
     ctx["fresh_id"] = alert["id"]
     return toast(render(request, "partials/alert_list.html", ctx), f"Watching {alert['symbol']}")
 
@@ -212,7 +274,7 @@ def rearm(request: Request, alert_id: str, user: dict = Depends(guard)):
     if a := _own(alert_id, user):
         store.update("alerts", alert_id, {"status": "active", "armed_at": now_ist().isoformat(),
                                           "triggered_at": None, "trigger_price": None})
-        return toast(render(request, "partials/alert_list.html", _page_ctx(user)), f"{a['symbol']} is armed again")
+        return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} is armed again")
     return HTMLResponse(status_code=404)
 
 
@@ -220,7 +282,7 @@ def rearm(request: Request, alert_id: str, user: dict = Depends(guard)):
 def pause(request: Request, alert_id: str, user: dict = Depends(guard)):
     if a := _own(alert_id, user):
         store.update("alerts", alert_id, {"status": "paused"})
-        return toast(render(request, "partials/alert_list.html", _page_ctx(user)), f"{a['symbol']} paused")
+        return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} paused")
     return HTMLResponse(status_code=404)
 
 
@@ -233,12 +295,12 @@ def toggle_channel(request: Request, alert_id: str, channel: str, user: dict = D
     store.update("alerts", alert_id, {"channels": [c for c in notify.CHANNELS if c in chosen]})
     label = notify.CHANNELS[channel]
     msg = f"{a['symbol']}: {label} {'on' if channel in chosen else 'off'}"
-    return toast(render(request, "partials/alert_list.html", _page_ctx(user)), msg)
+    return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), msg)
 
 
 @router.delete("/{alert_id}")
 def delete(request: Request, alert_id: str, user: dict = Depends(guard)):
     if a := _own(alert_id, user):
         store.delete("alerts", alert_id)
-        return toast(render(request, "partials/alert_list.html", _page_ctx(user)), f"Removed {a['symbol']} alert")
+        return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"Removed {a['symbol']} alert")
     return HTMLResponse(status_code=404)

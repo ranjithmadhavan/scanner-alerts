@@ -99,3 +99,26 @@ def test_simulate_replays_last_session_and_skips_weekend():
     r = simulate({**alert, "level": 200}, FakeKite(), S, sunday)
     assert r["hit"] is None
     assert "would not have fired" in simulation_message({**alert, "level": 200}, r)[0]
+
+
+def test_next_check_times():
+    from app.scanner import next_check, next_open
+    tick = at(11, 43, 5)
+    trades = {"condition": "high_above", "timeframe": ""}
+    close15 = {"condition": "close_above", "timeframe": "15m"}
+    daily = {"condition": "close_below", "timeframe": "1d"}
+
+    # During market hours
+    assert next_check(trades, S, at(11, 42, 10), tick) == {"at": tick, "after_candle": False}
+    assert next_check(close15, S, at(11, 42, 10), tick) == {"at": at(11, 45), "after_candle": True}
+    assert next_check(daily, S, at(11, 42), tick)["at"] == at(15, 30)
+
+    # Before the open on a Monday, and on a Sunday
+    assert next_open(S, at(8, 0)) == at(9, 15)
+    assert next_check(close15, S, at(8, 0), None)["at"] == at(9, 30)
+    sunday = DAY.replace(day=27, hour=12)
+    assert next_check(trades, S, sunday, None)["at"] == at(9, 15)
+
+    # After the close on Monday -> Tuesday
+    tue = DAY.replace(day=29)
+    assert next_check(close15, S, at(16, 0), None)["at"] == tue.replace(hour=9, minute=30)

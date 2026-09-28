@@ -251,3 +251,16 @@ const StockChart = (() => {
 
   return { open, close };
 })();
+
+// ---- Remember whether the New alert form was left open --------------------------
+(() => {
+  const panel = document.getElementById("new-alert-panel");
+  if (!panel) return;
+  const KEY = "newAlertOpen";
+  const hasAlerts = !!document.querySelector('#alert-list [role="tablist"]');
+  try {
+    const saved = localStorage.getItem(KEY);
+    if (saved !== null && hasAlerts) panel.open = saved === "1"; // with no alerts yet, keep it open
+  } catch {}
+  panel.addEventListener("toggle", () => { try { localStorage.setItem(KEY, panel.open ? "1" : "0"); } catch {} });
+})();

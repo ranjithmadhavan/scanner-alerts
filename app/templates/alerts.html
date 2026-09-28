@@ -18,12 +18,18 @@
 </a>
 {% endif %}
 
-<form id="new-alert" class="panel mt-8 p-6 shadow-soft sm:p-7"
+<form id="new-alert" class="panel mt-8 shadow-soft"
       hx-post="/alerts" hx-target="#alert-list" hx-swap="outerHTML"
       hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('[name=note]').value=''; this.querySelector('[name=symbol]').select(); }">
-  <h2 class="text-xl font-bold">New alert</h2>
+  <details id="new-alert-panel" class="group/new" {{ 'open' if not total }}>
+  <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
+    <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white transition group-open/new:rotate-45">{{ icon('plus', 'h-4 w-4') }}</span>
+    <span class="text-xl font-bold">New alert</span>
+    <span class="ml-auto text-sm text-ink-soft group-open/new:hidden">Add a stock to watch</span>
+  </summary>
+  <div class="px-6 pb-6 sm:px-7 sm:pb-7">
 
-  <div class="mt-5 grid gap-5 sm:grid-cols-[1.3fr_1fr]">
+  <div class="grid gap-5 sm:grid-cols-[1.3fr_1fr]">
     <div>
       <label for="symbol" class="label">Stock</label>
       <div class="relative" id="symbol-box">
@@ -100,6 +106,8 @@
       <button class="btn-primary htmx-busy">{{ icon('plus', 'h-4 w-4') }} Start watching</button>
     </div>
   </div>
+  </div>
+  </details>
 </form>
 
 <div id="sim-result" aria-live="polite"></div>

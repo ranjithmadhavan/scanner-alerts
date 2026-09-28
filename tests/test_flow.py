@@ -68,7 +68,8 @@ def test_permissions_and_alert_fires(client, monkeypatch):
     a = store.get("alerts", a["id"])
     assert a["status"] == "triggered" and a["trigger_price"] == 1502.5
     assert sent and "INFY" in sent[0]
-    assert "Hit at" in client.get("/alerts").text
+    assert "Hit at" not in client.get("/alerts").text          # default tab is Watching
+    assert "Hit at" in client.get("/alerts/list?tab=triggered").text
 
 
 def test_session_problems_notify_once_per_day(monkeypatch):
@@ -210,3 +211,38 @@ def test_quote_and_chart_endpoints(client, monkeypatch):
     assert "Connect Kite" in client.get("/alerts/quote?symbol=INFY").text
     r = client.get("/alerts/chart?symbol=INFY&range=1D")
     assert r.status_code == 409 and "Broker" in r.json()["error"]
+
+
+def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
+    from app.scanner import last_checked_at, last_prices
+    login(client, "boss", "boss-pass-123")
+    base = {"user": "boss", "name": "X", "token": 1, "timeframe": "", "channels": [], "note": "",
+            "armed_at": "2026-09-28T09:15:00+05:30"}
+    rows = [
+        ("f1", "INFY", "high_above", 1500, "active", "2026-09-01"),
+        ("f2", "TCS", "high_above", 2100, "active", "2026-09-02"),
+        ("f3", "HDFCBANK", "low_below", 1700, "triggered", "2026-09-03"),
+        ("f4", "ITC", "high_above", 500, "paused", "2026-09-04"),
+    ]
+    for aid, sym, cond, lvl, st, created in rows:
+        store.put("alerts", aid, {**base, "id": aid, "symbol": sym, "condition": cond, "level": lvl,
+                                  "status": st, "created_at": created,
+                                  "triggered_at": "2026-09-28T10:00:00+05:30", "trigger_price": 1699})
+    last_prices[("boss", "INFY")] = (1400.0, datetime.now(IST))   # 6.7% away
+    last_prices[("boss", "TCS")] = (2090.0, datetime.now(IST))    # 0.5% away
+    last_checked_at["f2"] = datetime.now(IST)
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+
+    page = client.get("/alerts/list?tab=active&sort=near&q=").text
+    assert page.index("TCS") < page.index("INFY")          # closest to level first
+    assert "HDFCBANK" not in page and "ITC" not in page     # other tabs hidden
+    assert "Checked" in page and "Not checked yet" in page and ", next" in page
+
+    page = client.get("/alerts/list?sort=symbol").text     # tab remembered from the session
+    assert page.index("INFY") < page.index("TCS") and "HDFCBANK" not in page
+
+    page = client.get("/alerts/list?tab=all&q=hdfc").text
+    assert "HDFCBANK" in page and "INFY" not in page and "Triggered" in page
+    assert "ITC" in client.get("/alerts/list?tab=paused&q=").text
+    for aid, *_ in rows:
+        store.delete("alerts", aid)

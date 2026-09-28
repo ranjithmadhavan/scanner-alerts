@@ -23,6 +23,14 @@ def _ist(value: str | datetime | None, fmt: str = "%d %b, %-I:%M %p") -> str:
     return dt.astimezone(IST).strftime(fmt)
 
 
+def _when(value: str | datetime | None) -> str:
+    """Time only if it's today (IST), otherwise weekday + time: '11:45 AM' or 'Mon 9:30 AM'."""
+    if not value:
+        return ""
+    dt = (datetime.fromisoformat(value) if isinstance(value, str) else value).astimezone(IST)
+    return dt.strftime("%-I:%M %p") if dt.date() == now_ist().date() else dt.strftime("%a %-I:%M %p")
+
+
 def _price(value) -> str:
     return "" if value is None else f"{float(value):,.2f}"
 
@@ -30,12 +38,15 @@ def _price(value) -> str:
 def _company(name: str) -> str:
     """Kite names are ALL CAPS. Soften them but keep acronyms: 'HDFC BANK' -> 'HDFC Bank'."""
     def word(w: str) -> str:
+        if w in ("OF", "AND", "THE", "FOR", "IN"):
+            return w.lower()
         return w if len(w) <= 3 or not any(ch in "AEIOU" for ch in w) else w.capitalize()
     return " ".join(word(w) for w in (name or "").split())
 
 
 templates.env.filters["company"] = _company
 templates.env.filters["ist"] = _ist
+templates.env.filters["when"] = _when
 templates.env.filters["price"] = _price
 
 

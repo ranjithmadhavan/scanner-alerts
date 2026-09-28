@@ -97,6 +97,8 @@ def evaluate(alert: dict, candles: list[Candle], s: MarketSettings, now: datetim
 # ---- runtime state (in memory; rebuilt harmlessly after a restart) ----------
 
 last_prices: dict[tuple[str, str], tuple[float, datetime]] = {}  # (user, symbol) -> (price, as_of)
+last_checked_at: dict[str, datetime] = {}  # alert id -> when the scanner last evaluated it
+last_run: dict = {}  # {"at": datetime, "alerts": int} for the most recent scan inside market hours
 _last_checked: dict[str, datetime] = {}  # alert id -> last candle boundary evaluated
 _scan_lock = threading.Lock()
 
@@ -141,6 +143,48 @@ def fire(alert: dict, candle: Candle, price: float, now: datetime) -> None:
         "summary": describe(alert), "price": price, "at": now.isoformat(), "delivery": results,
     })
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
+
+
+# ---- schedule info for the UI ----------------------------------------------------
+
+def next_tick() -> datetime | None:
+    """When the scheduler will next run a scan (None if the scanner isn't running)."""
+    job = scheduler.get_job("scan") if scheduler.running else None
+    return job.next_run_time.astimezone(IST) if job and job.next_run_time else None
+
+
+def next_open(s: MarketSettings, now: datetime) -> datetime:
+    """Start of the next scan window (today's open if it's still ahead)."""
+    day = now
+    if is_trading_day(day) and now < s.open_at(day):
+        return s.open_at(day)
+    day += timedelta(days=1)
+    while not is_trading_day(day):
+        day += timedelta(days=1)
+    return s.open_at(day)
+
+
+def next_check(alert: dict, s: MarketSettings, now: datetime, tick: datetime | None) -> dict:
+    """When this alert will next be looked at, for display.
+    Returns {"at": datetime | None, "after_candle": bool}."""
+    close_rule = uses_close(alert["condition"])
+    minutes = TIMEFRAMES[alert["timeframe"]][1] if close_rule else None
+    if not in_scan_window(s, now):
+        opens = next_open(s, now)
+        if not close_rule:
+            return {"at": opens, "after_candle": False}
+        first = s.close_at(opens) if minutes is None else min(opens + timedelta(minutes=minutes), s.close_at(opens))
+        return {"at": first, "after_candle": True}
+    if not close_rule:
+        return {"at": tick, "after_candle": False}
+    last = last_boundary(alert["timeframe"], s, now - SETTLE) or s.open_at(now)
+    if minutes is None:
+        nxt = s.close_at(now)
+    else:
+        nxt = min(last + timedelta(minutes=minutes), s.close_at(now))
+        if nxt <= now - SETTLE:  # today's last candle already checked
+            return next_check(alert, s, s.close_at(now) + CLOSE_GRACE, tick)
+    return {"at": nxt, "after_candle": True}
 
 
 # ---- simulation (replay a past session with real data) -----------------------
@@ -267,6 +311,7 @@ def _scan_user(username: str, alerts: list[dict], s: MarketSettings, now: dateti
             last_prices[(username, alert["symbol"])] = (candles[-1].close, now)
         hit = evaluate(alert, candles, s, now)
         _mark_checked(alert, s, now)
+        last_checked_at[alert["id"]] = now
         if hit:
             fire(alert, *hit, now)
 
@@ -287,6 +332,7 @@ def run_scan(now: datetime | None = None) -> None:
                 _scan_user(username, alerts, s, now)
             except Exception:
                 log.exception("scan failed for %s", username)
+        last_run.update(at=now, alerts=sum(len(a) for a in by_user.values()))
     finally:
         _scan_lock.release()
 
