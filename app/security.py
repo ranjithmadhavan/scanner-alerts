@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import time
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Request
@@ -69,10 +70,31 @@ def allowed_modules(user: dict) -> list:
     return [m for m in MODULES.values() if can_access(user, m.key)]
 
 
+def start_session(request: Request, username: str) -> None:
+    request.session.clear()
+    request.session["user"] = username
+    request.session["since"] = time.time()
+
+
+def set_password(username: str, password: str) -> None:
+    """Change a password. Sessions started before this moment are signed out."""
+    store.update("users", username, {"password_hash": hash_password(password), "password_changed_at": time.time()})
+
+
+def password_problem(password: str) -> str | None:
+    if len(password) < 8:
+        return "Passwords need at least 8 characters."
+    if len(password) > 128:
+        return "Passwords can be at most 128 characters."
+    return None
+
+
 def current_user(request: Request) -> dict:
     username = request.session.get("user")
     user = store.get("users", username) if username else None
-    if not user or not user.get("active", True):
+    changed = (user or {}).get("password_changed_at")
+    stale = changed and request.session.get("since", 0) < changed  # signed in before the last password change
+    if not user or not user.get("active", True) or stale:
         request.session.clear()
         raise LoginRequired()
     request.state.user = user
@@ -112,5 +134,6 @@ def seed_superadmin() -> None:
         "modules": [],
         "active": True,
         "password_hash": hash_password(password),
+        "password_changed_at": time.time(),
     })
     print(f"[auth] Super admin '{name}' seeded.")

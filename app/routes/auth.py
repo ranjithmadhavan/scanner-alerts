@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
-from app.security import allowed_modules, current_user, verify_password
+from app.security import allowed_modules, current_user, start_session, verify_password
 from app.store import store
 from app.web import render
 
@@ -30,8 +30,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     user = store.get("users", username.strip().lower())
     if not user or not user.get("active", True) or not verify_password(password, user.get("password_hash", "")):
         return render(request, "login.html", {"error": "That username and password don't match.", "username": username}, 401)
-    request.session.clear()
-    request.session["user"] = user["username"]
+    start_session(request, user["username"])
     return RedirectResponse("/", status_code=303)
 
 

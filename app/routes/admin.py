@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from app import scanner
 from app.market import SCAN_INTERVALS, load_settings, parse_hhmm, save_settings
 from app.modules import MODULES
-from app.security import hash_password, require_superadmin
+from app.security import hash_password, password_problem, require_superadmin, set_password
 from app.store import store
 from app.web import fail, render, toast
 
@@ -64,9 +64,9 @@ def reset_password(request: Request, username: str, admin: dict = Depends(requir
                    password: str = Form(...)):
     if not _editable(username):
         return HTMLResponse(status_code=404)
-    if len(password) < 8:
-        return fail("Passwords need at least 8 characters.")
-    store.update("users", username, {"password_hash": hash_password(password)})
+    if problem := password_problem(password):
+        return fail(problem)
+    set_password(username, password)
     return toast(render(request, "partials/user_list.html", _users_ctx()), f"New password set for {username}")
 
 

@@ -38,6 +38,13 @@
   opacity: 0; transition: opacity .15s; animation: spin .7s linear infinite; }
 .spinner.htmx-request { opacity: 1; }
 @keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
+/* Chart side panel: slides in from the right. */
+.drawer-panel { transform: translateX(100%); transition: transform .35s cubic-bezier(.2,.8,.2,1); }
+.drawer-scrim { opacity: 0; transition: opacity .25s; }
+#chart-drawer.open .drawer-panel { transform: none; }
+#chart-drawer.open .drawer-scrim { opacity: 1; }
+#chart-msg:empty { display: none; }
+.quote-in { animation: arrive .35s cubic-bezier(.2,.8,.2,1) both; }
 /* Channel chips show a tick only when selected. */
 .tick { display: none; }
 input:checked + span .tick { display: inline; }

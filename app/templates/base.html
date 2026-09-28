@@ -42,12 +42,14 @@
       {% endif %}
     </nav>
 
-    <div class="relative mt-auto flex items-center gap-3 rounded-2xl bg-white/[.06] px-3 py-3">
-      <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-marigold font-display font-bold text-ink">{{ (user.name or user.username)[:1]|upper }}</span>
-      <div class="min-w-0 flex-1">
-        <p class="truncate text-sm font-semibold">{{ user.name or user.username }}</p>
-        <p class="truncate text-xs text-white/55">{{ 'Super admin' if user.role == 'superadmin' else user.username }}</p>
-      </div>
+    <div class="relative mt-auto flex items-center gap-1 rounded-2xl bg-white/[.06] p-1.5">
+      <a href="/settings" class="group flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1.5 transition {{ 'bg-white/10' if path.startswith('/settings') else 'hover:bg-white/[.06]' }}" title="Your settings">
+        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-marigold font-display font-bold text-ink">{{ (user.name or user.username)[:1]|upper }}</span>
+        <span class="min-w-0 flex-1">
+          <span class="block truncate text-sm font-semibold">{{ user.name or user.username }}</span>
+          <span class="flex items-center gap-1 text-xs text-white/55 group-hover:text-marigold">{{ icon('settings', 'h-3 w-3') }} Your settings</span>
+        </span>
+      </a>
       <form method="post" action="/logout">
         <button class="rounded-full p-2 text-white/60 hover:bg-white/10 hover:text-white" title="Sign out" aria-label="Sign out">{{ icon('logout', 'h-[18px] w-[18px]') }}</button>
       </form>

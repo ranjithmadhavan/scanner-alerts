@@ -103,8 +103,12 @@ class KiteClient:
         return self._get("/user/profile")
 
     def candles(self, instrument_token: int, timeframe: str, day: date) -> list[Candle]:
+        return self.candles_range(instrument_token, timeframe, day, day)
+
+    def candles_range(self, instrument_token: int, timeframe: str, start: date, end: date) -> list[Candle]:
+        """Candles from `start` to `end` inclusive. Kite allows up to 60 days of minute data per call."""
         interval = TIMEFRAMES[timeframe][0]
-        params = {"from": f"{day} 00:00:00", "to": f"{day} 23:59:59"}
+        params = {"from": f"{start} 00:00:00", "to": f"{end} 23:59:59"}
         if self.mode == "enctoken" and self.user_id:
             params["user_id"] = self.user_id
         _throttle()

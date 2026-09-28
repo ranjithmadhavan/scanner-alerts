@@ -133,3 +133,80 @@ def test_send_test_message_records_result(client, monkeypatch):
     r = client.post("/notifications/telegram/remove")
     assert not notify.configured("telegram", store.get("contacts", "boss"))
     assert "Needs setting up" in r.text
+
+
+def test_user_changes_own_password_and_other_sessions_end(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.security import hash_password
+    store.put("users", "meera", {"username": "meera", "name": "Meera", "role": "user", "active": True,
+                                 "modules": [], "password_hash": hash_password("old-pass-1")})
+    login(client, "meera", "old-pass-1")
+    other = TestClient(app)  # a second device
+    login(other, "meera", "old-pass-1")
+    assert other.get("/settings").status_code == 200
+
+    def change(current, new, confirm=None):
+        return client.post("/settings/password", data={"current": current, "new": new, "confirm": confirm or new})
+
+    assert "isn't right" in change("wrong", "new-pass-22").headers["HX-Trigger"]
+    assert "8 characters" in change("old-pass-1", "short").headers["HX-Trigger"]
+    assert "don't match" in change("old-pass-1", "new-pass-22", "new-pass-23").headers["HX-Trigger"]
+    r = change("old-pass-1", "new-pass-22")
+    assert "Password changed" in r.headers["HX-Trigger"]
+
+    assert client.get("/settings").status_code == 200            # this browser stays signed in
+    assert other.get("/settings", follow_redirects=False).status_code == 303  # other device signed out
+    client.post("/logout")
+    assert login(client, "meera", "old-pass-1").status_code == 401
+    assert login(client, "meera", "new-pass-22").status_code == 303
+
+
+def test_superadmin_password_not_changeable_in_ui(client):
+    login(client, "boss", "boss-pass-123")
+    assert "SUPERADMIN_PASSWORD" in client.get("/settings").text
+    r = client.post("/settings/password", data={"current": "boss-pass-123", "new": "x" * 10, "confirm": "x" * 10})
+    assert "SUPERADMIN_PASSWORD" in r.headers["HX-Trigger"]
+
+
+def test_quote_and_chart_endpoints(client, monkeypatch):
+    from datetime import timedelta
+    from app import prices
+    from app.kite import KiteAuthError
+    prices._cache.clear()
+    login(client, "boss", "boss-pass-123")
+    base = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    calls = []
+
+    class FakeKite:
+        def candles(self, token, tf, day):
+            return self.candles_range(token, tf, day, day)
+
+        def candles_range(self, token, tf, start, end):
+            calls.append(tf)
+            if tf == "1d":
+                return [Candle(base - timedelta(days=1), 1480, 1495, 1470, 1490),
+                        Candle(base, 1490, 1510, 1485, 1502.5)]
+            return [Candle(base + timedelta(minutes=5 * i), 1490 + i, 1492 + i, 1489 + i, 1491 + i) for i in range(3)]
+
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    r = client.get("/alerts/quote?symbol=infy")
+    assert "1,502.50" in r.text and "+12.50" in r.text and "View chart" in r.text
+    client.get("/alerts/quote?symbol=INFY")
+    assert calls.count("1d") == 1  # second look served from cache
+    assert client.get("/alerts/quote?symbol=NOPE").text == ""
+
+    d = client.get("/alerts/chart?symbol=INFY&range=5D").json()
+    assert d["symbol"] == "INFY" and not d["daily"] and len(d["candles"]) == 3
+    assert d["candles"][0]["time"] == int(base.timestamp()) + prices.IST_OFFSET
+    d = client.get("/alerts/chart?symbol=INFY&range=6M").json()
+    assert d["daily"] and d["candles"][-1]["time"] == "2026-09-25"
+
+    prices._cache.clear()
+
+    def dead(u, doc=None):
+        raise KiteAuthError("expired")
+    monkeypatch.setattr(brokers, "client_for", dead)
+    assert "Connect Kite" in client.get("/alerts/quote?symbol=INFY").text
+    r = client.get("/alerts/chart?symbol=INFY&range=1D")
+    assert r.status_code == 409 and "Broker" in r.json()["error"]

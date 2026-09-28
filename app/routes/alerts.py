@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
-from app import brokers, notify
+from app import brokers, notify, prices
 from app import scanner
 from app.kite import TIMEFRAMES, KiteAuthError, KiteError, instruments, search_instruments
 from app.market import load_settings, now_ist
 from app.scanner import CONDITIONS, last_prices, uses_close
 from app.security import require
 from app.store import new_id, store
-from app.web import fail, render, toast
+from app.web import _company, fail, render, toast
 
 router = APIRouter(prefix="/alerts")
 guard = require("scanner")
@@ -107,6 +107,43 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
         "created_at": now,
         "armed_at": now,
     }, None
+
+
+def _instrument(symbol: str):
+    try:
+        return instruments().get(symbol.strip().upper())
+    except Exception:
+        return None
+
+
+@router.get("/quote")
+def quote(request: Request, symbol: str = "", user: dict = Depends(guard)):
+    """Price strip under the Stock box. Empty when nothing valid is selected."""
+    inst = _instrument(symbol)
+    if not inst:
+        return HTMLResponse("")
+    ctx = {"inst": inst, "q": None, "error": None, "needs_login": False}
+    try:
+        ctx["q"] = prices.quote(user["username"], inst)
+    except KiteAuthError:
+        ctx["needs_login"] = True
+    except KiteError as e:
+        ctx["error"] = str(e)
+    return render(request, "partials/quote.html", ctx)
+
+
+@router.get("/chart")
+def chart_data(symbol: str, range: str = "5D", user: dict = Depends(guard)):
+    inst = _instrument(symbol)
+    if not inst:
+        return JSONResponse({"error": f"{symbol} isn't an NSE symbol we know."}, status_code=404)
+    try:
+        data = prices.chart(user["username"], inst, range)
+    except KiteAuthError:
+        return JSONResponse({"error": "Connect Kite on the Broker page to see charts."}, status_code=409)
+    except KiteError as e:
+        return JSONResponse({"error": f"Kite: {e}"}, status_code=502)
+    return {**data, "name": _company(inst.name)}
 
 
 @router.post("")

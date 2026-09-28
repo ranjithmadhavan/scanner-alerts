@@ -57,6 +57,8 @@
           </div>
 
           <div class="flex items-center gap-1 justify-self-start md:justify-self-end">
+            <button type="button" class="rounded-full p-2.5 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
+                    data-chart="{{ a.symbol }}" data-level="{{ a.level }}">{{ icon('chart', 'h-4 w-4') }}</button>
             {% if status == 'active' %}
               <button class="btn-quiet px-3 py-2 text-sm" hx-post="/alerts/{{ a.id }}/pause" hx-target="#alert-list" hx-swap="outerHTML">{{ icon('pause', 'h-4 w-4') }} Pause</button>
             {% else %}

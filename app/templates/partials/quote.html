@@ -1,0 +1,27 @@
+{% from "partials/icons.html" import icon %}
+{# Price strip under the Stock box. Polls itself while the market is open. #}
+<div class="quote-in mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5"
+     {% if q and q.live %}hx-get="/alerts/quote?symbol={{ inst.symbol|urlencode }}" hx-trigger="every 30s [document.visibilityState === 'visible']" hx-swap="outerHTML"{% endif %}>
+  {% if needs_login %}
+    <a href="/broker" class="text-sm font-medium text-marigold-dark underline decoration-marigold/40 underline-offset-2">Connect Kite to see the price</a>
+  {% elif error %}
+    <span class="text-sm text-fall">Couldn't load the price: {{ error }}</span>
+  {% elif not q %}
+    <span class="text-sm text-ink-soft">No recent prices for {{ inst.symbol }}.</span>
+  {% else %}
+    <span class="num font-display text-xl font-bold leading-none">₹{{ q.price|price }}</span>
+    <span class="num rounded-full px-2 py-0.5 text-sm font-semibold {{ 'bg-rise-50 text-rise' if q.change >= 0 else 'bg-fall-50 text-fall' }}">
+      {{ '+' if q.change >= 0 }}{{ q.change|price }} ({{ '+' if q.change >= 0 }}{{ '%.2f'|format(q.pct) }}%)
+    </span>
+    <span class="text-sm text-ink-soft">
+      {% if q.live %}<span class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-rise align-middle breathe"></span>Live, {{ q.at|ist('%-I:%M %p') }}
+      {% else %}Close on {{ q.day.strftime('%a %-d %b') }}{% endif %}
+    </span>
+  {% endif %}
+  {% if not needs_login %}
+  <button type="button" data-chart="{{ inst.symbol }}" data-level-from="#level"
+          class="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-sm font-medium text-peacock transition hover:border-peacock/40 hover:bg-peacock-50">
+    {{ icon('chart', 'h-4 w-4') }} View chart
+  </button>
+  {% endif %}
+</div>
