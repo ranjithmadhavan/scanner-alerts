@@ -46,6 +46,8 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 **Price and chart.** Picking a stock shows its last price and the day's change. **View chart** (and the chart icon on each alert) opens a side panel with 1D/5D/1M/6M/1Y candles and your levels drawn in. Data comes from the user's own Kite session and is cached briefly (`app/prices.py`). The chart is drawn with TradingView's Lightweight Charts, loaded from jsDelivr on first use.
 
+**Alert message.** Each alert can carry its own message (the optional *Alert message* box), which leads the notification when a level is hit. Without one, the hit is worded as a liquidity trade: a move up through a level is a *Potential sell*, a move down through it a *Potential buy*.
+
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
 
 **Kite sessions.** An expired session isn't treated as an error. At market open, the scanner checks each user who has active alerts once. If Kite isn't connected or the session has died, it tells that user on all their ready channels (once a day) and skips them until they log in again. Scanning then resumes straight away.

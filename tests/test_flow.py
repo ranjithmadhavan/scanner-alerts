@@ -390,7 +390,7 @@ def test_levels_fire_one_at_a_time_and_the_rest_stay_on_watch(client, monkeypatc
     scanner.run_scan(now.replace(minute=3))
     done = store.get("alerts", a["id"])
     assert done["status"] == "triggered" and done["trigger_price"] == 1489 and len(sent) == 4
-    assert "That was the last level" in sent[3][1]
+    assert "That was the last level" in sent[3][1] and "Potential buy. INFY crossed below your level of 1489.9." in sent[3][1]
     assert "All 4 levels hit" in client.get("/alerts/list?tab=triggered").text
 
     # Watch again puts every level back on watch.
@@ -424,8 +424,18 @@ def test_two_levels_crossed_in_one_scan_send_two_messages(monkeypatch):
     scanner.run_scan(now)
     a = store.get("alerts", "m1")
     assert [lv["status"] for lv in a["levels"]] == ["hit", "hit", "active"] and a["status"] == "active"
-    assert [s for s, _ in sent] == ["🔔 INFY trades above 100", "🔔 INFY trades above 110"]
+    assert [s for s, _ in sent] == ["🔔 Potential sell: INFY trades above 100", "🔔 Potential sell: INFY trades above 110"]
+    assert sent[0][1].startswith("Potential sell. INFY crossed above your level of 100.\nPrice: 112 ")
     assert "Still watching: trades above 120" in sent[1][1]
+
+    # An alert with its own message leads with that instead of the buy/sell reading.
+    store.update("alerts", "m1", {"note": "Weekly high swept, look for shorts"})
+    FakeKite.candles = lambda self, token, tf, day: [Candle(now.replace(second=0), 111, 121, 111, 120)]
+    scanner.run_scan(now.replace(second=50))
+    subject, body = sent[2]
+    assert subject == "🔔 Weekly high swept, look for shorts: INFY trades above 120"
+    assert body.startswith("Weekly high swept, look for shorts\nINFY crossed above your level of 120.\nPrice: 121 ")
+    assert "Potential" not in subject + body and "That was the last level" in body
     store.delete("alerts", "m1")
 
 
@@ -489,12 +499,12 @@ def test_crosses_levels_on_both_sides_of_price(client, monkeypatch):
     # Price is at 1500. The level above fires on the way up; the one below is untouched at a low of 1489.
     scanner.run_scan(now)
     assert [lv["status"] for lv in store.get("alerts", a["id"])["levels"]] == ["hit", "active", "active"]
-    assert sent == ["🔔 INFY trades above 1510"]
+    assert sent == ["🔔 Potential sell: INFY trades above 1510"]
     # A fall through 1480 fires that level, in the other direction, on the same alert.
     low["v"] = 1478
     scanner.run_scan(now.replace(second=50))
     assert [lv["status"] for lv in store.get("alerts", a["id"])["levels"]] == ["hit", "hit", "active"]
-    assert sent[1] == "🔔 INFY trades below 1480"
+    assert sent[1] == "🔔 Potential buy: INFY trades below 1480"
     assert "Crosses" in client.get("/alerts/list?tab=active&q=").text
     store.delete("alerts", a["id"])
     prices._cache.clear()

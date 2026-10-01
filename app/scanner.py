@@ -197,17 +197,22 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
                        trigger_candle=candle.start.isoformat())
     store.update("alerts", alert["id"], changes)
     hit, alert = resolved(level_view(alert, levels[index]), price), {**alert, **changes}
-    subject = f"🔔 {describe(hit)}"
+    # The alert's own message leads if it has one. Otherwise read the hit as a liquidity trade:
+    # a push up through a level is a potential sell, a drop through it a potential buy.
+    up = hit["condition"] in ("high_above", "close_above")
+    custom = (alert.get("note") or "").strip()
+    signal = custom or ("Potential sell" if up else "Potential buy")
+    moved = ("closed" if uses_close(hit["condition"]) else "crossed") + (" above" if up else " below")
+    subject = f"🔔 {signal if len(signal) <= 60 else signal[:59] + '…'}: {describe(hit)}"
     body = (
-        f"{alert['symbol']} hit your level of {hit['level']:g}.\n"
+        f"{signal}{chr(10) if custom else '. '}{alert['symbol']} {moved} your level of {hit['level']:g}"
+        f"{' on the ' + hit['timeframe'] + ' candle' if uses_close(hit['condition']) else ''}.\n"
         f"Price: {price:g} (candle {candle.start.astimezone(IST):%-I:%M %p})\n"
         f"Time: {now:%d %b, %-I:%M %p} IST"
     )
     if len(levels) > 1:
         waiting = [describe(v).removeprefix(alert["symbol"] + " ") for _, v in open_views(alert)]
         body += f"\nStill watching: {', '.join(waiting)}" if waiting else "\nThat was the last level on this alert."
-    if alert.get("note"):
-        body += f"\nNote: {alert['note']}"
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
     store.put("events", new_id(), {
         "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
