@@ -2,9 +2,15 @@
 
 Telegram and WhatsApp are fully per-user (each user brings their own bot / CallMeBot key).
 Email is sent from one app-wide Gmail account configured in env; users only give an address.
+
+A channel can have several recipients, and every message goes to all of them. Telegram chat
+IDs and WhatsApp numbers are each saved as one comma-separated string (so a single recipient
+looks exactly as it always did). Email addresses are a list, `emails`, and an address only gets
+on it after its owner has confirmed a code we emailed to it (see routes/notifications.py).
 """
 
 import html
+import re
 import smtplib
 from email.message import EmailMessage
 
@@ -27,18 +33,47 @@ def sender_ready(channel: str) -> bool:
     return True  # Telegram and CallMeBot need nothing app-wide
 
 
+MAX_RECIPIENTS = 10
+
+
 def load_contacts(username: str) -> dict:
     return store.get("contacts", username) or {}
 
 
+def split_list(value: str | None) -> list[str]:
+    """The recipients in a saved (or typed) comma-separated string, without repeats."""
+    return list(dict.fromkeys(v for v in re.split(r"[,;\s]+", value or "") if v))
+
+
+def whatsapp_recipients(contacts: dict) -> list[tuple[str, str]]:
+    """(number, CallMeBot key) pairs. Each number has its own key, saved in the same order."""
+    phones = split_list(contacts.get("whatsapp_phone"))
+    keys = split_list(decrypt(contacts.get("whatsapp_apikey") or ""))
+    return list(zip(phones, keys)) if len(phones) == len(keys) else []
+
+
 def recipient_ready(channel: str, contacts: dict) -> bool:
     if channel == "telegram":
-        return bool(contacts.get("telegram_bot_token") and contacts.get("telegram_chat_id"))
+        return bool(contacts.get("telegram_bot_token") and split_list(contacts.get("telegram_chat_id")))
     if channel == "email":
-        return bool(contacts.get("email"))
+        return bool(contacts.get("emails"))
     if channel == "whatsapp":
-        return bool(contacts.get("whatsapp_phone") and contacts.get("whatsapp_apikey"))
+        return bool(whatsapp_recipients(contacts))
     return False
+
+
+def _to_each(recipients: list, send_one, name=str) -> None:
+    """Send to every recipient even if some fail, then report the ones that failed."""
+    failed = []
+    for r in recipients:
+        try:
+            send_one(r)
+        except Exception as e:
+            if len(recipients) == 1:
+                raise
+            failed.append(f"{name(r)}: {str(e) or e.__class__.__name__}")
+    if failed:
+        raise RuntimeError(f"Reached {len(recipients) - len(failed)} of {len(recipients)}. " + "; ".join(failed))
 
 
 def _telegram_call(method: str, bot_token: str, **kwargs) -> httpx.Response:
@@ -66,10 +101,13 @@ def _telegram_error(r: httpx.Response) -> str:
 
 
 def _telegram(contacts: dict, subject: str, body: str) -> None:
-    r = _telegram_call("POST", decrypt(contacts["telegram_bot_token"]), path="sendMessage",
-                       json={"chat_id": contacts["telegram_chat_id"], "text": f"{subject}\n\n{body}"})
-    if r.status_code != 200:
-        raise RuntimeError(_telegram_error(r))
+    token = decrypt(contacts["telegram_bot_token"])
+
+    def one(chat_id: str) -> None:
+        r = _telegram_call("POST", token, path="sendMessage", json={"chat_id": chat_id, "text": f"{subject}\n\n{body}"})
+        if r.status_code != 200:
+            raise RuntimeError(_telegram_error(r))
+    _to_each(split_list(contacts["telegram_chat_id"]), one)
 
 
 def email_provider() -> str | None:
@@ -125,25 +163,23 @@ def _email_smtp(to: str, subject: str, body: str) -> None:
         s.send_message(msg)
 
 
+def send_email(to: str, subject: str, body: str) -> None:
+    """One email to one address, verified or not. Raises on failure."""
+    (_email_brevo if email_provider() == "brevo" else _email_smtp)(to, subject, body)
+
+
 def _email(contacts: dict, subject: str, body: str) -> None:
-    if email_provider() == "brevo":
-        _email_brevo(contacts["email"], subject, body)
-    else:
-        _email_smtp(contacts["email"], subject, body)
+    # Verified addresses only, and one email each so recipients don't see each other.
+    _to_each(contacts["emails"], lambda to: send_email(to, subject, body))
 
 
 def _whatsapp(contacts: dict, subject: str, body: str) -> None:
-    r = httpx.get(
-        "https://api.callmebot.com/whatsapp.php",
-        params={
-            "phone": contacts["whatsapp_phone"],
-            "text": f"*{subject}*\n{body}",
-            "apikey": decrypt(contacts["whatsapp_apikey"]),
-        },
-        timeout=20,
-    )
-    if r.status_code != 200 or "ERROR" in r.text.upper():
-        raise RuntimeError(r.text[:200] or f"HTTP {r.status_code}")
+    def one(recipient: tuple[str, str]) -> None:
+        r = httpx.get("https://api.callmebot.com/whatsapp.php", timeout=20,
+                      params={"phone": recipient[0], "text": f"*{subject}*\n{body}", "apikey": recipient[1]})
+        if r.status_code != 200 or "ERROR" in r.text.upper():
+            raise RuntimeError(r.text[:200] or f"HTTP {r.status_code}")
+    _to_each(whatsapp_recipients(contacts), one, name=lambda recipient: recipient[0])
 
 
 def telegram_bot_info(bot_token: str) -> dict:
@@ -172,14 +208,15 @@ def telegram_find_chat(bot_token: str) -> dict | None:
 
 def configured(channel: str, contacts: dict) -> bool:
     """Has the user saved anything for this channel (even if it isn't complete yet)?"""
-    keys = {"telegram": ("telegram_bot_token", "telegram_chat_id"), "email": ("email",),
+    keys = {"telegram": ("telegram_bot_token", "telegram_chat_id"), "email": ("emails", "email_pending", "email"),
             "whatsapp": ("whatsapp_phone", "whatsapp_apikey")}[channel]
     return any(contacts.get(k) for k in keys)
 
 
 CHANNEL_FIELDS = {
-    "telegram": ["telegram_bot_token", "telegram_bot_username", "telegram_bot_name", "telegram_chat_id", "telegram_chat_name"],
-    "email": ["email"],
+    "telegram": ["telegram_bot_token", "telegram_bot_username", "telegram_bot_name", "telegram_chat_id", "telegram_chat_name",
+                 "telegram_chat_names"],
+    "email": ["email", "emails", "email_pending"],  # "email" is the pre-verification field
     "whatsapp": ["whatsapp_phone", "whatsapp_apikey"],
 }
 

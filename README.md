@@ -42,11 +42,17 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 **Levels.** An alert can hold up to 10 levels, each with its own condition. A level sends one message when it is hit and is then switched off; the other levels stay on watch. When the last level has fired the alert moves to *Triggered* and waits there until the user taps **Watch again**, which puts every level back on watch. Alerts saved before this (a single `level` and `condition` on the document) are read as one-level alerts.
 
+**Editing.** The pencil on an alert opens an edit panel: add levels, change or remove existing ones, tick *Watch again* on a level that has fired, and change the candle timeframe or message. Levels left untouched keep their state. If anything was added, changed or re-armed, the alert is re-armed from that moment, so a new level can't fire on a move that happened before it was added.
+
 **Instruments.** Kite's public lists for NSE, BSE, NFO and BFO are loaded at start and refreshed every 4 hours, so newly listed futures and options show up in the search the same day. NSE symbols are plain (`INFY`); the others carry their exchange (`BSE:SENSEX`, `NFO:NIFTY26OCT24500CE`). The search matches every word against the symbol and a spelled-out name, so `nifty 24500 ce` or `sensex oct fut` finds contracts. An alert on a contract is paused once the contract has expired.
 
 **Price and chart.** Picking a stock shows its last price and the day's change. **View chart** (and the chart icon on each alert) opens a side panel with 1D/5D/1M/6M/1Y candles and your levels drawn in. Data comes from the user's own Kite session and is cached briefly (`app/prices.py`). The chart is drawn with TradingView's Lightweight Charts, loaded from jsDelivr on first use.
 
 **Alert message.** Each alert can carry its own message (the optional *Alert message* box), which leads the notification when a level is hit. Without one, the hit is worded as a liquidity trade: a move up through a level is a *Potential sell*, a move down through it a *Potential buy*.
+
+**Several recipients.** Each channel can send to up to 10 recipients: several Telegram chats or groups on the user's bot, several email addresses (one email each), several WhatsApp numbers (each with its own CallMeBot key). Every alert on that channel goes to all of them.
+
+**Confirmed email addresses.** An email address is added on its own and only after its owner enters a 6-digit code we email to it (valid 10 minutes, 5 tries, one resend a minute; only a hash of the code is stored). Alerts go to confirmed addresses only. An address saved before this existed is shown as not confirmed and receives nothing until it is.
 
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
 

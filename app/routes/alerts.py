@@ -336,6 +336,75 @@ def rearm(request: Request, alert_id: str, user: dict = Depends(guard)):
     return HTMLResponse(status_code=404)
 
 
+@router.get("/{alert_id}/edit")
+def edit_form(request: Request, alert_id: str, user: dict = Depends(guard)):
+    a = _own(alert_id, user)
+    if not a:
+        return HTMLResponse(status_code=404)
+    return render(request, "partials/alert_edit.html", {
+        "a": a, "levels": levels_of(a), "conditions": CONDITIONS, "max_levels": MAX_LEVELS,
+        "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"]})
+
+
+@router.post("/{alert_id}/edit")
+def edit(
+    request: Request,
+    alert_id: str,
+    user: dict = Depends(guard),
+    extra_index: list[str] = Form([]),
+    extra_condition: list[str] = Form([]),
+    extra_level: list[str] = Form([]),
+    rearm: list[str] = Form([]),
+    timeframe: str = Form("15m"),
+    note: str = Form(""),
+):
+    """Save the Edit panel: levels changed, removed, added or put back on watch."""
+    a = _own(alert_id, user)
+    if not a:
+        return HTMLResponse(status_code=404)
+    old, levels, fresh = levels_of(a), [], False
+    for index, cond, raw in zip(extra_index, extra_condition, extra_level):
+        if not raw.strip():
+            continue  # a row that was added and left empty
+        try:
+            price = float(raw)
+        except ValueError:
+            return fail(f"{raw.strip()[:20]} isn't a price.")
+        if cond not in CONDITIONS:
+            return fail("Choose when each level should fire.")
+        if not 0 < price < float("inf"):
+            return fail("Enter a price level above zero.")
+        if any((lv["condition"], lv["level"]) == (cond, price) for lv in levels):
+            continue  # the same level entered twice counts once
+        was = old[int(index)] if index.isdigit() and int(index) < len(old) else None
+        # A level left as it was keeps its state, fired or waiting. Anything new or changed starts watching now.
+        if was and (was["condition"], float(was["level"])) == (cond, price) and not (was["status"] == "hit" and index in rearm):
+            levels.append(was)
+        else:
+            levels.append({"level": price, "condition": cond, "status": "active"})
+            fresh = True
+    if not levels:
+        return fail("An alert needs at least one level. Remove the alert if you no longer want it.")
+    if len(levels) > MAX_LEVELS:
+        return fail(f"An alert can have up to {MAX_LEVELS} levels.")
+    closes = any(uses_close(lv["condition"]) for lv in levels)
+    if closes and timeframe not in TIMEFRAMES:
+        return fail("Choose a candle timeframe.")
+    changes = {"levels": levels, "timeframe": timeframe if closes else "", "note": note.strip()[:140]}
+    waiting = any(lv["status"] == "active" for lv in levels)
+    if fresh:
+        # Re-arm from now so a new level can't fire on a move that happened before it was added.
+        changes["armed_at"] = now_ist().isoformat()
+        changes["armed_price"] = _armed_price(user["username"], {**a, **changes})
+    if a["status"] == "triggered" and waiting:
+        changes.update(status="active", triggered_at=None, trigger_price=None)
+    elif a["status"] == "active" and not waiting:  # only fired levels are left
+        last = max(levels, key=lambda lv: lv.get("hit_at") or "")
+        changes.update(status="triggered", triggered_at=last.get("hit_at"), trigger_price=last.get("hit_price"))
+    store.update("alerts", alert_id, changes)
+    return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} alert updated")
+
+
 @router.post("/{alert_id}/pause")
 def pause(request: Request, alert_id: str, user: dict = Depends(guard)):
     if a := _own(alert_id, user):

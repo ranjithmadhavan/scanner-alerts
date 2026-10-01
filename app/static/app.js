@@ -24,40 +24,48 @@ function setMenu(open) {
 document.getElementById("menu")?.addEventListener("click", () => setMenu(true));
 scrim?.addEventListener("click", () => setMenu(false));
 
-// Alert form: timeframe only matters when some level uses "closes above/below".
+// Level forms (New alert, and the Edit panel loaded later): rows of condition + price.
+// The candle timeframe only matters when some level uses a "closes" condition.
 (() => {
-  const form = document.getElementById("new-alert");
-  const tf = document.getElementById("timeframe-field");
-  if (!form || !tf) return;
-  const extras = document.getElementById("extra-levels");
-  const addBtn = form.querySelector("[data-add-level]");
-  const firstCondition = () => form.querySelector('[name="condition"]:checked')?.value || "";
-
-  function sync() {
-    const chosen = [firstCondition(), ...[...extras.querySelectorAll('[name="extra_condition"]')].map((s) => s.value)];
-    tf.hidden = !chosen.some((c) => c.startsWith("close_"));
-    addBtn.hidden = extras.children.length >= Number(addBtn.dataset.max);
+  function sync(form) {
+    const extras = form.querySelector("[data-extra-levels]");
+    const tf = form.querySelector("[data-timeframe-field]");
+    const addBtn = form.querySelector("[data-add-level]");
+    const chosen = [...form.querySelectorAll('[name="condition"]:checked, [name="extra_condition"]')].map((el) => el.value);
+    if (tf) tf.hidden = !chosen.some((c) => c.startsWith("close_"));
+    if (addBtn) addBtn.hidden = extras.children.length >= Number(addBtn.dataset.max);
   }
+  const syncAll = () => document.querySelectorAll(".level-form").forEach(sync);
 
-  form.addEventListener("change", (e) => {
-    if (e.target.name === "condition" || e.target.name === "extra_condition") sync();
+  document.addEventListener("change", (e) => {
+    const form = e.target.closest(".level-form");
+    if (form && (e.target.name === "condition" || e.target.name === "extra_condition")) sync(form);
   });
-  form.addEventListener("levels:changed", sync); // the form was cleared after saving
+  document.addEventListener("levels:changed", (e) => sync(e.target)); // the form was cleared after saving
 
-  // More levels on the same alert: each row is a condition and a price.
-  form.addEventListener("click", (e) => {
+  document.addEventListener("click", (e) => {
+    const form = e.target.closest(".level-form");
+    if (!form) return;
+    const extras = form.querySelector("[data-extra-levels]");
     if (e.target.closest("[data-add-level]")) {
       const row = document.getElementById("extra-level-row").content.firstElementChild.cloneNode(true);
-      row.querySelector("select").value = firstCondition();
+      // Start from the condition already in use: the form's main choice, or the last row's.
+      const last = [...form.querySelectorAll('[name="condition"]:checked, select[name="extra_condition"]')].pop();
+      if (last) row.querySelector("select").value = last.value;
       extras.appendChild(row);
-      row.querySelector("input").focus();
+      row.querySelector("input.level-input").focus();
     } else if (e.target.closest("[data-remove-level]")) {
       e.target.closest(".extra-level").remove();
       form.dispatchEvent(new CustomEvent("levels:input")); // redraw the chart lines without this level
     } else return;
-    sync();
+    sync(form);
   });
-  sync();
+  document.addEventListener("htmx:afterSwap", syncAll); // the Edit panel arrives by htmx
+  document.addEventListener("keydown", (e) => {
+    const editor = document.getElementById("alert-editor");
+    if (e.key === "Escape" && editor?.children.length) editor.innerHTML = "";
+  });
+  syncAll();
 })();
 
 // Copy-to-clipboard buttons

@@ -86,6 +86,8 @@
 {% macro actions(a) -%}
   <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
           data-chart="{{ a.key }}" data-levels="{{ a.levels|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
+  <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Edit {{ a.symbol }} alert" title="Edit or add levels"
+          hx-get="/alerts/{{ a.id }}/edit" hx-target="#alert-editor" hx-swap="innerHTML">{{ icon('edit', 'h-4 w-4') }}</button>
   {% if a.status == 'active' %}
     <button class="rounded-full p-2 text-ink-soft/80 transition hover:bg-canvas hover:text-ink" title="Pause" aria-label="Pause {{ a.symbol }} alert"
             hx-post="/alerts/{{ a.id }}/pause" hx-target="#alert-list" hx-swap="outerHTML">{{ icon('pause', 'h-4 w-4') }}</button>

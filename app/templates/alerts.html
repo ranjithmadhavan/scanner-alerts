@@ -18,9 +18,9 @@
 </a>
 {% endif %}
 
-<form id="new-alert" class="panel mt-8 shadow-soft"
+<form id="new-alert" class="level-form panel mt-8 shadow-soft"
       hx-post="/alerts" hx-target="#alert-list" hx-swap="outerHTML"
-      hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('#extra-levels').innerHTML=''; this.dispatchEvent(new Event('levels:changed')); this.querySelector('[name=note]').value=''; this.querySelector('[name=symbol]').select(); }">
+      hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('#extra-levels').innerHTML=''; this.dispatchEvent(new Event('levels:changed', {bubbles: true})); this.querySelector('[name=note]').value=''; this.querySelector('[name=symbol]').select(); }">
   <details id="new-alert-panel" class="group/new" {{ 'open' if not total }}>
   <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
     <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white transition group-open/new:rotate-45">{{ icon('plus', 'h-4 w-4') }}</span>
@@ -74,7 +74,7 @@
 
   {# Extra levels on the same alert. Each fires once on its own; the rest keep watching. #}
   <div class="mt-4">
-    <div id="extra-levels" class="space-y-2"></div>
+    <div id="extra-levels" data-extra-levels class="space-y-2"></div>
     <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
       <button type="button" data-add-level data-max="{{ max_levels - 1 }}"
               class="inline-flex items-center gap-1.5 rounded-full border border-dashed border-line px-3 py-1.5 text-sm font-medium text-peacock transition hover:border-peacock/40 hover:bg-peacock-50">
@@ -84,6 +84,7 @@
     </div>
     <template id="extra-level-row">
       <div class="extra-level arrive flex items-center gap-2">
+        <input type="hidden" name="extra_index" value="new">
         <select name="extra_condition" aria-label="When this level should fire" class="field w-auto py-2 pr-9 text-sm">
           {% for key, label in conditions.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
         </select>
@@ -96,7 +97,7 @@
   </div>
 
   <div class="mt-5 flex flex-col gap-5 sm:flex-row">
-    <div id="timeframe-field" class="sm:w-[180px] sm:shrink-0">
+    <div id="timeframe-field" data-timeframe-field class="sm:w-[180px] sm:shrink-0">
       <label for="timeframe" class="label">Candle</label>
       <select id="timeframe" name="timeframe" class="field">
         {% for tf in timeframes %}<option value="{{ tf }}" {{ 'selected' if tf == '15m' }}>{{ {'1h': '1 hour', '1d': 'Daily'}.get(tf, tf|replace('m', ' min')) }}</option>{% endfor %}
@@ -136,6 +137,7 @@
 </form>
 
 <div id="sim-result" aria-live="polite"></div>
+<div id="alert-editor"></div>
 
 {# Chart side panel, opened by any [data-chart] button (form and alert rows). #}
 <div id="chart-drawer" class="fixed inset-0 z-50" hidden>

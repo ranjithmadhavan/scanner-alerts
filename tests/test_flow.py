@@ -218,6 +218,8 @@ def test_quote_and_chart_endpoints(client, monkeypatch):
 def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
     from app.scanner import last_checked_at, last_prices
     login(client, "boss", "boss-pass-123")
+    # A fixed, market-closed moment: "next check" wording differs while a real session is open.
+    monkeypatch.setattr("app.routes.alerts.now_ist", lambda: datetime(2026, 9, 27, 12, 0, tzinfo=IST))
     base = {"user": "boss", "name": "X", "token": 1, "timeframe": "", "channels": [], "note": "",
             "armed_at": "2026-09-28T09:15:00+05:30"}
     rows = [
@@ -268,7 +270,7 @@ def test_email_via_brevo(monkeypatch):
     monkeypatch.setattr(config, "BREVO_API_KEY", "k-123")
     monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
     monkeypatch.setattr(notify.httpx, "post", fake_post)
-    store.put("contacts", "eve", {"email": "eve@example.com"})
+    store.put("contacts", "eve", {"emails": ["eve@example.com"]})
     assert notify.email_provider() == "brevo" and notify.sender_ready("email")
     assert notify.send("eve", ["email"], "INFY hit <1500>", "Line one\nLine two") == {"email": "sent"}
     assert posted["url"].endswith("/v3/smtp/email") and posted["headers"]["api-key"] == "k-123"
@@ -289,7 +291,7 @@ def test_email_test_reminds_about_spam(client, monkeypatch):
     monkeypatch.setattr(config, "BREVO_API_KEY", "k")
     monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
     monkeypatch.setitem(notify._SENDERS, "email", lambda ct, s, b: None)
-    client.post("/notifications/email", data={"email": "boss@example.com"})
+    store.update("contacts", "boss", {"emails": ["boss@example.com"]})
     r = client.post("/notifications/email/test")
     assert "spam folder" in r.headers["HX-Trigger"]
     assert "Not spam" in r.text and "Test sent" in r.text
@@ -508,3 +510,198 @@ def test_crosses_levels_on_both_sides_of_price(client, monkeypatch):
     assert "Crosses" in client.get("/alerts/list?tab=active&q=").text
     store.delete("alerts", a["id"])
     prices._cache.clear()
+
+
+def test_several_recipients_per_channel(client, monkeypatch):
+    from app.security import decrypt
+    login(client, "boss", "boss-pass-123")
+    store.delete("contacts", "boss")
+    store.put("contacts", "boss", {})
+    monkeypatch.setattr(notify, "telegram_bot_info", lambda t: {"username": "alerts_bot", "name": "Alerts"})
+
+    # Telegram: each Find my chat ID adds the chat that last messaged the bot.
+    found = iter([{"id": "42", "name": "Ranjith"}, {"id": "-1007", "name": "Desk group"}, {"id": "42", "name": "Ranjith"}])
+    monkeypatch.setattr(notify, "telegram_find_chat", lambda t: next(found))
+    r = client.post("/notifications/telegram/detect", data={"telegram_bot_token": "123456:abcdefWXYZ"})
+    assert "Linked to Ranjith" in r.headers["HX-Trigger"]
+    r = client.post("/notifications/telegram/detect")
+    assert "Added Desk group" in r.headers["HX-Trigger"] and "Desk group" in r.text and "Chat ID -1007" in r.text
+    assert "already linked" in client.post("/notifications/telegram/detect").headers["HX-Trigger"]
+    assert store.get("contacts", "boss")["telegram_chat_id"] == "42, -1007"
+
+    calls = []
+
+    class Ok:
+        status_code = 200
+
+    class NotFound:
+        status_code = 400
+        def json(self):
+            return {"description": "Bad Request: chat not found"}
+
+    def telegram_api(method, token, **kw):
+        calls.append(kw["json"]["chat_id"])
+        return NotFound() if kw["json"]["chat_id"] == "999" else Ok()
+    monkeypatch.setattr(notify, "_telegram_call", telegram_api)
+    assert notify.send("boss", ["telegram"], "s", "b") == {"telegram": "sent"} and calls == ["42", "-1007"]
+
+    # Editing the box replaces the list; one bad chat doesn't stop the others.
+    client.post("/notifications/telegram", data={"telegram_chat_id": "42, 999 , -1007"})
+    calls.clear()
+    result = notify.send("boss", ["telegram"], "s", "b")["telegram"]
+    assert calls == ["42", "999", "-1007"] and result.startswith("Reached 2 of 3. 999: Telegram can't find that chat")
+    assert "Send test message to all 3" in client.get("/notifications").text
+
+    # Email: one message per confirmed address.
+    mails = []
+    monkeypatch.setattr(config, "BREVO_API_KEY", "k")
+    monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setattr(notify, "_email_brevo", lambda to, s, b: mails.append(to))
+    store.update("contacts", "boss", {"emails": ["a@example.com", "b@example.com"]})
+    assert notify.send("boss", ["email"], "s", "b") == {"email": "sent"} and mails == ["a@example.com", "b@example.com"]
+
+    # WhatsApp: every number has its own key. Adding a number only needs the new key.
+    client.post("/notifications/whatsapp", data={"whatsapp_phone": "+91 98765 43210", "whatsapp_apikey": "1111111"})
+    r = client.post("/notifications/whatsapp", data={"whatsapp_phone": "+919876543210, +91 91234 56789"})
+    assert "needs its own CallMeBot key" in r.headers["HX-Trigger"]
+    client.post("/notifications/whatsapp", data={"whatsapp_phone": "+919876543210, +91 91234 56789", "whatsapp_apikey": "2222222"})
+    saved = store.get("contacts", "boss")
+    assert saved["whatsapp_phone"] == "+919876543210, +919123456789" and decrypt(saved["whatsapp_apikey"]) == "1111111, 2222222"
+    hits = []
+
+    class Sent:
+        status_code, text = 200, "Message queued"
+    monkeypatch.setattr(notify.httpx, "get", lambda url, timeout, params: hits.append((params["phone"], params["apikey"])) or Sent())
+    assert notify.send("boss", ["whatsapp"], "s", "b") == {"whatsapp": "sent"}
+    assert hits == [("+919876543210", "1111111"), ("+919123456789", "2222222")]
+    store.delete("contacts", "boss")
+
+
+def test_email_address_is_confirmed_with_a_code_before_it_gets_alerts(client, monkeypatch):
+    import re
+    from app.routes import notifications
+    login(client, "boss", "boss-pass-123")
+    store.delete("contacts", "boss")
+    store.put("contacts", "boss", {"email": "Old@Example.com"})       # saved before codes existed
+    mails = []
+    monkeypatch.setattr(config, "BREVO_API_KEY", "k")
+    monkeypatch.setattr(config, "EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setattr(notify, "_email_brevo", lambda to, s, b: mails.append((to, s, b)))
+
+    def post(path="", **data):
+        return client.post("/notifications/email" + path, data=data)
+
+    def code_for(mail):
+        return re.search(r"\b(\d{6})\b", mail[2]).group(1)
+
+    # The old address gets nothing until it is confirmed, and the page says so.
+    assert notify.send("boss", ["email"], "s", "b") == {"email": "No recipient details saved"}
+    assert "Not confirmed, nothing is sent" in client.get("/notifications").text
+
+    # One address at a time, and a real one.
+    assert "one address at a time" in post(email="a@example.com, b@example.com").headers["HX-Trigger"]
+    assert "looks incomplete" in post(email="nope").headers["HX-Trigger"]
+    assert mails == []
+
+    r = post(email="A@Example.com", action="add")
+    assert "emailed a 6-digit code to a@example.com" in r.headers["HX-Trigger"] and 'name="code"' in r.text
+    assert mails[0][0] == "a@example.com" and code_for(mails[0]) in mails[0][1]
+    assert store.get("contacts", "boss").get("emails") is None                      # not added yet
+    assert code_for(mails[0]) not in str(store.get("contacts", "boss"))             # only a hash is kept
+    assert "Give it a minute" in post(email="a@example.com").headers["HX-Trigger"] and len(mails) == 1
+
+    wrong = "000000" if code_for(mails[0]) != "000000" else "111111"
+    assert "isn't right. 4 tries left" in post(code=wrong, action="confirm").headers["HX-Trigger"]
+    r = post(code=code_for(mails[0]), action="confirm")
+    assert "a@example.com is confirmed" in r.headers["HX-Trigger"] and "Confirmed" in r.text
+    assert store.get("contacts", "boss")["emails"] == ["a@example.com"]
+    assert "already confirmed" in post(email="a@example.com").headers["HX-Trigger"]
+
+    # Too many wrong guesses, or an old code, means asking for a new one.
+    post(email="b@example.com")
+    for _ in range(notifications.CODE_TRIES):
+        r = post(code=wrong if code_for(mails[1]) != wrong else "222222", action="confirm")
+    assert "Send a new one" in r.headers["HX-Trigger"]
+    assert "Too many wrong codes" in post(code=code_for(mails[1]), action="confirm").headers["HX-Trigger"]
+    pending = store.get("contacts", "boss")["email_pending"]
+    store.update("contacts", "boss", {"email_pending": {**pending, "tries": 0, "expires": "2020-01-01T00:00:00+05:30",
+                                                        "sent_at": "2020-01-01T00:00:00+05:30"}})
+    assert "expired" in post(code=code_for(mails[1]), action="confirm").headers["HX-Trigger"]
+    post(email="b@example.com")
+    post(code=code_for(mails[2]))                                                    # Enter in the code box
+    post(email="old@example.com")                                                    # confirm the legacy address too
+    post(code=code_for(mails[3]), action="confirm")
+    saved = store.get("contacts", "boss")
+    assert saved["emails"] == ["a@example.com", "b@example.com", "old@example.com"] and not saved.get("email")
+
+    mails.clear()
+    assert notify.send("boss", ["email"], "s", "b") == {"email": "sent"}
+    assert [m[0] for m in mails] == ["a@example.com", "b@example.com", "old@example.com"]
+
+    # Dropping one address leaves the others; cancelling a pending code adds nothing.
+    post("/drop", address="b@example.com")
+    post(email="c@example.com")
+    assert "Nothing was added" in post("/cancel").headers["HX-Trigger"]
+    saved = store.get("contacts", "boss")
+    assert saved["emails"] == ["a@example.com", "old@example.com"] and saved["email_pending"] is None
+    store.delete("contacts", "boss")
+
+
+def test_edit_alert_add_change_remove_and_rearm_levels(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    monkeypatch.setattr("app.routes.alerts._armed_price", lambda u, a: None)
+    hit = {"level": 1500.0, "condition": "cross", "status": "hit", "hit_at": "2026-09-28T10:00:00+05:30", "hit_price": 1502.5}
+    store.put("alerts", "e1", {
+        "id": "e1", "user": "boss", "symbol": "INFY", "name": "INFOSYS", "token": 1, "timeframe": "", "note": "",
+        "status": "active", "channels": [], "created_at": "2026-09-28", "armed_at": "2026-09-28T09:15:00+05:30",
+        "levels": [hit, {"level": 1400.0, "condition": "cross", "status": "active"},
+                   {"level": 1300.0, "condition": "low_below", "status": "active"}]})
+
+    form = client.get("/alerts/e1/edit").text
+    assert "Edit INFY alert" in form and 'value="1400"' in form and "hit at ₹1,502.50" in form and "Watch again" in form
+    assert client.get("/alerts/nope/edit").status_code == 404
+    assert 'hx-get="/alerts/e1/edit"' in client.get("/alerts/list?tab=all&q=").text
+
+    def save(rows, **more):
+        return client.post("/alerts/e1/edit", data={
+            "extra_index": [r[0] for r in rows], "extra_condition": [r[1] for r in rows],
+            "extra_level": [r[2] for r in rows], **more})
+
+    # Keep the fired level and 1400 as they are, drop 1300, add two new levels and a message.
+    r = save([("0", "cross", "1500"), ("1", "cross", "1400"), ("new", "close_cross", "1600"), ("new", "cross", "1650"),
+              ("new", "cross", "")], timeframe="5m", note="Range high")
+    assert "INFY alert updated" in r.headers["HX-Trigger"]
+    a = store.get("alerts", "e1")
+    assert a["levels"] == [hit, {"level": 1400.0, "condition": "cross", "status": "active"},
+                           {"level": 1600.0, "condition": "close_cross", "status": "active"},
+                           {"level": 1650.0, "condition": "cross", "status": "active"}]
+    assert (a["timeframe"], a["note"], a["status"]) == ("5m", "Range high", "active")
+    assert a["armed_at"] > "2026-09-28T09:15:00+05:30"       # new levels only count moves from now on
+
+    # Changing a level's price starts it afresh; nothing new means the arming time is left alone.
+    armed = a["armed_at"]
+    save([("0", "cross", "1500"), ("1", "cross", "1400"), ("2", "close_cross", "1600"), ("3", "cross", "1650")], timeframe="5m")
+    assert store.get("alerts", "e1")["armed_at"] == armed and store.get("alerts", "e1")["note"] == ""
+
+    # Removing every waiting level leaves a triggered alert; adding one to it puts it back on watch.
+    save([("0", "cross", "1500")])
+    a = store.get("alerts", "e1")
+    assert (a["status"], a["trigger_price"], a["timeframe"]) == ("triggered", 1502.5, "")
+    save([("0", "cross", "1500"), ("new", "high_above", "1700")])
+    a = store.get("alerts", "e1")
+    assert a["status"] == "active" and [lv["status"] for lv in a["levels"]] == ["hit", "active"]
+
+    # Watch again on the fired level re-arms just that one.
+    save([("0", "cross", "1500"), ("1", "high_above", "1700")], rearm=["0"])
+    assert store.get("alerts", "e1")["levels"][0] == {"level": 1500.0, "condition": "cross", "status": "active"}
+
+    assert save([("new", "cross", "")]).headers.get("HX-Reswap") == "none"          # no levels left
+    assert save([("new", "nope", "10")]).headers.get("HX-Reswap") == "none"
+    assert len(store.get("alerts", "e1")["levels"]) == 2
+
+    # Someone else's alert can't be opened or saved.
+    store.put("alerts", "e2", {**store.get("alerts", "e1"), "id": "e2", "user": "other"})
+    assert client.get("/alerts/e2/edit").status_code == 404
+    assert client.post("/alerts/e2/edit", data={"extra_index": ["new"], "extra_condition": ["cross"], "extra_level": ["1"]}).status_code == 404
+    store.delete("alerts", "e1")
+    store.delete("alerts", "e2")

@@ -44,30 +44,84 @@
            class="field font-mono text-sm" placeholder="{{ 'Paste a new token to replace the saved one' if contacts.telegram_bot_token else '123456789:AAF…' }}">
   </div>
   <div>
-    <label class="label" for="tg-chat">Chat ID</label>
+    <label class="label" for="tg-chat">Chat IDs</label>
     <div class="flex gap-2">
-      <input id="tg-chat" name="telegram_chat_id" value="{{ contacts.telegram_chat_id or '' }}" autocomplete="off" data-1p-ignore data-lpignore="true" inputmode="numeric" class="field num" placeholder="Filled in by Find my chat ID">
+      <input id="tg-chat" name="telegram_chat_id" value="{{ contacts.telegram_chat_id or '' }}" autocomplete="off" data-1p-ignore data-lpignore="true" class="field num" placeholder="Filled in by Find my chat ID">
       <button type="button" class="btn-outline htmx-busy shrink-0 px-4 text-sm" hx-post="/notifications/telegram/detect" hx-include="#tg-token" hx-target="#channels" hx-swap="outerHTML">Find my chat ID</button>
     </div>
-  </div>
-{% elif ch.key == 'email' %}
-  <div>
-    <label class="label" for="em">Email address</label>
-    <input id="em" name="email" type="email" autocomplete="email" value="{{ contacts.email or '' }}" class="field" placeholder="you@example.com" {{ 'disabled' if not ch.server_ready }}>
+    <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">To send to more people or a group: they message your bot (or you add it to the group), then tap Find my chat ID to add that chat. Several IDs are separated by commas; delete one here to stop sending to it.</p>
   </div>
 {% else %}
   <div>
-    <label class="label" for="wa">WhatsApp number</label>
-    <input id="wa" name="whatsapp_phone" type="tel" autocomplete="off" data-1p-ignore data-lpignore="true" value="{{ contacts.whatsapp_phone or '' }}" class="field num" placeholder="+91 98765 43210">
+    <label class="label" for="wa">WhatsApp numbers</label>
+    <input id="wa" name="whatsapp_phone" type="text" inputmode="tel" autocomplete="off" data-1p-ignore data-lpignore="true" value="{{ contacts.whatsapp_phone or '' }}" class="field num" placeholder="+91 98765 43210">
   </div>
   <div>
     <label class="label" for="wak">CallMeBot API key</label>
-    <input id="wak" name="whatsapp_apikey" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" class="field font-mono text-sm" placeholder="{{ 'Paste a new key to replace the saved one' if contacts.whatsapp_apikey else '1234567' }}">
+    <input id="wak" name="whatsapp_apikey" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" class="field font-mono text-sm" placeholder="{{ 'Keys for the numbers you are adding' if contacts.whatsapp_apikey else '1234567' }}">
+    <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">Separate several numbers with commas. Each number gets its own key from CallMeBot (steps 1 to 3, done from that phone): add the new numbers above and their keys here, in the same order.</p>
   </div>
 {% endif %}
 </div>
 <div class="mt-5"><button class="btn-primary htmx-busy px-4 py-2 text-sm" {{ 'disabled' if not ch.server_ready }}>Save</button></div>
 {%- endmacro %}
+{# Email: each address is added on its own and confirmed with a code before it receives anything. #}
+{% macro email_panel(ch) -%}
+  {% if emails or email_unverified %}
+  <ul class="space-y-2 rounded-2xl bg-canvas p-4 text-[15px]">
+    {% for address in emails %}
+    <li class="flex items-center gap-3">
+      <span class="min-w-0 flex-1 break-all font-semibold">{{ address }}</span>
+      <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-rise-50 px-2 py-0.5 text-xs font-medium text-rise">{{ icon('check', 'h-3 w-3') }} Confirmed</span>
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" title="Stop sending to this address" aria-label="Remove {{ address }}"
+              hx-post="/notifications/email/drop" hx-vals='{{ {"address": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML" hx-confirm="Stop sending alerts to {{ address }}?">{{ icon('trash', 'h-4 w-4') }}</button>
+    </li>
+    {% endfor %}
+    {% for address in email_unverified %}
+    <li class="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span class="min-w-0 flex-1 break-all font-semibold text-ink-soft">{{ address }}</span>
+      <span class="shrink-0 rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Not confirmed, nothing is sent</span>
+      <button type="button" class="btn-outline htmx-busy shrink-0 px-3 py-1 text-sm" hx-post="/notifications/email" hx-vals='{{ {"email": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">Send code</button>
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" title="Remove this address" aria-label="Remove {{ address }}"
+              hx-post="/notifications/email/drop" hx-vals='{{ {"address": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">{{ icon('trash', 'h-4 w-4') }}</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if emails and ch.server_ready %}
+  <div class="mt-4 flex flex-wrap items-center gap-2">
+    <button type="button" class="btn-primary htmx-busy px-4 py-2 text-sm" hx-post="/notifications/email/test" hx-target="#channels" hx-swap="outerHTML">
+      {{ icon('send', 'h-4 w-4') }} Send test message{{ ' to all ' ~ emails|length if emails|length > 1 }}
+    </button>
+  </div>
+  {{ test_status(ch.last_test, 'email') }}
+  {% endif %}
+
+  {% if email_pending %}
+  <div class="arrive {{ 'mt-5' if emails or email_unverified }} rounded-2xl border border-marigold/30 bg-marigold-50 p-4">
+    <p class="text-[15px]">We emailed a 6-digit code to <strong class="break-all font-semibold">{{ email_pending.address }}</strong>.</p>
+    <p class="mt-0.5 text-sm text-ink-soft">Enter it here to confirm the address. The code works until {{ email_pending.expires|ist('%-I:%M %p') }}. Check spam if you don't see it.</p>
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <input id="em-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" aria-label="6-digit code"
+             class="field num w-32 bg-white text-center text-lg font-semibold tracking-[0.3em]">
+      <button name="action" value="confirm" class="btn-primary htmx-busy px-4 py-2 text-sm">Confirm</button>
+      <button type="button" class="btn-quiet htmx-busy px-3 py-2 text-sm" hx-post="/notifications/email" hx-vals='{{ {"email": email_pending.address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">Send again</button>
+      <button type="button" class="btn-quiet px-3 py-2 text-sm" hx-post="/notifications/email/cancel" hx-target="#channels" hx-swap="outerHTML">Cancel</button>
+    </div>
+  </div>
+  {% else %}
+  <div class="{{ 'mt-5 border-t border-line pt-4' if emails or email_unverified }}">
+    <label class="label" for="em">{{ 'Add another address' if emails else 'Email address' }}</label>
+    <div class="flex gap-2">
+      <input id="em" name="email" type="email" autocomplete="off" spellcheck="false" class="field" placeholder="you@example.com" {{ 'disabled' if not ch.server_ready }}>
+      <button name="action" value="add" class="btn-primary htmx-busy shrink-0 px-4 py-2 text-sm" {{ 'disabled' if not ch.server_ready }}>Send code</button>
+    </div>
+    <p class="mt-1.5 text-[13px] text-ink-soft">We email a 6-digit code to the address. It is added once you enter the code here.</p>
+  </div>
+  {% endif %}
+{%- endmacro %}
+
 {% set link = 'font-medium text-peacock underline decoration-peacock/30 underline-offset-2 hover:decoration-peacock' %}
 
 <div id="channels" class="mt-8 space-y-5">
@@ -93,7 +147,12 @@
           'Tap <strong class="text-ink">Find my chat ID</strong>. We fill it in for you.',
         ]) }}
       {% elif ch.key == 'email' %}
-        <p class="text-sm leading-relaxed text-ink-soft">Emails come from the app's own sender address, so you only need to give yours. Check your spam folder the first time, and mark it as not spam if it lands there.</p>
+        {{ steps([
+          'Type an email address and tap <strong class="text-ink">Send code</strong>.',
+          'Open that inbox and find the 6-digit code. Check spam the first time, and mark it as not spam if it lands there.',
+          'Enter the code here. Alerts only go to addresses confirmed this way.',
+          'Repeat for each address you want alerts sent to.',
+        ]) }}
         {% if not ch.server_ready %}<p class="mt-3 text-sm text-marigold-dark">Email isn't set up on the server yet. Ask your administrator to add a Brevo API key.</p>{% endif %}
       {% else %}
         {{ steps([
@@ -107,29 +166,36 @@
     </div>
 
     <div class="flex flex-col">
-    {% if ch.configured %}
+    {% if ch.key == 'email' %}
+      {{ email_panel(ch) }}
+    {% elif ch.configured %}
       {# What's saved, in plain words. Secrets only show their last characters. #}
       <dl class="space-y-2.5 rounded-2xl bg-canvas p-4 text-[15px]">
       {% if ch.key == 'telegram' %}
         {{ row('Bot', ('@' ~ contacts.telegram_bot_username) if contacts.telegram_bot_username else ('Token ending ' ~ hints.telegram if hints.telegram else 'Saved'), contacts.telegram_bot_name) }}
-        {{ row('Sends to', contacts.telegram_chat_name or contacts.telegram_chat_id, ('Chat ID ' ~ contacts.telegram_chat_id) if contacts.telegram_chat_name else '', missing='Not linked yet. Message your bot, then tap Find my chat ID.' if not contacts.telegram_chat_id) }}
+        {% for chat in telegram_chats %}
+        {{ row('Sends to' if loop.first else '', chat.name or chat.id, ('Chat ID ' ~ chat.id) if chat.name else '') }}
+        {% else %}
+        {{ row('Sends to', '', missing='Not linked yet. Message your bot, then tap Find my chat ID.') }}
+        {% endfor %}
         {% if hints.telegram and contacts.telegram_bot_username %}{{ row('Token', '••••' ~ hints.telegram) }}{% endif %}
-      {% elif ch.key == 'email' %}
-        {{ row('Sends to', contacts.email) }}
       {% else %}
-        {{ row('Sends to', contacts.whatsapp_phone, missing='Add your number' if not contacts.whatsapp_phone) }}
-        {{ row('API key', ('••••' ~ hints.whatsapp) if hints.whatsapp else ('Saved' if contacts.whatsapp_apikey else ''), missing='Add your CallMeBot key' if not contacts.whatsapp_apikey) }}
+        {% for phone in (contacts.whatsapp_phone or '').split(', ') %}{{ row('Sends to' if loop.first else '', phone, missing='Add your number' if not contacts.whatsapp_phone) }}{% endfor %}
+        {{ row('API key' ~ ('s' if count.whatsapp > 1), hints.whatsapp or ('Saved' if contacts.whatsapp_apikey else ''), missing='Add your CallMeBot key' if not contacts.whatsapp_apikey else ('Add a key for each number' if not ch.ready else '')) }}
       {% endif %}
       </dl>
 
       <div class="mt-4 flex flex-wrap items-center gap-2">
         {% if ch.ready and ch.server_ready %}
         <button type="button" class="btn-primary htmx-busy px-4 py-2 text-sm" hx-post="/notifications/{{ ch.key }}/test" hx-target="#channels" hx-swap="outerHTML">
-          {{ icon('send', 'h-4 w-4') }} Send test message
+          {{ icon('send', 'h-4 w-4') }} Send test message{{ ' to all ' ~ count[ch.key] if count[ch.key] > 1 }}
         </button>
         {% endif %}
         {% if ch.key == 'telegram' and not contacts.telegram_chat_id %}
         <button type="button" class="btn-primary htmx-busy px-4 py-2 text-sm" hx-post="/notifications/telegram/detect" hx-target="#channels" hx-swap="outerHTML">Find my chat ID</button>
+        {% elif ch.key == 'telegram' %}
+        <button type="button" class="btn-outline htmx-busy px-4 py-2 text-sm" hx-post="/notifications/telegram/detect" hx-target="#channels" hx-swap="outerHTML"
+                title="The chat that most recently messaged your bot is added">{{ icon('plus', 'h-4 w-4') }} Add another chat</button>
         {% endif %}
         <button type="button" class="btn-quiet px-4 py-2 text-sm hover:bg-fall-50 hover:text-fall" hx-post="/notifications/{{ ch.key }}/remove" hx-target="#channels" hx-swap="outerHTML" hx-confirm="Remove your {{ ch.label }} details?">Remove</button>
       </div>
