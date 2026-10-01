@@ -24,12 +24,41 @@ function setMenu(open) {
 document.getElementById("menu")?.addEventListener("click", () => setMenu(true));
 scrim?.addEventListener("click", () => setMenu(false));
 
-// Alert form: timeframe only matters for "closes above/below".
-document.addEventListener("change", (e) => {
-  if (e.target.name !== "condition") return;
+// Alert form: timeframe only matters when some level uses "closes above/below".
+(() => {
+  const form = document.getElementById("new-alert");
   const tf = document.getElementById("timeframe-field");
-  if (tf) tf.hidden = !e.target.value.startsWith("close_");
-});
+  if (!form || !tf) return;
+  const extras = document.getElementById("extra-levels");
+  const addBtn = form.querySelector("[data-add-level]");
+  const firstCondition = () => form.querySelector('[name="condition"]:checked')?.value || "";
+
+  function sync() {
+    const chosen = [firstCondition(), ...[...extras.querySelectorAll('[name="extra_condition"]')].map((s) => s.value)];
+    tf.hidden = !chosen.some((c) => c.startsWith("close_"));
+    addBtn.hidden = extras.children.length >= Number(addBtn.dataset.max);
+  }
+
+  form.addEventListener("change", (e) => {
+    if (e.target.name === "condition" || e.target.name === "extra_condition") sync();
+  });
+  form.addEventListener("levels:changed", sync); // the form was cleared after saving
+
+  // More levels on the same alert: each row is a condition and a price.
+  form.addEventListener("click", (e) => {
+    if (e.target.closest("[data-add-level]")) {
+      const row = document.getElementById("extra-level-row").content.firstElementChild.cloneNode(true);
+      row.querySelector("select").value = firstCondition();
+      extras.appendChild(row);
+      row.querySelector("input").focus();
+    } else if (e.target.closest("[data-remove-level]")) {
+      e.target.closest(".extra-level").remove();
+      form.dispatchEvent(new CustomEvent("levels:input")); // redraw the chart lines without this level
+    } else return;
+    sync();
+  });
+  sync();
+})();
 
 // Copy-to-clipboard buttons
 document.addEventListener("click", async (e) => {
@@ -132,8 +161,8 @@ const StockChart = (() => {
   const box = document.getElementById("chart");
   const msg = document.getElementById("chart-msg");
   const levelNote = document.getElementById("chart-level");
-  let chart, series, levelLine, lastFocus, request = 0;
-  const state = { symbol: "", range: "1D", level: null };
+  let chart, series, levelLines = [], lastFocus, request = 0;
+  const state = { symbol: "", range: "1D", levels: [] };
   const rupees = (p) => "₹" + p.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   function loadLib() {
@@ -159,29 +188,33 @@ const StockChart = (() => {
     series = chart.addCandlestickSeries({
       upColor: "#2E8B57", downColor: "#C2475A", borderVisible: false,
       wickUpColor: "#2E8B57", wickDownColor: "#C2475A",
-      // Stretch the price axis so the level line is always on screen, even far from price.
+      // Stretch the price axis so every level line is on screen, even far from price.
       autoscaleInfoProvider: (original) => {
         const res = original();
-        if (res && state.level) {
-          res.priceRange.minValue = Math.min(res.priceRange.minValue, state.level);
-          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, state.level);
+        if (res && state.levels.length) {
+          res.priceRange.minValue = Math.min(res.priceRange.minValue, ...state.levels);
+          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, ...state.levels);
         }
         return res;
       },
     });
   }
 
-  function setLevel(level) {
-    state.level = level > 0 ? level : null;
-    if (levelLine && series) { series.removePriceLine(levelLine); levelLine = null; }
-    levelNote.hidden = !state.level;
-    if (!state.level) { chart?.priceScale("right").applyOptions({ autoScale: true }); return; }
-    levelNote.lastElementChild.textContent = "Your level " + rupees(state.level);
+  const parseLevels = (values) => [...new Set(values.map(parseFloat).filter((v) => v > 0))];
+
+  function setLevels(levels) {
+    state.levels = levels;
+    if (series) levelLines.forEach((line) => series.removePriceLine(line));
+    levelLines = [];
+    levelNote.hidden = !levels.length;
+    if (!levels.length) { chart?.priceScale("right").applyOptions({ autoScale: true }); return; }
+    levelNote.lastElementChild.textContent =
+      (levels.length > 1 ? "Your levels " : "Your level ") + levels.map(rupees).join(", ");
     if (series) {
-      levelLine = series.createPriceLine({
-        price: state.level, color: "#E9A23B", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Level",
-      });
-      chart.priceScale("right").applyOptions({ autoScale: true }); // re-fit to include the new level
+      levelLines = levels.map((price) => series.createPriceLine({
+        price, color: "#E9A23B", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Level",
+      }));
+      chart.priceScale("right").applyOptions({ autoScale: true }); // re-fit to include the levels
     }
   }
 
@@ -196,10 +229,11 @@ const StockChart = (() => {
       if (mine !== request) return; // a newer request superseded this one
       if (!r.ok) throw new Error(data.error || "Couldn't load the chart.");
       if (!chart) build();
+      document.getElementById("chart-title").textContent = data.symbol;
       document.getElementById("chart-name").textContent = data.name || "";
       chart.applyOptions({ timeScale: { timeVisible: !data.daily, secondsVisible: false } });
       series.setData(data.candles);
-      setLevel(state.level);
+      setLevels(state.levels);
       chart.timeScale().fitContent();
       msg.textContent = data.candles.length ? "" : "Kite has no candles for this range.";
     } catch (e) {
@@ -207,10 +241,10 @@ const StockChart = (() => {
     }
   }
 
-  function open(symbol, level) {
+  function open(symbol, levels) {
     lastFocus = document.activeElement;
     state.symbol = symbol;
-    state.level = level;
+    state.levels = levels;
     document.getElementById("chart-title").textContent = symbol;
     document.getElementById("chart-name").textContent = "";
     if (series) series.setData([]);
@@ -235,19 +269,23 @@ const StockChart = (() => {
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !drawer.hidden) close(); });
 
-  // Any [data-chart] button opens the panel; the level comes from data-level or a form field.
+  // Any [data-chart] button opens the panel; levels come from data-levels or the form's level fields.
+  const fieldLevels = (selector) => parseLevels([...document.querySelectorAll(selector)].map((el) => el.value));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-chart]");
     if (!btn) return;
-    const from = btn.dataset.levelFrom && document.querySelector(btn.dataset.levelFrom);
-    open(btn.dataset.chart, parseFloat(btn.dataset.level || from?.value || "") || null);
+    open(btn.dataset.chart, btn.dataset.levels ? parseLevels(btn.dataset.levels.split(","))
+      : fieldLevels(btn.dataset.levelsFrom));
   });
 
-  // Typing a level in the form moves the line live.
-  document.getElementById("level")?.addEventListener("input", (e) => {
+  // Typing a level in the form (or removing a row) moves the lines live.
+  const form = document.getElementById("new-alert");
+  function fromForm() {
     const formSymbol = document.getElementById("symbol")?.value.trim().toUpperCase();
-    if (!drawer.hidden && formSymbol === state.symbol) setLevel(parseFloat(e.target.value) || null);
-  });
+    if (!drawer.hidden && formSymbol === state.symbol) setLevels(fieldLevels("#new-alert .level-input"));
+  }
+  form?.addEventListener("input", (e) => { if (e.target.classList.contains("level-input")) fromForm(); });
+  form?.addEventListener("levels:input", fromForm);
 
   return { open, close };
 })();

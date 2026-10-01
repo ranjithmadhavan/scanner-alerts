@@ -15,8 +15,10 @@ from app.store import store
 def client(monkeypatch):
     monkeypatch.setattr(config, "SUPERADMIN_USERNAME", "boss")
     monkeypatch.setattr(config, "SUPERADMIN_PASSWORD", "boss-pass-123")
-    monkeypatch.setattr(kite, "instruments", lambda: {"INFY": Instrument("INFY", "INFOSYS", 408065, False)})
-    monkeypatch.setattr("app.routes.alerts.instruments", kite.instruments)
+    listed = [Instrument("INFY", "INFOSYS", 408065, False),
+              Instrument("SENSEX", "SENSEX", 265, True, "BSE"),
+              Instrument("NIFTY26OCT24500CE", "NIFTY 27 OCT 26 24500 CE", 99, False, "NFO", "CE", "2026-10-27")]
+    monkeypatch.setattr(kite, "instruments", lambda: {i.key: i for i in listed})
     from app.main import app
     with TestClient(app) as c:
         yield c
@@ -314,3 +316,185 @@ def test_login_notice_only_on_weekdays_once_a_day(monkeypatch):
     scanner.run_scan(monday.replace(day=6))               # next day: one more
     assert len(sent) == 2
     store.delete("alerts", "w1")
+
+
+def test_levels_fire_one_at_a_time_and_the_rest_stay_on_watch(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    r = client.post("/alerts", data={
+        "symbol": "infy", "condition": "high_above", "level": "1500", "timeframe": "15m",
+        "extra_condition": ["low_below", "high_above", "close_above", "high_above"],
+        "extra_level": ["1400", "1550", "1600", ""]})          # the empty row is ignored
+    assert "Watching INFY at 4 levels" in r.headers["HX-Trigger"]
+    a = store.list("alerts", user="boss")[0]
+    assert [(lv["condition"], lv["level"], lv["status"]) for lv in a["levels"]] == [
+        ("high_above", 1500, "active"), ("low_below", 1400, "active"),
+        ("high_above", 1550, "active"), ("close_above", 1600, "active")]
+    assert a["timeframe"] == "15m"
+
+    r = client.post("/alerts", data={"symbol": "infy", "condition": "high_above", "level": "1",
+                                     "extra_condition": ["high_above"], "extra_level": ["-5"]})
+    assert r.headers.get("HX-Reswap") == "none"
+
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "boss", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    now = datetime(2026, 9, 28, 11, 0, 30, tzinfo=IST)
+    store.update("alerts", a["id"], {"armed_at": now.replace(minute=0, second=0).isoformat(), "channels": ["telegram"]})
+    high = {"v": 1502.5}
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return [Candle(now.replace(second=0), 1490, high["v"], 1489, 1495)] if tf == "1m" else []
+
+    sent = []
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
+
+    def statuses():
+        return [lv["status"] for lv in store.get("alerts", a["id"])["levels"]]
+
+    # 1500 is crossed: one message, that level switches off, the alert keeps watching.
+    scanner.run_scan(now)
+    assert statuses() == ["hit", "active", "active", "active"]
+    assert store.get("alerts", a["id"])["status"] == "active"
+    assert len(sent) == 1 and "trades above 1500" in sent[0][0]
+    assert "Still watching: trades below 1400, trades above 1550, closes above 1600 on 15m" in sent[0][1]
+    page = client.get("/alerts/list?tab=active&q=").text
+    assert "1 of 4 hit" in page and "This level is switched off" in page
+    assert 'data-levels="1500.0,1400.0,1550.0,1600.0"' in page
+
+    # Same price on the next scan: the level that already fired stays quiet.
+    scanner.run_scan(now.replace(second=45))
+    assert len(sent) == 1
+
+    # Pausing and resuming doesn't bring the fired level back.
+    client.post(f"/alerts/{a['id']}/pause")
+    client.post(f"/alerts/{a['id']}/rearm")
+    assert statuses() == ["hit", "active", "active", "active"]
+    store.update("alerts", a["id"], {"armed_at": now.replace(minute=0, second=0).isoformat()})
+
+    # A jump through 1550: its own message. Then the low and the close levels finish the alert.
+    high["v"] = 1560
+    scanner.run_scan(now.replace(minute=1))
+    assert statuses() == ["hit", "active", "hit", "active"] and len(sent) == 2
+    lv = store.get("alerts", a["id"])["levels"]
+    store.update("alerts", a["id"], {"levels": [lv[0], lv[1], lv[2], {**lv[3], "condition": "low_below", "level": 1489.5}]})
+    scanner.run_scan(now.replace(minute=2))
+    assert statuses() == ["hit", "active", "hit", "hit"] and len(sent) == 3
+    assert store.get("alerts", a["id"])["status"] == "active"
+    lv = store.get("alerts", a["id"])["levels"]
+    store.update("alerts", a["id"], {"levels": [lv[0], {**lv[1], "level": 1489.9}, lv[2], lv[3]]})
+    scanner.run_scan(now.replace(minute=3))
+    done = store.get("alerts", a["id"])
+    assert done["status"] == "triggered" and done["trigger_price"] == 1489 and len(sent) == 4
+    assert "That was the last level" in sent[3][1]
+    assert "All 4 levels hit" in client.get("/alerts/list?tab=triggered").text
+
+    # Watch again puts every level back on watch.
+    client.post(f"/alerts/{a['id']}/rearm")
+    assert statuses() == ["active"] * 4 and store.get("alerts", a["id"])["status"] == "active"
+    store.delete("alerts", a["id"])
+
+
+def test_two_levels_crossed_in_one_scan_send_two_messages(monkeypatch):
+    now = datetime(2026, 9, 28, 11, 0, 30, tzinfo=IST)
+    store.put("alerts", "m1", {
+        "id": "m1", "user": "dev", "symbol": "INFY", "token": 1, "timeframe": "", "status": "active",
+        "channels": ["telegram"], "armed_at": now.replace(minute=0, second=0).isoformat(),
+        "levels": [{"level": 100, "condition": "high_above", "status": "active"},
+                   {"level": 110, "condition": "high_above", "status": "active"},
+                   {"level": 120, "condition": "high_above", "status": "active"}]})
+    store.put("brokers", "dev", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "dev", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return [Candle(now.replace(second=0), 99, 112, 99, 111)]
+
+    sent = []
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
+    scanner.run_scan(now)
+    a = store.get("alerts", "m1")
+    assert [lv["status"] for lv in a["levels"]] == ["hit", "hit", "active"] and a["status"] == "active"
+    assert [s for s, _ in sent] == ["🔔 INFY trades above 100", "🔔 INFY trades above 110"]
+    assert "Still watching: trades above 120" in sent[1][1]
+    store.delete("alerts", "m1")
+
+
+def test_other_exchanges_search_alert_and_expiry(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    page = client.get("/alerts/symbols?symbol=sensex").text
+    assert 'data-symbol="BSE:SENSEX"' in page and "Index" in page
+    assert 'data-symbol="NFO:NIFTY26OCT24500CE"' in client.get("/alerts/symbols?symbol=nifty 24500 ce").text
+
+    r = client.post("/alerts", data={"symbol": "BSE:SENSEX", "condition": "high_above", "level": "82000"})
+    assert "Watching SENSEX" in r.headers["HX-Trigger"] and 'data-chart="BSE:SENSEX"' in r.text
+    a = store.list("alerts", user="boss")[0]
+    assert (a["exchange"], a["token"]) == ("BSE", 265)
+    store.delete("alerts", a["id"])
+
+    # An option alert is paused once its contract has expired, and can't be re-armed.
+    client.post("/alerts", data={"symbol": "NFO:NIFTY26OCT24500CE", "condition": "high_above", "level": "150"})
+    a = store.list("alerts", user="boss")[0]
+    assert a["expiry"] == "2026-10-27"
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: pytest.fail("expired contract was scanned"))
+    after_expiry = datetime(2026, 10, 28, 10, 0, tzinfo=IST)
+    scanner.run_scan(after_expiry)
+    assert store.get("alerts", a["id"])["status"] == "paused"
+    monkeypatch.setattr("app.routes.alerts.now_ist", lambda: after_expiry)
+    assert "Contract expired" in client.get("/alerts/list?tab=paused").text
+    r = client.post(f"/alerts/{a['id']}/rearm")
+    assert "expired" in r.headers["HX-Trigger"] and store.get("alerts", a["id"])["status"] == "paused"
+    store.delete("alerts", a["id"])
+
+
+def test_crosses_levels_on_both_sides_of_price(client, monkeypatch):
+    from app import prices
+    prices._cache.clear()
+    login(client, "boss", "boss-pass-123")
+    now = datetime(2026, 9, 28, 11, 0, 30, tzinfo=IST)
+    low = {"v": 1489}
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return [Candle(now.replace(second=0), 1500, 1512, low["v"], 1505)]
+
+        def candles_range(self, token, tf, start, end):
+            return [Candle(now.replace(hour=9, minute=15), 1490, 1505, 1485, 1500)]
+
+    sent = []
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "boss", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append(s))
+
+    client.post("/alerts", data={"symbol": "INFY", "condition": "cross", "level": "1510", "channels": ["telegram"],
+                                 "extra_condition": ["cross", "cross"], "extra_level": ["1480", "1530"]})
+    a = store.list("alerts", user="boss")[0]
+    assert a["armed_price"] == 1500 and a["timeframe"] == ""
+    store.update("alerts", a["id"], {"armed_at": now.replace(second=0).isoformat()})
+
+    # Price is at 1500. The level above fires on the way up; the one below is untouched at a low of 1489.
+    scanner.run_scan(now)
+    assert [lv["status"] for lv in store.get("alerts", a["id"])["levels"]] == ["hit", "active", "active"]
+    assert sent == ["🔔 INFY trades above 1510"]
+    # A fall through 1480 fires that level, in the other direction, on the same alert.
+    low["v"] = 1478
+    scanner.run_scan(now.replace(second=50))
+    assert [lv["status"] for lv in store.get("alerts", a["id"])["levels"]] == ["hit", "hit", "active"]
+    assert sent[1] == "🔔 INFY trades below 1480"
+    assert "Crosses" in client.get("/alerts/list?tab=active&q=").text
+    store.delete("alerts", a["id"])
+    prices._cache.clear()

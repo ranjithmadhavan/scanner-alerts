@@ -1,14 +1,26 @@
 {% set hit = result.hit %}
+{% set multi = result.levels|length > 1 %}
 <div class="arrive mt-5 rounded-3xl border px-6 py-5 {{ 'border-marigold/40 bg-marigold-50' if hit else 'border-line bg-white' }}">
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div class="min-w-0">
       <p class="text-sm font-medium text-ink-soft">Simulation on {{ result.day.strftime('%A %-d %B') }} with real Kite prices</p>
       <p class="mt-1 font-display text-xl font-bold">
-        {% if hit %}{{ alert.symbol }} would have fired at {{ hit[0].start|ist('%-I:%M %p') }}, price ₹{{ hit[1]|price }}
+        {% if multi %}{{ alert.symbol }}: {{ result.levels|selectattr('hit')|list|length }} of {{ result.levels|length }} levels would have fired
+        {% elif hit %}{{ alert.symbol }} would have fired at {{ hit[0].start|ist('%-I:%M %p') }}, price ₹{{ hit[1]|price }}
         {% else %}{{ alert.symbol }} would not have fired{% endif %}
       </p>
+      {% if multi %}
+      <ul class="mt-2 space-y-0.5 text-[15px]">
+        {% for lv in result.levels %}
+        <li class="{{ 'font-medium text-marigold-dark' if lv.hit else 'text-ink-soft' }}">
+          {{ conditions[lv.view.condition] }} <span class="num">₹{{ lv.view.level|price }}</span>:
+          {% if lv.hit %}fired at {{ lv.hit[0].start|ist('%-I:%M %p') }}, price <span class="num">₹{{ lv.hit[1]|price }}</span>{% else %}not met{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
       <p class="mt-1 text-[15px] text-ink-soft">
-        Level ₹{{ alert.level|price }}. Day's range ₹{{ result.low|price }} to ₹{{ result.high|price }}, close ₹{{ result.close|price }}.
+        {% if not multi %}Level ₹{{ result.levels[0].view.level|price }}. {% endif %}Day's range ₹{{ result.low|price }} to ₹{{ result.high|price }}, close ₹{{ result.close|price }}.
       </p>
     </div>
     <button type="button" class="rounded-full p-2 text-ink-soft hover:bg-white" aria-label="Close" onclick="this.closest('#sim-result').innerHTML=''">

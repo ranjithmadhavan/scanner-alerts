@@ -10,6 +10,7 @@ placement can be added here later without touching the scanner.
 import csv
 import hashlib
 import io
+import logging
 import threading
 import time
 from urllib.parse import unquote
@@ -20,7 +21,9 @@ import httpx
 
 CONNECT_BASE = "https://api.kite.trade"
 WEB_BASE = "https://kite.zerodha.com/oms"
-INSTRUMENTS_URL = "https://api.kite.trade/instruments/NSE"
+INSTRUMENTS_URL = "https://api.kite.trade/instruments"
+
+log = logging.getLogger("kite")
 
 # UI value -> (Kite interval name, minutes; None for daily)
 TIMEFRAMES: dict[str, tuple[str, int | None]] = {
@@ -153,45 +156,141 @@ def connect_exchange_token(api_key: str, api_secret: str, request_token: str) ->
     return body["data"]
 
 
-# ---- Instruments (public dump, cached per day) ------------------------------
+# ---- Instruments (public dumps, refreshed through the day) -------------------
+# F&O contracts are listed and expire all the time, so the lists are re-downloaded
+# every few hours rather than kept for the life of the process.
 
-@dataclass(frozen=True)
+EXCHANGES = ("NSE", "BSE", "NFO", "BFO")  # also the order results are ranked in
+DERIVATIVES = ("NFO", "BFO")
+INSTRUMENTS_REFRESH = 4 * 3600
+_RETRY_AFTER = 300  # an exchange failed to download: try again soon instead of in 4 hours
+_KIND_RANK = {"EQ": 0, "FUT": 1, "CE": 2, "PE": 2}
+
+
+@dataclass(frozen=True, slots=True)
 class Instrument:
     symbol: str
     name: str
     token: int
     is_index: bool
+    exchange: str = "NSE"
+    kind: str = "EQ"  # EQ (stocks and indices), FUT, CE, PE
+    expiry: str = ""  # ISO date, derivatives only
+
+    @property
+    def key(self) -> str:
+        """What the UI passes around. NSE stays a bare symbol so older alerts and links still work."""
+        return self.symbol if self.exchange == "NSE" else f"{self.exchange}:{self.symbol}"
 
 
+_by_exchange: dict[str, dict[str, Instrument]] = {}
 _instruments: dict[str, Instrument] = {}
-_instruments_day: date | None = None
+_instruments_at = 0.0
 _instruments_lock = threading.Lock()
+_refreshing = threading.Lock()
+
+
+def parse_instruments(exchange: str, text: str) -> dict[str, Instrument]:
+    """Rows we can alert on from one Kite dump: stocks and indices, or futures and options."""
+    out = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        kind, symbol = row["instrument_type"], row["tradingsymbol"]
+        if exchange in DERIVATIVES:
+            if kind not in ("FUT", "CE", "PE"):
+                continue
+            # Contract symbols are cryptic (NIFTY26O0624500CE), so the name spells them out.
+            expiry = date.fromisoformat(row["expiry"])
+            parts = [(row["name"] or symbol).upper(), f"{expiry:%d %b %y}".upper()]
+            if kind != "FUT":
+                parts.append(f"{float(row['strike']):g}")
+            inst = Instrument(symbol, " ".join(parts + [kind]), int(row["instrument_token"]), False,
+                              exchange, kind, row["expiry"])
+        elif kind == "EQ" and row["segment"] in (exchange, "INDICES"):
+            inst = Instrument(symbol, (row["name"] or symbol).upper(), int(row["instrument_token"]),
+                              row["segment"] == "INDICES", exchange)
+        else:
+            continue
+        out[inst.key] = inst
+    return out
+
+
+def _download(exchange: str) -> dict[str, Instrument]:
+    r = httpx.get(f"{INSTRUMENTS_URL}/{exchange}", timeout=30)
+    r.raise_for_status()
+    return parse_instruments(exchange, r.text)
+
+
+def _reload() -> None:
+    global _instruments, _instruments_at
+    failed = []
+    for exchange in EXCHANGES:
+        try:
+            _by_exchange[exchange] = _download(exchange)
+        except Exception as e:  # keep the previous list for this exchange if we have one
+            failed.append(exchange)
+            log.warning("couldn't load %s instruments: %s", exchange, e)
+    if not _by_exchange:
+        raise KiteError("Couldn't load the instrument lists from Kite")
+    _instruments = {k: i for exchange in EXCHANGES for k, i in _by_exchange.get(exchange, {}).items()}
+    _instruments_at = time.monotonic() - (INSTRUMENTS_REFRESH - _RETRY_AFTER if failed else 0)
+
+
+def _reload_in_background() -> None:
+    try:
+        _reload()
+    except Exception as e:
+        log.warning("instrument refresh failed: %s", e)
+    finally:
+        _refreshing.release()
 
 
 def instruments() -> dict[str, Instrument]:
-    global _instruments, _instruments_day
+    """Everything that can be alerted on, keyed by Instrument.key."""
+    if _instruments:
+        # Stale lists are still served while a refresh runs, so a search never waits on the download.
+        if time.monotonic() - _instruments_at >= INSTRUMENTS_REFRESH and _refreshing.acquire(blocking=False):
+            threading.Thread(target=_reload_in_background, name="instruments", daemon=True).start()
+        return _instruments
     with _instruments_lock:
-        today = date.today()
-        if _instruments and _instruments_day == today:
-            return _instruments
-        r = httpx.get(INSTRUMENTS_URL, timeout=30)
-        r.raise_for_status()
-        out = {}
-        for row in csv.DictReader(io.StringIO(r.text)):
-            if row["instrument_type"] == "EQ" and row["segment"] in ("NSE", "INDICES"):
-                out[row["tradingsymbol"]] = Instrument(
-                    row["tradingsymbol"], row["name"] or row["tradingsymbol"],
-                    int(row["instrument_token"]), row["segment"] == "INDICES",
-                )
-        _instruments, _instruments_day = out, today
-        return out
+        if not _instruments:
+            _reload()
+        return _instruments
 
 
-def search_instruments(query: str, limit: int = 8) -> list[Instrument]:
-    q = query.strip().upper()
-    if not q:
+def find_instrument(symbol: str) -> Instrument | None:
+    """Look up `SYMBOL` or `EXCHANGE:SYMBOL`. A bare symbol means NSE first, then the other exchanges."""
+    symbol = symbol.strip().upper()
+    if not symbol:
+        return None
+    items = instruments()
+    if symbol in items:
+        return items[symbol]
+    if symbol.startswith("NSE:"):
+        return items.get(symbol[4:])
+    if ":" not in symbol:
+        for exchange in EXCHANGES[1:]:
+            if inst := items.get(f"{exchange}:{symbol}"):
+                return inst
+    return None
+
+
+def search_instruments(query: str, limit: int = 10) -> list[Instrument]:
+    """Every word must appear in the symbol or name, so 'nifty 24500 ce' and 'sensex oct fut' work."""
+    query = query.strip().upper()
+    exchange, _, rest = query.partition(":")
+    if rest and exchange in EXCHANGES:  # a picked value such as BSE:SENSEX
+        query = rest
+    else:
+        exchange = ""
+    words = query.split()
+    if not words:
         return []
-    items = instruments().values()
-    starts = [i for i in items if i.symbol.startswith(q)]
-    contains = [i for i in items if not i.symbol.startswith(q) and (q in i.symbol or q in i.name.upper())]
-    return (sorted(starts, key=lambda i: len(i.symbol)) + contains)[:limit]
+    q = "".join(words)
+    found = [i for i in instruments().values()
+             if all(w in i.symbol or w in i.name for w in words) and exchange in ("", i.exchange)]
+    # Exact symbol, then symbols starting with the query; indices, then stocks, futures and options;
+    # nearest expiry first.
+    found.sort(key=lambda i: (
+        i.symbol.replace(" ", "") != q, not i.symbol.startswith(words[0]), not i.is_index,
+        _KIND_RANK[i.kind], EXCHANGES.index(i.exchange), i.expiry, len(i.symbol), i.symbol))
+    return found[:limit]

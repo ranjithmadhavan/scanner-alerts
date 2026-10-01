@@ -1,14 +1,15 @@
 {% if error %}
 <p class="px-3 py-2.5 text-sm text-fall">{{ error }}</p>
 {% elif query and not matches %}
-<p class="px-3 py-2.5 text-sm text-ink-soft">No NSE stock matches “{{ query }}”.</p>
+<p class="px-3 py-2.5 text-sm text-ink-soft">Nothing matches “{{ query }}”. For options try e.g. “nifty 24500 ce”.</p>
 {% else %}
 {% for i in matches %}
-<button type="button" role="option" id="opt-{{ i.symbol|replace(' ', '-') }}" data-symbol="{{ i.symbol }}" aria-selected="false" tabindex="-1"
+<button type="button" role="option" id="opt-{{ loop.index }}" data-symbol="{{ i.key }}" aria-selected="false" tabindex="-1"
         class="flex w-full items-baseline gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-peacock-50 aria-selected:bg-peacock-50">
   <span class="font-display font-bold">{{ i.symbol }}</span>
   <span class="min-w-0 flex-1 truncate text-sm text-ink-soft">{{ i.name|company }}</span>
   {% if i.is_index %}<span class="rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Index</span>{% endif %}
+  <span class="rounded-full bg-canvas px-2 py-0.5 text-xs font-medium text-ink-soft">{{ i.exchange }}</span>
 </button>
 {% endfor %}
 {% endif %}

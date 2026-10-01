@@ -35,7 +35,7 @@ def _warm_caches() -> None:
     try:
         kite.instruments()
     except Exception as e:
-        logging.warning("couldn't preload NSE instruments: %s", e)
+        logging.warning("couldn't preload instruments: %s", e)
 
 
 @asynccontextmanager

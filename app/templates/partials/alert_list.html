@@ -6,6 +6,10 @@
 #}
 {% macro tf_label(tf) -%}{{ {'1h': '1 hour', '1d': 'daily'}.get(tf, tf|replace('m', ' min')) }}{%- endmacro %}
 
+{% macro exchange_tag(a) -%}
+  {% if a.exchange and a.exchange != 'NSE' %}<span class="shrink-0 rounded-full bg-canvas px-1.5 py-px text-[11px] font-medium text-ink-soft">{{ a.exchange }}</span>{% endif %}
+{%- endmacro %}
+
 {% macro status_pill(a) -%}
   {% if a.status != 'active' %}
     <span class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium {{ 'bg-marigold-50 text-marigold-dark' if a.status == 'triggered' else 'bg-canvas text-ink-soft' }}">{{ 'Triggered' if a.status == 'triggered' else 'Paused' }}</span>
@@ -13,7 +17,22 @@
 {%- endmacro %}
 
 {% macro rule(a, note_len=32) -%}
+  {% if a.levels|length > 1 -%}
+    {# One chip per level; the ones that have fired are marked and no longer watched. #}
+    <span class="inline-flex flex-wrap items-center gap-1 align-middle">
+    {% for lv in a.levels %}
+      {% if lv.status == 'hit' %}
+      <span class="inline-flex items-center gap-1 rounded-full bg-marigold-50 px-2 py-0.5 text-[13px] font-medium text-marigold-dark"
+            title="Hit at ₹{{ lv.hit_price|price }} on {{ lv.hit_at|ist }}. This level is switched off.">{{ icon('check', 'h-3 w-3') }}{{ lv.label }} <span class="num">₹{{ lv.level|price }}</span></span>
+      {% else %}
+      <span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]">{{ lv.label }} <strong class="num font-semibold text-ink">₹{{ lv.level|price }}</strong>{% if lv.is_close %}<span class="text-ink-soft/80">{{ tf_label(a.timeframe) }}</span>{% endif %}</span>
+      {% endif %}
+    {% endfor %}
+    {% if a.note %}<span class="text-[13px] text-ink-soft/70" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
+    </span>
+  {%- else -%}
   {{ a.label }} <strong class="num font-semibold text-ink">₹{{ a.level|price }}</strong>{% if a.is_close %}<span class="text-ink-soft/80">, {{ tf_label(a.timeframe) }}</span>{% endif %}{% if a.note %}<span class="text-ink-soft/70" title="{{ a.note }}">, {{ a.note|truncate(note_len) }}</span>{% endif %}
+  {%- endif %}
 {%- endmacro %}
 
 {% macro chips(a) -%}
@@ -39,7 +58,7 @@
         <div class="rail-dot absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-soft {{ 'bg-rise' if a.rail.side == 'above' else 'bg-fall' }}" style="left: {{ a.rail.pos }}%"></div>
       </div>
       <span class="num shrink-0 text-sm"><strong class="font-semibold">₹{{ a.price|price }}</strong>
-        <span class="{{ 'text-marigold-dark' if a.rail.reached else 'text-ink-soft' }}">{{ 'past level' if a.rail.reached else '%.2f%% away'|format(a.rail.pct) }}</span></span>
+        <span class="{{ 'text-marigold-dark' if a.rail.reached else 'text-ink-soft' }}">{{ 'past level' if a.rail.reached else '%.2f%% away'|format(a.rail.pct) }}{% if a.levels|length > 1 %} from ₹{{ a.level|price }}{% endif %}</span></span>
     </div>
   {% endif %}
 {%- endmacro %}
@@ -47,10 +66,13 @@
 {% macro timing(a) -%}
   <p class="text-[13px] text-ink-soft">
     {% if a.status == 'triggered' %}
-      <span class="font-semibold text-marigold-dark">Hit at ₹{{ a.trigger_price|price }}</span> on {{ a.triggered_at|ist }}
+      <span class="font-semibold text-marigold-dark">{{ 'All ' ~ a.levels|length ~ ' levels hit, last at' if a.levels|length > 1 else 'Hit at' }} ₹{{ a.trigger_price|price }}</span> on {{ a.triggered_at|ist }}
+    {% elif a.expired %}
+      Contract expired on {{ a.expiry }}, no longer checked
     {% elif a.status == 'paused' %}
       Paused, not being checked
     {% else %}
+      {% if a.hit_count %}<span class="font-semibold text-marigold-dark">{{ a.hit_count }} of {{ a.levels|length }} hit.</span>{% endif %}
       {{ ('Checked ' ~ (a.checked_at|when)) if a.checked_at else 'Not checked yet' }}
       {%- if a.next and a.next.at -%}
         , next {{ 'after the ' ~ (a.next.at|when) ~ ' candle closes' if a.next.after_candle else a.next.at|when }}
@@ -63,7 +85,7 @@
 
 {% macro actions(a) -%}
   <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
-          data-chart="{{ a.symbol }}" data-level="{{ a.level }}">{{ icon('chart', 'h-4 w-4') }}</button>
+          data-chart="{{ a.key }}" data-levels="{{ a.levels|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
   {% if a.status == 'active' %}
     <button class="rounded-full p-2 text-ink-soft/80 transition hover:bg-canvas hover:text-ink" title="Pause" aria-label="Pause {{ a.symbol }} alert"
             hx-post="/alerts/{{ a.id }}/pause" hx-target="#alert-list" hx-swap="outerHTML">{{ icon('pause', 'h-4 w-4') }}</button>
@@ -129,6 +151,7 @@
         <div class="flex items-baseline gap-2">
           <span class="font-display text-[17px] font-bold">{{ a.symbol }}</span>
           <span class="truncate text-sm text-ink-soft">{{ a.name|company }}</span>
+          {{ exchange_tag(a) }}
           {% if filters.tab == 'all' %}{{ status_pill(a) }}{% endif %}
         </div>
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -154,7 +177,7 @@
         <div class="flex items-start gap-2">
           <div class="min-w-0 flex-1">
             <p class="font-display text-[17px] font-bold leading-tight">{{ a.symbol }}</p>
-            <p class="truncate text-xs text-ink-soft">{{ a.name|company }}</p>
+            <p class="truncate text-xs text-ink-soft">{{ a.name|company }} {{ exchange_tag(a) }}</p>
           </div>
           {{ status_pill(a) }}
         </div>
@@ -180,7 +203,7 @@
 {% else %}
   <div class="rounded-3xl border border-dashed border-line px-6 py-14 text-center">
     <p class="font-display text-xl font-bold">Nothing on watch yet</p>
-    <p class="mx-auto mt-2 max-w-sm text-ink-soft">Add your first stock above. It stays on watch every trading day until the level is hit.</p>
+    <p class="mx-auto mt-2 max-w-sm text-ink-soft">Add your first stock above. It stays on watch every trading day until its levels are hit.</p>
   </div>
 {% endif %}
 </section>

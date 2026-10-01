@@ -1,7 +1,7 @@
 {% from "partials/icons.html" import icon %}
 {# Price strip under the Stock box. Polls itself while the market is open. #}
 <div class="quote-in mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5"
-     {% if q and q.live %}hx-get="/alerts/quote?symbol={{ inst.symbol|urlencode }}" hx-trigger="every 30s [document.visibilityState === 'visible']" hx-swap="outerHTML"{% endif %}>
+     {% if q and q.live %}hx-get="/alerts/quote?symbol={{ inst.key|urlencode }}" hx-trigger="every 30s [document.visibilityState === 'visible']" hx-swap="outerHTML"{% endif %}>
   {% if needs_login %}
     <a href="/broker" class="text-sm font-medium text-marigold-dark underline decoration-marigold/40 underline-offset-2">Connect Kite to see the price</a>
   {% elif error %}
@@ -19,7 +19,7 @@
     </span>
   {% endif %}
   {% if not needs_login %}
-  <button type="button" data-chart="{{ inst.symbol }}" data-level-from="#level"
+  <button type="button" data-chart="{{ inst.key }}" data-levels-from="#new-alert .level-input"
           class="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-sm font-medium text-peacock transition hover:border-peacock/40 hover:bg-peacock-50">
     {{ icon('chart', 'h-4 w-4') }} View chart
   </button>

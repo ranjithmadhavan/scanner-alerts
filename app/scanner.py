@@ -6,8 +6,14 @@ Conditions
 * high_above / low_below — price trades beyond the level at any point. This is
   timeframe-independent (a 15m high crosses a level exactly when some trade does),
   so it is checked on 1-minute candles starting from the minute the alert was armed.
+* cross / close_cross — the same two checks without a fixed direction. The level fires
+  when price gets to the other side of it from where it started: the day's open, or the
+  price when the alert was armed if that was during today's session. An overnight gap
+  through a level therefore doesn't fire it; the level just waits in the other direction.
 
-An alert fires once, then moves to "triggered" until the user re-arms it.
+An alert holds one or more levels, each with its own condition. A level fires once and is
+then switched off; the alert keeps watching its other levels and moves to "triggered"
+only when the last one has fired. It stays there until the user re-arms it.
 """
 
 import logging
@@ -28,11 +34,14 @@ from app.store import new_id, store
 log = logging.getLogger("scanner")
 
 CONDITIONS = {
-    "close_above": "Closes above",
-    "close_below": "Closes below",
+    "cross": "Crosses",
     "high_above": "Trades above",
     "low_below": "Trades below",
+    "close_cross": "Closes across",
+    "close_above": "Closes above",
+    "close_below": "Closes below",
 }
+EITHER_WAY = ("cross", "close_cross")
 
 # Give Kite a few seconds after a candle ends before trusting its close.
 SETTLE = timedelta(seconds=10)
@@ -44,6 +53,35 @@ def uses_close(condition: str) -> bool:
 
 def data_timeframe(alert: dict) -> str:
     return alert["timeframe"] if uses_close(alert["condition"]) else "1m"
+
+
+def levels_of(alert: dict) -> list[dict]:
+    """The alert's levels as {level, condition, status: active|hit, hit_at, hit_price}.
+    Alerts saved before multi-level support have a single top-level level/condition."""
+    if "levels" in alert:
+        return [dict(lv) for lv in alert["levels"]]
+    hit = alert.get("status") == "triggered"
+    return [{
+        "level": alert.get("level"), "condition": alert["condition"], "status": "hit" if hit else "active",
+        "hit_at": alert.get("triggered_at") if hit else None,
+        "hit_price": alert.get("trigger_price") if hit else None,
+    }]
+
+
+def level_view(alert: dict, lv: dict) -> dict:
+    """The alert seen through one of its levels: what evaluate() and describe() work on."""
+    return {**alert, "level": lv["level"], "condition": lv["condition"]}
+
+
+def open_views(alert: dict) -> list[tuple[int, dict]]:
+    """(index, view) for each level that hasn't fired yet."""
+    return [(i, level_view(alert, lv)) for i, lv in enumerate(levels_of(alert)) if lv["status"] == "active"]
+
+
+def alert_key(alert: dict) -> str:
+    """Matches Instrument.key: bare symbol on NSE, EXCHANGE:SYMBOL elsewhere."""
+    exchange = alert.get("exchange") or "NSE"
+    return alert["symbol"] if exchange == "NSE" else f"{exchange}:{alert['symbol']}"
 
 
 def candle_end(c: Candle, timeframe: str, s: MarketSettings) -> datetime:
@@ -75,29 +113,54 @@ def evaluate(alert: dict, candles: list[Candle], s: MarketSettings, now: datetim
     armed_at = datetime.fromisoformat(alert["armed_at"])
     cond = alert["condition"]
 
+    # Either-way conditions: which side price started on. Set from the first candle that counts.
+    start = None
+
+    def started(c: Candle) -> float:
+        armed_now = alert.get("armed_price") is not None and armed_at >= c.start
+        return float(alert["armed_price"]) if armed_now else c.open
+
     if uses_close(cond):
         tf = alert["timeframe"]
         for c in candles:
             end = candle_end(c, tf, s)
-            if armed_at < end <= now - SETTLE:
-                if (cond == "close_above" and c.close > level) or (cond == "close_below" and c.close < level):
-                    return c, c.close
+            if end <= armed_at:
+                continue
+            if start is None:
+                start = started(c)
+            if end > now - SETTLE:
+                continue
+            up = cond == "close_above" or (cond == "close_cross" and start <= level)
+            down = cond == "close_below" or (cond == "close_cross" and start >= level)
+            if (up and c.close > level) or (down and c.close < level):
+                return c, c.close
         return None
 
     since = armed_at.replace(second=0, microsecond=0)
     for c in candles:
         if c.start < since:
             continue
-        if cond == "high_above" and c.high > level:
+        if start is None:
+            start = started(c)
+        if (cond == "high_above" or (cond == "cross" and start <= level)) and c.high > level:
             return c, c.high
-        if cond == "low_below" and c.low < level:
+        if (cond == "low_below" or (cond == "cross" and start >= level)) and c.low < level:
             return c, c.low
     return None
 
 
+def resolved(alert: dict, price: float) -> dict:
+    """An either-way level that fired at `price`, restated with the direction it went."""
+    cond = alert["condition"]
+    if cond in EITHER_WAY:
+        side = "above" if price > float(alert["level"]) else "below"
+        cond = f"close_{side}" if uses_close(cond) else ("high_above" if side == "above" else "low_below")
+    return {**alert, "condition": cond}
+
+
 # ---- runtime state (in memory; rebuilt harmlessly after a restart) ----------
 
-last_prices: dict[tuple[str, str], tuple[float, datetime]] = {}  # (user, symbol) -> (price, as_of)
+last_prices: dict[tuple[str, str], tuple[float, datetime]] = {}  # (user, alert_key) -> (price, as_of)
 last_checked_at: dict[str, datetime] = {}  # alert id -> when the scanner last evaluated it
 last_run: dict = {}  # {"at": datetime, "alerts": int} for the most recent scan inside market hours
 _last_checked: dict[str, datetime] = {}  # alert id -> last candle boundary evaluated
@@ -105,6 +168,7 @@ _scan_lock = threading.Lock()
 
 
 def _due(alert: dict, s: MarketSettings, now: datetime) -> bool:
+    """`alert` is a level view. Close levels of one alert share its timeframe, so one marker per alert."""
     if not uses_close(alert["condition"]):
         return True
     b = last_boundary(alert["timeframe"], s, now - SETTLE)
@@ -112,8 +176,7 @@ def _due(alert: dict, s: MarketSettings, now: datetime) -> bool:
 
 
 def _mark_checked(alert: dict, s: MarketSettings, now: datetime) -> None:
-    if uses_close(alert["condition"]):
-        _last_checked[alert["id"]] = last_boundary(alert["timeframe"], s, now - SETTLE)
+    _last_checked[alert["id"]] = last_boundary(alert["timeframe"], s, now - SETTLE)
 
 
 def describe(alert: dict) -> str:
@@ -123,27 +186,35 @@ def describe(alert: dict) -> str:
     return text
 
 
-def fire(alert: dict, candle: Candle, price: float, now: datetime) -> None:
-    store.update("alerts", alert["id"], {
-        "status": "triggered",
-        "triggered_at": now.isoformat(),
-        "trigger_price": price,
-        "trigger_candle": candle.start.isoformat(),
-    })
-    subject = f"🔔 {describe(alert)}"
+def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -> dict:
+    """Level `index` was hit: switch it off, tell the user, and return the alert as now stored.
+    The alert itself stays active while any other level is still waiting."""
+    levels = levels_of(alert)
+    levels[index] = {**levels[index], "status": "hit", "hit_at": now.isoformat(), "hit_price": price}
+    changes = {"levels": levels}
+    if not any(lv["status"] == "active" for lv in levels):
+        changes.update(status="triggered", triggered_at=now.isoformat(), trigger_price=price,
+                       trigger_candle=candle.start.isoformat())
+    store.update("alerts", alert["id"], changes)
+    hit, alert = resolved(level_view(alert, levels[index]), price), {**alert, **changes}
+    subject = f"🔔 {describe(hit)}"
     body = (
-        f"{alert['symbol']} hit your level of {alert['level']:g}.\n"
+        f"{alert['symbol']} hit your level of {hit['level']:g}.\n"
         f"Price: {price:g} (candle {candle.start.astimezone(IST):%-I:%M %p})\n"
         f"Time: {now:%d %b, %-I:%M %p} IST"
     )
+    if len(levels) > 1:
+        waiting = [describe(v).removeprefix(alert["symbol"] + " ") for _, v in open_views(alert)]
+        body += f"\nStill watching: {', '.join(waiting)}" if waiting else "\nThat was the last level on this alert."
     if alert.get("note"):
         body += f"\nNote: {alert['note']}"
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
     store.put("events", new_id(), {
         "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
-        "summary": describe(alert), "price": price, "at": now.isoformat(), "delivery": results,
+        "summary": describe(hit), "price": price, "at": now.isoformat(), "delivery": results,
     })
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
+    return alert
 
 
 # ---- schedule info for the UI ----------------------------------------------------
@@ -168,7 +239,9 @@ def next_open(s: MarketSettings, now: datetime) -> datetime:
 def next_check(alert: dict, s: MarketSettings, now: datetime, tick: datetime | None) -> dict:
     """When this alert will next be looked at, for display.
     Returns {"at": datetime | None, "after_candle": bool}."""
-    close_rule = uses_close(alert["condition"])
+    # Any trades level means the alert is looked at on every scan.
+    views = open_views(alert)
+    close_rule = bool(views) and all(uses_close(v["condition"]) for _, v in views)
     minutes = TIMEFRAMES[alert["timeframe"]][1] if close_rule else None
     if not in_scan_window(s, now):
         opens = next_open(s, now)
@@ -202,8 +275,10 @@ def simulate(alert: dict, client, s: MarketSettings, now: datetime) -> dict | No
     """Evaluate `alert` as if it had been armed at the open of the last trading session.
     Walks back over holidays (days with no candles). Returns None if nothing found in a week."""
     day = last_session_day(s, now)
+    views = [level_view(alert, lv) for lv in levels_of(alert)]
+    timeframes = list(dict.fromkeys(data_timeframe(v) for v in views))
     for _ in range(7):
-        candles = client.candles(alert["token"], data_timeframe(alert), day.date())
+        candles = client.candles(alert["token"], timeframes[0], day.date())
         if candles:
             break
         day -= timedelta(days=1)
@@ -211,11 +286,17 @@ def simulate(alert: dict, client, s: MarketSettings, now: datetime) -> dict | No
             day -= timedelta(days=1)
     else:
         return None
-    replay = {**alert, "armed_at": s.open_at(day).isoformat()}
-    hit = evaluate(replay, candles, s, s.close_at(day) + CLOSE_GRACE)
+    data = {timeframes[0]: candles}
+    for tf in timeframes[1:]:
+        data[tf] = client.candles(alert["token"], tf, day.date())
+    armed, end = s.open_at(day).isoformat(), s.close_at(day) + CLOSE_GRACE
+    levels = [{"view": v, "hit": evaluate({**v, "armed_at": armed, "armed_price": None}, data[data_timeframe(v)], s, end)}
+              for v in views]
+    hits = [lv["hit"] for lv in levels if lv["hit"]]
     return {
         "day": s.open_at(day),
-        "hit": hit,
+        "levels": levels,
+        "hit": min(hits, key=lambda h: h[0].start) if hits else None,  # the first level to fire
         "high": max(c.high for c in candles),
         "low": min(c.low for c in candles),
         "close": candles[-1].close,
@@ -224,14 +305,25 @@ def simulate(alert: dict, client, s: MarketSettings, now: datetime) -> dict | No
 
 def simulation_message(alert: dict, result: dict) -> tuple[str, str]:
     day = f"{result['day']:%a %-d %b}"
-    if result["hit"]:
-        candle, price = result["hit"]
-        subject = f"🧪 Simulation: {describe(alert)}"
+    levels = result["levels"]
+    fired = [lv for lv in levels if lv["hit"]]
+    if len(levels) > 1:
+        subject = f"🧪 Simulation: {alert['symbol']}, {len(fired)} of {len(levels)} levels would have fired"
+        lines = [
+            f"{describe(lv['view'])}: " + (f"fired at {lv['hit'][0].start.astimezone(IST):%-I:%M %p}, "
+                                           f"price {lv['hit'][1]:,.2f}" if lv["hit"] else "not met")
+            for lv in levels
+        ]
+        body = (f"On {day}:\n" + "\n".join(lines)
+                + f"\nDay's range {result['low']:,.2f} to {result['high']:,.2f}, close {result['close']:,.2f}.")
+    elif fired:
+        candle, price = fired[0]["hit"]
+        subject = f"🧪 Simulation: {describe(resolved(levels[0]['view'], price))}"
         body = (f"On {day} this alert would have fired at {candle.start.astimezone(IST):%-I:%M %p}, "
                 f"price {price:,.2f}.")
     else:
         subject = f"🧪 Simulation: {alert['symbol']} would not have fired"
-        body = (f"On {day}, {describe(alert)} was not met. "
+        body = (f"On {day}, {describe(levels[0]['view'])} was not met. "
                 f"Day's range {result['low']:,.2f} to {result['high']:,.2f}, close {result['close']:,.2f}.")
     body += "\nThis was a test with real prices from Kite. Your alerts are unchanged."
     return subject, body
@@ -294,27 +386,42 @@ def _scan_user(username: str, alerts: list[dict], s: MarketSettings, now: dateti
         return
     cache: dict[tuple[int, str], list[Candle]] = {}
     for alert in alerts:
-        if not _due(alert, s, now):
-            continue
-        tf = data_timeframe(alert)
-        key = (alert["token"], tf)
-        try:
-            if key not in cache:
-                cache[key] = client.candles(alert["token"], tf, now.date())
-        except KiteAuthError as e:
-            session_notice(username, "expired", str(e), len(alerts), now)
-            return
-        except KiteError as e:
-            log.warning("candles failed for %s %s: %s", alert["symbol"], tf, e)
-            continue
-        candles = cache[key]
-        if candles:
-            last_prices[(username, alert["symbol"])] = (candles[-1].close, now)
-        hit = evaluate(alert, candles, s, now)
-        _mark_checked(alert, s, now)
-        last_checked_at[alert["id"]] = now
-        if hit:
-            fire(alert, *hit, now)
+        hits, close_checked = [], False
+        for index, view in open_views(alert):
+            if not _due(view, s, now):
+                continue
+            tf = data_timeframe(view)
+            key = (alert["token"], tf)
+            try:
+                if key not in cache:
+                    cache[key] = client.candles(alert["token"], tf, now.date())
+            except KiteAuthError as e:
+                session_notice(username, "expired", str(e), len(alerts), now)
+                return
+            except KiteError as e:
+                log.warning("candles failed for %s %s: %s", alert["symbol"], tf, e)
+                continue
+            candles = cache[key]
+            if candles:
+                last_prices[(username, alert_key(alert))] = (candles[-1].close, now)
+            close_checked = close_checked or uses_close(view["condition"])
+            last_checked_at[alert["id"]] = now
+            if hit := evaluate(view, candles, s, now):
+                hits.append((index, *hit))
+        if close_checked:
+            _mark_checked(alert, s, now)
+        # One message per level, even when a jump in price takes out several in the same scan.
+        for index, candle, price in hits:
+            alert = fire(alert, index, candle, price, now)
+
+
+def _retire_expired(alert: dict, now: datetime) -> bool:
+    """Futures and options stop trading on expiry day; pause the alert rather than poll a dead contract."""
+    if alert.get("expiry") and alert["expiry"] < now.date().isoformat():
+        store.update("alerts", alert["id"], {"status": "paused"})
+        log.info("paused %s: %s expired on %s", alert["id"], alert["symbol"], alert["expiry"])
+        return True
+    return False
 
 
 def run_scan(now: datetime | None = None) -> None:
@@ -327,7 +434,8 @@ def run_scan(now: datetime | None = None) -> None:
             return
         by_user: dict[str, list[dict]] = defaultdict(list)
         for a in store.list("alerts", status="active"):
-            by_user[a["user"]].append(a)
+            if not _retire_expired(a, now):
+                by_user[a["user"]].append(a)
         for username, alerts in by_user.items():
             try:
                 _scan_user(username, alerts, s, now)

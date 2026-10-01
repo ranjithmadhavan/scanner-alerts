@@ -5,9 +5,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import brokers, notify, prices
 from app import scanner
-from app.kite import TIMEFRAMES, KiteAuthError, KiteError, instruments, search_instruments
+from app.kite import TIMEFRAMES, KiteAuthError, KiteError, find_instrument, search_instruments
 from app.market import in_scan_window, load_settings, now_ist
-from app.scanner import CONDITIONS, last_prices, uses_close
+from app.scanner import CONDITIONS, EITHER_WAY, alert_key, last_prices, levels_of, uses_close
 from app.security import require
 from app.store import new_id, store
 from app.web import _company, fail, render, toast
@@ -15,15 +15,20 @@ from app.web import _company, fail, render, toast
 router = APIRouter(prefix="/alerts")
 guard = require("scanner")
 
+MAX_LEVELS = 10
+
+
 def rail(alert: dict, price: float | None) -> dict | None:
-    """Where to draw the last price relative to the level on a ±3% scale."""
+    """Where to draw the last price relative to the level on a ±3% scale.
+    `alert` only needs a level and a condition, so a single level works too."""
     if price is None:
         return None
     level = float(alert["level"])
     pct = (price - level) / level * 100
     pos = 50 + max(-3.0, min(3.0, pct)) / 3.0 * 44
-    wants_up = alert["condition"] in ("close_above", "high_above")
-    reached = price > level if wants_up else price < level
+    cond = alert["condition"]
+    # Either-way levels are never "past": whichever side price is on, they wait for the other.
+    reached = cond not in EITHER_WAY and (price > level if cond in ("close_above", "high_above") else price < level)
     return {"pos": round(pos, 1), "pct": abs(pct), "gap": abs(price - level), "reached": reached,
             "side": "above" if price >= level else "below"}
 
@@ -48,13 +53,21 @@ def _filters(request: Request) -> dict:
 
 def _view(alerts: list[dict], username: str, broker_ok: bool, now) -> list[dict]:
     s, tick = load_settings(), scanner.next_tick()
+    today = now.date().isoformat()
     out = []
     for a in alerts:
-        price, as_of = last_prices.get((username, a["symbol"]), (None, None))
-        r = rail(a, price)
+        key = alert_key(a)
+        price, as_of = last_prices.get((username, key), (None, None))
+        levels = [{**lv, "label": CONDITIONS[lv["condition"]], "is_close": uses_close(lv["condition"]),
+                   "rail": rail(lv, price)} for lv in levels_of(a)]
+        waiting = [lv for lv in levels if lv["status"] == "active"]
+        # The level the price bar and "closest" sort follow: the nearest one still waiting.
+        focus = min(waiting or levels, key=lambda lv: (lv["rail"] is None, lv["rail"]["pct"] if lv["rail"] else 0))
         out.append({
-            **a, "label": CONDITIONS[a["condition"]], "is_close": uses_close(a["condition"]),
-            "price": price, "price_at": as_of, "rail": r,
+            **a, "key": key, "levels": levels, "focus": focus, "hit_count": len(levels) - len(waiting),
+            "level": focus["level"], "label": focus["label"], "is_close": any(lv["is_close"] for lv in levels),
+            "price": price, "price_at": as_of, "rail": focus["rail"],
+            "expired": bool(a.get("expiry")) and a["expiry"] < today,
             "checked_at": scanner.last_checked_at.get(a["id"]),
             "next": scanner.next_check(a, s, now, tick) if a["status"] == "active" and broker_ok else None,
         })
@@ -106,6 +119,7 @@ def _page_ctx(request: Request, user: dict) -> dict:
         },
         "broker_ok": broker_ok,
         "conditions": CONDITIONS,
+        "max_levels": MAX_LEVELS,
         "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"],
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],
@@ -131,25 +145,42 @@ def symbols(request: Request, symbol: str = "", user: dict = Depends(guard)):
     try:
         matches, error = search_instruments(query), None
     except Exception:
-        matches, error = [], "Couldn't load the NSE stock list. Try again in a moment."
+        matches, error = [], "Couldn't load the list of stocks and contracts. Try again in a moment."
     return render(request, "partials/symbol_options.html", {"matches": matches, "query": query, "error": error})
 
 
-def _build_alert(user: dict, symbol: str, condition: str, level: float, timeframe: str,
-                 note: str, channels: list[str]) -> tuple[dict | None, str | None]:
-    """Validate the New alert form. Returns (alert, None) or (None, error message)."""
-    symbol = symbol.strip().upper()
-    try:
-        inst = instruments().get(symbol)
-    except Exception:
-        inst = None
-    if not inst:
-        return None, f"We couldn't find {symbol or 'that symbol'} on NSE. Pick one from the suggestions."
-    if condition not in CONDITIONS:
+def _levels(condition: str, level: float, extra_condition: list[str], extra_level: list[str]):
+    """The form's first level plus any 'more levels' rows. Returns (levels, None) or (None, error)."""
+    rows = [(condition, level)]
+    for cond, raw in zip(extra_condition, extra_level):
+        if not raw.strip():
+            continue  # a row that was added and left empty
+        try:
+            rows.append((cond, float(raw)))
+        except ValueError:
+            return None, f"{raw.strip()[:20]} isn't a price."
+    if any(cond not in CONDITIONS for cond, _ in rows):
         return None, "Choose when the alert should fire."
-    if level <= 0:
+    if any(not 0 < price < float("inf") for _, price in rows):
         return None, "Enter a price level above zero."
-    if uses_close(condition) and timeframe not in TIMEFRAMES:
+    rows = list(dict.fromkeys(rows))  # the same level entered twice counts once
+    if len(rows) > MAX_LEVELS:
+        return None, f"An alert can have up to {MAX_LEVELS} levels."
+    return [{"level": price, "condition": cond, "status": "active"} for cond, price in rows], None
+
+
+def _build_alert(user: dict, symbol: str, condition: str, level: float, timeframe: str,
+                 note: str, channels: list[str], extra_condition: list[str] = (),
+                 extra_level: list[str] = ()) -> tuple[dict | None, str | None]:
+    """Validate the New alert form. Returns (alert, None) or (None, error message)."""
+    inst = _instrument(symbol)
+    if not inst:
+        return None, f"We couldn't find {symbol.strip().upper() or 'that symbol'}. Pick one from the suggestions."
+    levels, error = _levels(condition, level, list(extra_condition), list(extra_level))
+    if error:
+        return None, error
+    closes = any(uses_close(lv["condition"]) for lv in levels)
+    if closes and timeframe not in TIMEFRAMES:
         return None, "Choose a candle timeframe."
     now = now_ist().isoformat()
     return {
@@ -158,9 +189,10 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
         "symbol": inst.symbol,
         "name": inst.name,
         "token": inst.token,
-        "condition": condition,
-        "level": level,
-        "timeframe": timeframe if uses_close(condition) else "",
+        "exchange": inst.exchange,
+        "expiry": inst.expiry,
+        "levels": levels,
+        "timeframe": timeframe if closes else "",
         "channels": [c for c in notify.CHANNELS if c in channels],
         "note": note.strip()[:140],
         "status": "active",
@@ -171,7 +203,19 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
 
 def _instrument(symbol: str):
     try:
-        return instruments().get(symbol.strip().upper())
+        return find_instrument(symbol)
+    except Exception:
+        return None
+
+
+def _armed_price(username: str, alert: dict) -> float | None:
+    """Price right now, for either-way levels to know which side they start on. None when it
+    can't be had (no Kite session); the scanner then goes by the candle the alert was armed in."""
+    if not any(lv["condition"] in EITHER_WAY for lv in levels_of(alert)):
+        return None
+    try:
+        q = prices.quote(username, find_instrument(alert_key(alert)))
+        return q["price"] if q else None
     except Exception:
         return None
 
@@ -196,7 +240,7 @@ def quote(request: Request, symbol: str = "", user: dict = Depends(guard)):
 def chart_data(symbol: str, range: str = "5D", user: dict = Depends(guard)):
     inst = _instrument(symbol)
     if not inst:
-        return JSONResponse({"error": f"{symbol} isn't an NSE symbol we know."}, status_code=404)
+        return JSONResponse({"error": f"{symbol} isn't a symbol we know."}, status_code=404)
     try:
         data = prices.chart(user["username"], inst, range)
     except KiteAuthError:
@@ -216,16 +260,21 @@ def create(
     timeframe: str = Form("15m"),
     note: str = Form(""),
     channels: list[str] = Form([]),
+    extra_condition: list[str] = Form([]),
+    extra_level: list[str] = Form([]),
 ):
-    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels)
+    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level)
     if error:
         return fail(error)
+    alert["armed_price"] = _armed_price(user["username"], alert)
     store.put("alerts", alert["id"], alert)
     # Show the new alert even if the user was on another tab or searching.
     request.session["alert_filters"] = {**request.session.get("alert_filters", {}), "tab": "active", "q": ""}
     ctx = _page_ctx(request, user)
     ctx["fresh_id"] = alert["id"]
-    return toast(render(request, "partials/alert_list.html", ctx), f"Watching {alert['symbol']}")
+    count = len(alert["levels"])
+    return toast(render(request, "partials/alert_list.html", ctx),
+                 f"Watching {alert['symbol']}" + (f" at {count} levels" if count > 1 else ""))
 
 
 @router.post("/simulate")
@@ -238,10 +287,12 @@ def simulate(
     timeframe: str = Form("15m"),
     note: str = Form(""),
     channels: list[str] = Form([]),
+    extra_condition: list[str] = Form([]),
+    extra_level: list[str] = Form([]),
 ):
     """Replay the form's alert on the last trading day with real Kite data and send the
     result to the chosen channels. Nothing is saved."""
-    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels)
+    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level)
     if error:
         return fail(error)
     if not alert["channels"]:
@@ -259,7 +310,7 @@ def simulate(
     delivery = notify.send(user["username"], alert["channels"], subject, body)
     sent = [notify.CHANNELS[c] for c, r in delivery.items() if r == "sent"]
     failed = {notify.CHANNELS[c]: r for c, r in delivery.items() if r != "sent"}
-    ctx = {"alert": alert, "result": result, "sent": sent, "failed": failed}
+    ctx = {"alert": alert, "result": result, "sent": sent, "failed": failed, "conditions": CONDITIONS}
     msg = f"Simulation sent to {', '.join(sent)}" if sent else "Simulation ran, but the message couldn't be sent"
     return toast(render(request, "partials/simulation.html", ctx), msg, "success" if sent else "error")
 
@@ -272,8 +323,15 @@ def _own(alert_id: str, user: dict) -> dict | None:
 @router.post("/{alert_id}/rearm")
 def rearm(request: Request, alert_id: str, user: dict = Depends(guard)):
     if a := _own(alert_id, user):
-        store.update("alerts", alert_id, {"status": "active", "armed_at": now_ist().isoformat(),
-                                          "triggered_at": None, "trigger_price": None})
+        if a.get("expiry") and a["expiry"] < now_ist().date().isoformat():
+            return fail(f"{a['symbol']} expired on {a['expiry']}. Add an alert on a current contract instead.")
+        changes = {"status": "active", "armed_at": now_ist().isoformat(), "triggered_at": None, "trigger_price": None,
+                   "armed_price": _armed_price(user["username"], a)}
+        # Watch again puts every level back on watch. Resuming a paused alert leaves fired levels off.
+        if a["status"] == "triggered" and "levels" in a:
+            changes["levels"] = [{"level": lv["level"], "condition": lv["condition"], "status": "active"}
+                                 for lv in a["levels"]]
+        store.update("alerts", alert_id, changes)
         return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} is armed again")
     return HTMLResponse(status_code=404)
 

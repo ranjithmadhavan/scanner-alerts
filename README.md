@@ -1,6 +1,6 @@
 # Stock Scanner
 
-Price-level alerts for NSE stocks. Users add a stock, a level and a condition, and get a Telegram / email / WhatsApp message when it's hit. FastAPI + Jinja + HTMX + Tailwind, Firestore for storage, Zerodha Kite for prices.
+Price-level alerts for stocks, indices, futures and options on NSE, BSE, NFO and BFO. Users add an instrument and one or more levels, each with a condition, and get a Telegram / email / WhatsApp message when it's hit. FastAPI + Jinja + HTMX + Tailwind, Firestore for storage, Zerodha Kite for prices.
 
 ## Run locally
 
@@ -32,15 +32,19 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 |---|---|
 | Market hours (IST via `zoneinfo`, Mon–Fri, admin-editable) | `app/market.py` |
 | Scanner + scheduler (APScheduler, in-process) | `app/scanner.py` |
-| Kite client (Kite Connect **or** enctoken) + NSE instrument list | `app/kite.py` |
+| Kite client (Kite Connect **or** enctoken) + instrument lists for NSE, BSE, NFO, BFO | `app/kite.py` |
 | Telegram (each user's own bot) / email via Brevo or Gmail SMTP (app-wide) / WhatsApp (CallMeBot) | `app/notify.py` |
 | Users, password hashing, permission guards | `app/security.py` |
 | Grantable app areas | `app/modules.py` |
 | Firestore / in-memory store (collections prefixed `ssa_`) | `app/store.py` |
 
-**Conditions.** *Closes above/below* checks each completed candle of the chosen timeframe, 10 s after it closes. *Trades above/below* checks 1-minute data from the moment the alert is armed, so it fires as soon as any trade crosses the level. The timeframe doesn't matter for these. An alert fires once, then waits in *Triggered* until the user taps **Watch again**.
+**Conditions.** *Closes above/below* checks each completed candle of the chosen timeframe, 10 s after it closes. *Trades above/below* checks 1-minute data from the moment the alert is armed, so it fires as soon as any trade crosses the level. The timeframe doesn't matter for these. *Crosses* and *Closes across* are the same two checks without a fixed direction: the level fires when price gets to the other side of it from where it started, which is the day's open, or the price at the moment the alert was armed if that was during today's session. A gap through a level overnight doesn't fire it; the level then waits for price to come back through from the new side.
 
-**Price and chart.** Picking a stock shows its last price and the day's change. **View chart** (and the chart icon on each alert) opens a side panel with 1D/5D/1M/6M/1Y candles and your level drawn in. Data comes from the user's own Kite session and is cached briefly (`app/prices.py`). The chart is drawn with TradingView's Lightweight Charts, loaded from jsDelivr on first use.
+**Levels.** An alert can hold up to 10 levels, each with its own condition. A level sends one message when it is hit and is then switched off; the other levels stay on watch. When the last level has fired the alert moves to *Triggered* and waits there until the user taps **Watch again**, which puts every level back on watch. Alerts saved before this (a single `level` and `condition` on the document) are read as one-level alerts.
+
+**Instruments.** Kite's public lists for NSE, BSE, NFO and BFO are loaded at start and refreshed every 4 hours, so newly listed futures and options show up in the search the same day. NSE symbols are plain (`INFY`); the others carry their exchange (`BSE:SENSEX`, `NFO:NIFTY26OCT24500CE`). The search matches every word against the symbol and a spelled-out name, so `nifty 24500 ce` or `sensex oct fut` finds contracts. An alert on a contract is paused once the contract has expired.
+
+**Price and chart.** Picking a stock shows its last price and the day's change. **View chart** (and the chart icon on each alert) opens a side panel with 1D/5D/1M/6M/1Y candles and your levels drawn in. Data comes from the user's own Kite session and is cached briefly (`app/prices.py`). The chart is drawn with TradingView's Lightweight Charts, loaded from jsDelivr on first use.
 
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
 
@@ -56,5 +60,5 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 ## Known limits
 
-- NSE holidays aren't skipped. The scanner runs on those weekdays, and Kite just returns no new candles.
+- Exchange holidays aren't skipped. The scanner runs on those weekdays, and Kite just returns no new candles.
 - Last prices shown on the alerts page live in memory and appear after the first scan following a restart.
