@@ -17,10 +17,10 @@
     <div class="mt-5 sm:w-[220px]">
       <label for="edit-ftf" class="label">Fractals on</label>
       <select id="edit-ftf" name="fractal_timeframe" class="field">
-        {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" {{ 'selected' if key == a.timeframe }}>{{ tf[0] }} candles</option>{% endfor %}
+        {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" data-min="{{ tf[2] }}" {{ 'selected' if key == a.timeframe }}>{{ tf[0] }} candles</option>{% endfor %}
       </select>
     </div>
-    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
+    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers, f_confirm=a.confirm_timeframe or '' %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
 
     <div class="mt-5">
       <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft/70">(optional)</span></label>

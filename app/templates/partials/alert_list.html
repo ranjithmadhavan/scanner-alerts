@@ -20,7 +20,7 @@
   {% if a.fractal -%}
     {# A fractal alert's levels are the instrument's unmitigated fractals; show the nearest on each side. #}
     <span class="inline-flex flex-wrap items-center gap-1 align-middle">
-      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}.">Fractal {{ a.fractal.tf|lower }}</span>
+      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
       {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft/80">levels appear after the first scan</span>
       {% else %}
         {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal high, formed {{ a.fractal.above.at|ist }}">High <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}

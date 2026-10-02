@@ -170,7 +170,7 @@ last_checked_at: dict[str, datetime] = {}  # alert id -> when the scanner last e
 last_run: dict = {}  # {"at": datetime, "alerts": int} for the most recent scan inside market hours
 _last_checked: dict[str, datetime] = {}  # alert id -> last candle boundary evaluated
 fractal_levels: dict[str, dict] = {}  # fractal alert id -> {"highs": [Fractal], "lows": [Fractal]} still unmitigated
-_fractal_history: dict[tuple[str, int, str], tuple[tuple, list[Candle]]] = {}  # (user, token, tf) -> (fetched for, candles)
+_fractal_history: dict[tuple, tuple[tuple, list[Candle]]] = {}  # (user, token, tf, what) -> (fetched for, candles)
 _scan_lock = threading.Lock()
 
 
@@ -273,12 +273,39 @@ def fractal_candles(client, alert: dict, s: MarketSettings, now: datetime) -> li
     return fractals.last_sessions([c for c in history if candle_end(c, tf, s) <= now - SETTLE], sessions)
 
 
-def _fractal_candles_cached(client, username: str, alert: dict, s: MarketSettings, now: datetime) -> list[Candle]:
-    """History only changes when a candle of the timeframe completes, so fetch it once per candle."""
-    key = (username, alert["token"], alert["timeframe"])
-    fetched_for = (now.date(), last_boundary(alert["timeframe"], s, now - SETTLE))
+def trigger_timeframe(alert: dict) -> str:
+    """The candle size sweeps and failed breaks are judged on: the alert's own choice, else the fractal timeframe."""
+    return alert.get("confirm_timeframe") or alert["timeframe"]
+
+
+def fractal_trigger_candles(client, alert: dict, since: date, s: MarketSettings, now: datetime) -> list[Candle]:
+    """Completed trigger candles from `since` (or as far back as Kite serves that candle size in one request)."""
+    tf = trigger_timeframe(alert)
+    start = max(since, now.date() - timedelta(days=fractals.MAX_DAYS[tf] - 1))
+    return [c for c in client.candles_range(alert["token"], tf, start, now.date()) if candle_end(c, tf, s) <= now - SETTLE]
+
+
+def fractal_stream(alert: dict, history: list[Candle], trigger_candles: list[Candle] | None,
+                   s: MarketSettings) -> tuple[list, list[Candle], int]:
+    """(fractals with the moment each came into being, candles to replay past them, index where the
+    trigger candles start). Before the trigger candles begin, the fractal timeframe's own candles
+    stand in, which is enough to know what was already mitigated."""
+    tf = alert["timeframe"]
+    found = fractals.find(history, lambda c: candle_end(c, tf, s))
+    if trigger_candles is None:  # same candle size for both
+        return found, history, 0
+    if not trigger_candles:
+        return found, history, len(history)
+    earlier = [c for c in history if candle_end(c, tf, s) <= trigger_candles[0].start]
+    return found, earlier + trigger_candles, len(earlier)
+
+
+def _cached(what: str, client, username: str, alert: dict, tf: str, s: MarketSettings, now: datetime, fetch) -> list[Candle]:
+    """Candles only change when one of that size completes, so fetch once per candle."""
+    key = (username, alert["token"], tf, what)
+    fetched_for = (now.date(), last_boundary(tf, s, now - SETTLE))
     if key not in _fractal_history or _fractal_history[key][0] != fetched_for:
-        _fractal_history[key] = (fetched_for, fractal_candles(client, alert, s, now))
+        _fractal_history[key] = (fetched_for, fetch())
     return _fractal_history[key][1]
 
 
@@ -291,10 +318,12 @@ def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
     f, tf = hit.fractal, alert["timeframe"]
     name = f"{fractals.TIMEFRAMES[tf][0].lower()} fractal {f.side} of {f.level:g}"
     beyond, back = ("above", "below") if f.side == "high" else ("below", "above")
+    candle = f"{fractals.label(trigger_timeframe(alert)).lower()} candle"  # the candle size the close is judged on
     what = {
         "touch": f"{alert['symbol']} traded {beyond} the {name}.",
-        "reject": f"{alert['symbol']} swept the {name} and closed back {back} it at {hit.price:g}.",
-        "fail": f"{alert['symbol']} closed {beyond} the {name}, then the next candle closed back {back} it at {hit.price:g}.",
+        "reject": f"{alert['symbol']} swept the {name} and the {candle} closed back {back} it at {hit.price:g}.",
+        "fail": (f"{alert['symbol']} closed a {candle} {beyond} the {name}, "
+                 f"then the next one closed back {back} it at {hit.price:g}."),
     }[hit.trigger]
     formed = "Fractal formed " + f.at.astimezone(IST).strftime("%d %b" if tf == "1d" else "%d %b, %-I:%M %p")
     other = "low" if f.side == "high" else "high"
@@ -321,6 +350,7 @@ def fractal_webhook_body(alert: dict, hit: fractals.Hit, message: str, text: str
         "level": f.level,
         "price": price,
         "timeframe": alert["timeframe"],
+        "trigger_timeframe": trigger_timeframe(alert),
         "fractal_time": f.at.isoformat(),
         "target": hit.target.level if hit.target else None,
         "candle": hit.candle.start.isoformat(),
@@ -360,40 +390,53 @@ def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) ->
 
 
 def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSettings, now: datetime) -> None:
-    tf = alert["timeframe"]
-    done = _fractal_candles_cached(client, username, alert, s, now)
-    hits, unmitigated = fractals.walk(done)
-    armed_at = datetime.fromisoformat(alert["armed_at"])
-    fired = set(alert.get("fired", []))
-    to_fire: list[tuple[fractals.Hit, float]] = []
-
-    # Sweeps and failed breaks are decided by candles of the timeframe that closed today.
-    for hit in hits:
-        end = candle_end(hit.candle, tf, s)
-        if (hit.trigger != "touch" and end.date() == now.date() and end > armed_at
-                and fractal_wanted(alert, hit) and hit.key not in fired):
-            to_fire.append((hit, hit.price))
-
-    # Touches are caught as they happen, on the minutes of the candle that is still forming.
+    tf, trigger_tf = alert["timeframe"], trigger_timeframe(alert)
+    history = _cached("history", client, username, alert, tf, s, now, lambda: fractal_candles(client, alert, s, now))
     key = (alert["token"], "1m")
     if key not in cache:
         cache[key] = client.candles(alert["token"], "1m", now.date())
     minutes = cache[key]
     if minutes:
         last_prices[(username, alert_key(alert))] = (minutes[-1].close, now)
-    forming_from = candle_end(done[-1], tf, s) if done and done[-1].start.date() == now.date() and tf != "1d" else s.open_at(now)
+
+    # Today's completed trigger candles, when they aren't the fractal timeframe's own.
+    if trigger_tf == tf:
+        today = None
+    elif trigger_tf == "1m":
+        today = [m for m in minutes if candle_end(m, "1m", s) <= now - SETTLE]
+    else:
+        today = _cached("today", client, username, alert, trigger_tf, s, now,
+                        lambda: fractal_trigger_candles(client, alert, now.date(), s, now))
+    found, stream, first = fractal_stream(alert, history, today, s)
+    hits, unmitigated = fractals.replay(found, stream)
+    armed_at = datetime.fromisoformat(alert["armed_at"])
+    fired = set(alert.get("fired", []))
+    to_fire: list[tuple[fractals.Hit, float]] = []
+
+    # What today's completed trigger candles decided: sweeps, failed breaks, and any touch not caught live.
+    for hit in hits:
+        end = candle_end(hit.candle, trigger_tf, s)
+        if (hit.index >= first and end.date() == now.date() and end > armed_at
+                and fractal_wanted(alert, hit) and hit.key not in fired):
+            traded = hit.candle.high if hit.fractal.side == "high" else hit.candle.low
+            to_fire.append((hit, traded if hit.trigger == "touch" else hit.price))
+            fired.add(hit.key)
+
+    # Touches are caught as they happen, on the minutes of the trigger candle that is still forming.
+    done_today = [c for c in stream[first:] if c.start.date() == now.date()]
+    forming_from = candle_end(done_today[-1], trigger_tf, s) if done_today and trigger_tf != "1d" else s.open_at(now)
     forming = [m for m in minutes if m.start >= forming_from]
     touched, touches = [], []
     for f in unmitigated:
-        first = next((m for m in forming if f.traded_beyond(m)), None)
-        if not first:
+        first_beyond = next((m for m in forming if f.traded_beyond(m)), None)
+        if not first_beyond:
             continue
         touched.append(f)
-        gap = first.start <= s.open_at(now) and f.is_beyond(first.open)  # the session opened beyond the level
-        hit = fractals.Hit(f, "touch", first, -1, f.level)
-        if (not gap and first.start >= armed_at.replace(second=0, microsecond=0)
+        gap = first_beyond.start <= s.open_at(now) and f.is_beyond(first_beyond.open)  # the session opened beyond the level
+        hit = fractals.Hit(f, "touch", first_beyond, -1, f.level)
+        if (not gap and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
                 and fractal_wanted(alert, hit) and hit.key not in fired):
-            touches.append((hit, first.high if f.side == "high" else first.low))
+            touches.append((hit, first_beyond.high if f.side == "high" else first_beyond.low))
     remaining = [f for f in unmitigated if f not in touched]
     for hit, _ in touches:
         hit.target = fractals.target_for(hit.fractal.side, hit.price, remaining)

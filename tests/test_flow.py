@@ -869,6 +869,11 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
             return history + state["today"]
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
 
+    # The form starts with "Is swept" and "Break fails" ticked, not "Is taken".
+    form = client.get("/alerts").text
+    for trigger, ticked in (("touch", False), ("reject", True), ("fail", True)):
+        assert (f'name="triggers" value="{trigger}" class="peer sr-only" checked' in form) is ticked, trigger
+
     # Created from the New alert form in Fractals mode: no price level needed.
     r = client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m", "sides": "both",
                                      "triggers": ["touch", "reject"], "channels": ["telegram"],
@@ -913,7 +918,7 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
     state["minutes"].append(minute(44, 109.5, 109.8, 108.8, 109))
     scanner.run_scan(monday.replace(minute=45, second=20))
     assert len(sent) == 2 and sent[1][0] == "🔔 Potential sell: INFY 30 min fractal high 110 swept"
-    assert "swept the 30 min fractal high of 110 and closed back below it at 109." in sent[1][1]
+    assert "swept the 30 min fractal high of 110 and the 30 min candle closed back below it at 109." in sent[1][1]
     assert posted[1]["trigger"] == "reject"
     scanner.run_scan(monday.replace(minute=46, second=20))
     assert len(sent) == 2
@@ -1011,11 +1016,128 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
                                               "sides": "both", "triggers": ["touch", "reject", "fail"]})
     page = r.text
     assert "Backtest ready: 4 signals" in r.headers["HX-Trigger"]
-    assert "INFY: 4 signals, 2 of 4 reached their target" in page                   # both sell signals reached 100
+    assert "INFY: 4 signals" in page and "2 reached target" in page and "0 SL gone" in page and "2 still open" in page
     assert "Potential sell" in page and "Potential buy" in page and "Swept, closed back" in page
-    assert "₹100.00" in page and "Reached 25 Sep" in page
-    assert "₹111.00" in page and "Not reached yet" in page       # the buys aim at the new fractal high left by the sweep
+    assert "₹100.00" in page and "Target reached 25 Sep" in page         # both sell signals fell to the fractal low
+    assert "₹111.00" in page and "Open: neither target nor SL yet" in page   # the buys aim at the new high left by the sweep
+    assert ">SL<" in page and "₹99.50" in page                             # each row shows its stop
+
+    # Same morning, but price pushes above the sweep's high before falling: SL gone, target reached later.
+    candles[4:] = [Candle(day + timedelta(minutes=120), 109, 111.6, 108, 110), Candle(day + timedelta(minutes=150), 110, 110, 99.5, 101)]
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m",
+                                              "sides": "high", "triggers": ["reject"]})
+    assert "0 reached target" in r.text and "1 SL gone (1 reached target later)" in r.text
+    assert "SL gone 25 Sep, 11:15 AM" in r.text and "reached target later, 25 Sep, 11:45 AM" in r.text
+    candles[4:] = [Candle(day + timedelta(minutes=120), 109, 109, 103, 104), Candle(day + timedelta(minutes=150), 104, 105, 99.5, 101)]
     assert store.list("alerts", user="boss") == []                                  # nothing saved
 
     r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "sides": "low", "triggers": ["touch"]})
     assert "INFY: 1 signal" in r.text
+
+
+def test_fractal_sweep_judged_on_a_shorter_trigger_candle(client, monkeypatch):
+    from datetime import timedelta
+    login(client, "boss", "boss-pass-123")
+    scanner._fractal_history.clear()
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "boss", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    sent = []
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
+    friday = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    monday = datetime(2026, 9, 28, 9, 15, tzinfo=IST)
+    history = [Candle(friday + timedelta(minutes=30 * i), *row) for i, row in enumerate(
+        [(104, 106, 102, 105), (105, 110, 100, 104), (104, 108, 101, 105), (105, 107, 103, 106)])]
+    state = {"1m": [], "5m": []}
+    asked = []
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return state[tf]
+
+        def candles_range(self, token, tf, start, end):
+            asked.append(tf)
+            return history if tf == "30m" else state[tf]
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+
+    # The trigger candle must be shorter than the fractal candles and divide into them.
+    bad = client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "15m",
+                                       "confirm_timeframe": "10m", "triggers": ["reject"]})
+    assert bad.headers.get("HX-Reswap") == "none" and "doesn't fit" in bad.headers["HX-Trigger"]
+    r = client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m", "confirm_timeframe": "5m",
+                                     "sides": "both", "triggers": ["reject", "fail"], "channels": ["telegram"]})
+    assert "Fractal 30 min, 5 min close" in r.text
+    a = store.list("alerts", user="boss")[0]
+    assert a["confirm_timeframe"] == "5m"
+    store.update("alerts", a["id"], {"armed_at": friday.replace(hour=14).isoformat()})
+    form = client.get(f"/alerts/{a['id']}/edit").text
+    assert '<option value="5m" data-min="5" selected>' in form
+
+    # 9:20:15: the first 5-minute candle wicked above 110 and closed back. Reported now, not at 9:45.
+    state["5m"] = [Candle(monday, 106, 110.7, 105.5, 109.2)]
+    state["1m"] = [Candle(monday.replace(minute=m), 106, 110.7 if m == 17 else 108, 105.5, 109.2) for m in range(15, 20)]
+    scanner.run_scan(monday.replace(minute=20, second=15))
+    assert len(sent) == 1 and sent[0][0] == "🔔 Potential sell: INFY 30 min fractal high 110 swept"
+    assert "swept the 30 min fractal high of 110 and the 5 min candle closed back below it at 109.2." in sent[0][1]
+    assert "Target: 100, the nearest unmitigated fractal low." in sent[0][1]
+    assert "5m" in asked and "30m" in asked
+    scanner.run_scan(monday.replace(minute=21, second=15))
+    assert len(sent) == 1
+
+    # The fractal low: one 5-minute candle closes below 100, the next closes back above. A failed break.
+    state["5m"] += [Candle(monday.replace(minute=20), 109, 109, 99.2, 99.6), Candle(monday.replace(minute=25), 99.6, 101.5, 99.4, 101)]
+    state["1m"] += [Candle(monday.replace(minute=m), 100, 101.5, 99.2, 101) for m in range(20, 30)]
+    scanner.run_scan(monday.replace(minute=30, second=15))
+    assert len(sent) == 2 and sent[1][0] == "🔔 Potential buy: INFY 30 min fractal low 100 break failed"
+    assert "closed a 5 min candle below the 30 min fractal low of 100, then the next one closed back above it at 101." in sent[1][1]
+    store.delete("alerts", a["id"])
+    scanner._fractal_history.clear()
+
+
+def test_fractal_backtest_with_trigger_candle_and_chart(client, monkeypatch):
+    from datetime import timedelta
+    import json as jsonlib
+    import re
+    login(client, "boss", "boss-pass-123")
+    day = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    half_hours = [Candle(day + timedelta(minutes=30 * i), *row) for i, row in enumerate(
+        [(104, 106, 102, 105), (105, 110, 100, 104), (104, 108, 101, 105), (105, 111, 104, 109)])]
+    # 5-minute candles of the same morning; the sweep of 110 happens in the 10:50 candle.
+    fives = [Candle(day + timedelta(minutes=5 * i), 105, 106, 104, 105) for i in range(18)]
+    fives += [Candle(day + timedelta(minutes=90), 105, 108, 104.5, 107.5), Candle(day + timedelta(minutes=95), 107.5, 111, 107, 109.5),
+              Candle(day + timedelta(minutes=100), 109.5, 109.8, 108, 109)]
+
+    class FakeKite:
+        def candles_range(self, token, tf, start, end):
+            return {"30m": half_hours, "5m": fives}[tf]
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr("app.routes.alerts.now_ist", lambda: datetime(2026, 9, 26, 12, 0, tzinfo=IST))
+
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m",
+                                              "confirm_timeframe": "5m", "sides": "both", "triggers": ["touch", "reject", "fail"]})
+    page = r.text
+    assert "Fractals on 30 min candles" in page and "judged on 5 min closes" in page
+    assert "INFY: 2 signals" in page and "on the 5 min close" in page and 'data-bt-signal="1"' in page
+    assert "25 Sep, 10:55 AM" in page                                   # the 5-minute candle's close, not 11:15
+    chart = jsonlib.loads(re.search(r'<script type="application/json" id="bt-data">(.*?)</script>', page, re.S).group(1))
+    assert len(chart["candles"]) == len(fives) and not chart["daily"]
+    assert [(s["signal"], s["label"], s["level"], s["target"]) for s in chart["signals"]] == [
+        ("sell", "Taken 110", 110, 100), ("sell", "Swept 110", 110, 100)]
+    assert [s["stop"] for s in chart["signals"]] == [111, 111]
+    assert chart["signals"][0]["time"] == chart["candles"][19]["time"]   # marked on the candle it happened in
+
+    # Fractals can be found on small candles too: here on the 5-minute candles themselves.
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "5m",
+                                              "sides": "both", "triggers": ["touch", "reject", "fail"]})
+    assert "Fractals on 5 min candles" in r.text and "judged on the same candles" in r.text and "INFY: " in r.text
+    form = client.get("/alerts").text
+    for tf in ("3m", "5m", "10m", "15m", "30m", "1h", "1d"):
+        assert f'<option value="{tf}" data-min=' in form.split('name="fractal_timeframe"')[1].split("</select>")[0], tf
+
+    # Left at the default, the fractal candles decide.
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m",
+                                              "sides": "both", "triggers": ["reject"]})
+    assert "judged on the same candles" in r.text and "25 Sep, 11:15 AM" in r.text

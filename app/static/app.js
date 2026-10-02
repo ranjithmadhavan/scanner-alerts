@@ -76,6 +76,23 @@ scrim?.addEventListener("click", () => setMenu(false));
     sync(form);
   });
   document.addEventListener("htmx:afterSwap", syncAll); // the Edit panel arrives by htmx
+
+  // Fractal alerts: the trigger candle has to be shorter than the fractal candles and divide into them.
+  function syncTrigger(form) {
+    const fractal = form.querySelector('[name="fractal_timeframe"]');
+    const trigger = form.querySelector('[name="confirm_timeframe"]');
+    if (!fractal || !trigger) return;
+    const whole = Number(fractal.selectedOptions[0].dataset.min);
+    [...trigger.options].forEach((o) => {
+      const part = Number(o.dataset.min);
+      if (o.value) o.disabled = !(part < whole && (fractal.value === "1d" || whole % part === 0));
+    });
+    if (trigger.selectedOptions[0].disabled) trigger.value = "";
+  }
+  const syncTriggers = () => document.querySelectorAll("form").forEach(syncTrigger);
+  document.addEventListener("change", (e) => { if (e.target.name === "fractal_timeframe") syncTrigger(e.target.form); });
+  document.addEventListener("htmx:afterSwap", syncTriggers);
+  syncTriggers();
   document.addEventListener("keydown", (e) => {
     const editor = document.getElementById("alert-editor");
     if (e.key === "Escape" && editor?.children.length) editor.innerHTML = "";
@@ -177,9 +194,80 @@ document.addEventListener("click", async (e) => {
   input.addEventListener("input", () => { if (!input.value.trim()) load(); });
 })();
 
+// ---- Charts (TradingView Lightweight Charts, loaded on first use) ---------------------
+const CHART_LIB = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js";
+function loadChartLib() {
+  if (window.LightweightCharts) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = CHART_LIB; s.onload = resolve; s.onerror = () => reject(new Error("Couldn't load the chart library."));
+    document.head.appendChild(s);
+  });
+}
+const chartRupees = (p) => "₹" + p.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const chartLook = (L) => ({
+  autoSize: true,
+  layout: { background: { color: "#FFFFFF" }, textColor: "#5F7476", fontFamily: "Figtree, system-ui, sans-serif" },
+  grid: { vertLines: { color: "#F4EFE8" }, horzLines: { color: "#F4EFE8" } },
+  rightPriceScale: { borderColor: "#ECE6DC" },
+  timeScale: { borderColor: "#ECE6DC" },
+  crosshair: { mode: L.CrosshairMode.Normal },
+  localization: { priceFormatter: chartRupees },
+});
+const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: false, wickUpColor: "#2E8B57", wickDownColor: "#C2475A" };
+
+// ---- Fractal backtest: trigger candles with every signal marked ------------------------
+(() => {
+  let chart, series, data, lines = [], position = new Map();
+
+  function focus(n) {
+    const signal = data?.signals[n];
+    if (!signal || !series) return;
+    lines.forEach((line) => series.removePriceLine(line));
+    lines = [series.createPriceLine({ price: signal.level, color: "#E9A23B", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Fractal " + signal.side })];
+    if (signal.target !== null) {
+      lines.push(series.createPriceLine({ price: signal.target, color: "#0F5E5C", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Target" }));
+    }
+    lines.push(series.createPriceLine({ price: signal.stop, color: "#C2475A", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "SL" }));
+    const at = position.get(String(signal.time));
+    chart.timeScale().setVisibleLogicalRange({ from: at - 60, to: at + 40 });
+    document.querySelectorAll("[data-bt-signal]").forEach((row) => row.classList.toggle("bg-marigold-50", Number(row.dataset.btSignal) === n));
+  }
+
+  async function build(root) {
+    const source = root.querySelector("#bt-data");
+    const box = root.querySelector("#bt-chart");
+    if (!source || !box) return;
+    data = JSON.parse(source.textContent);
+    try { await loadChartLib(); } catch (e) { root.querySelector("#bt-chart-note").textContent = e.message; return; }
+    const L = window.LightweightCharts;
+    chart?.remove();
+    chart = L.createChart(box, chartLook(L));
+    chart.applyOptions({ timeScale: { timeVisible: !data.daily, secondsVisible: false } });
+    series = chart.addCandlestickSeries(candleLook);
+    series.setData(data.candles);
+    series.setMarkers(data.signals.map((s) => ({
+      time: s.time, text: s.label,
+      position: s.signal === "sell" ? "aboveBar" : "belowBar",
+      shape: s.signal === "sell" ? "arrowDown" : "arrowUp",
+      color: s.signal === "sell" ? "#C2475A" : "#2E8B57",
+    })));
+    position = new Map(data.candles.map((c, i) => [String(c.time), i]));
+    lines = [];
+    if (data.signals.length) focus(data.signals.length - 1); else chart.timeScale().fitContent();
+  }
+
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-bt-signal]");
+    if (!row) return;
+    focus(Number(row.dataset.btSignal));
+    document.getElementById("bt-chart")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+  document.addEventListener("htmx:afterSwap", (e) => { if (e.detail.target.id === "sim-result") build(e.detail.target); });
+})();
+
 // ---- Chart side panel ---------------------------------------------------------
 const StockChart = (() => {
-  const LIB = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js";
   const drawer = document.getElementById("chart-drawer");
   if (!drawer) return null;
   const box = document.getElementById("chart");
@@ -187,31 +275,14 @@ const StockChart = (() => {
   const levelNote = document.getElementById("chart-level");
   let chart, series, levelLines = [], lastFocus, request = 0;
   const state = { symbol: "", range: "1D", levels: [] };
-  const rupees = (p) => "₹" + p.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  function loadLib() {
-    if (window.LightweightCharts) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = LIB; s.onload = resolve; s.onerror = () => reject(new Error("Couldn't load the chart library."));
-      document.head.appendChild(s);
-    });
-  }
+  const rupees = chartRupees;
+  const loadLib = loadChartLib;
 
   function build() {
     const L = window.LightweightCharts;
-    chart = L.createChart(box, {
-      autoSize: true,
-      layout: { background: { color: "#FFFFFF" }, textColor: "#5F7476", fontFamily: "Figtree, system-ui, sans-serif" },
-      grid: { vertLines: { color: "#F4EFE8" }, horzLines: { color: "#F4EFE8" } },
-      rightPriceScale: { borderColor: "#ECE6DC" },
-      timeScale: { borderColor: "#ECE6DC" },
-      crosshair: { mode: L.CrosshairMode.Normal },
-      localization: { priceFormatter: rupees },
-    });
+    chart = L.createChart(box, chartLook(L));
     series = chart.addCandlestickSeries({
-      upColor: "#2E8B57", downColor: "#C2475A", borderVisible: false,
-      wickUpColor: "#2E8B57", wickDownColor: "#C2475A",
+      ...candleLook,
       // Stretch the price axis so every level line is on screen, even far from price.
       autoscaleInfoProvider: (original) => {
         const res = original();

@@ -61,13 +61,13 @@
     <div data-kind-section="fractal" hidden>
       <label for="fractal-timeframe" class="label">Fractals on</label>
       <select id="fractal-timeframe" name="fractal_timeframe" class="field">
-        {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" {{ 'selected' if key == fractal_default }}>{{ tf[0] }} candles, last {{ tf[1] }} sessions</option>{% endfor %}
+        {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" data-min="{{ tf[2] }}" {{ 'selected' if key == fractal_default }}>{{ tf[0] }} candles, last {{ tf[1] }} sessions</option>{% endfor %}
       </select>
     </div>
   </div>
 
   <div data-kind-section="fractal" class="mt-5" hidden>
-    {% with f_sides='both', f_triggers=['touch'] %}{% include "partials/fractal_fields.html" %}{% endwith %}
+    {% with f_sides='both', f_triggers=['reject', 'fail'], f_confirm='' %}{% include "partials/fractal_fields.html" %}{% endwith %}
   </div>
 
   <div data-kind-section="price">

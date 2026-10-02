@@ -92,6 +92,7 @@ def _fractal_view(a: dict, price: float | None) -> dict:
     sides = a.get("sides", "both")
     return {
         "tf": fractals.TIMEFRAMES[a["timeframe"]][0], "scanned": found is not None,
+        "trigger": fractals.label(scanner.trigger_timeframe(a)),
         "sides": fractals.SIDES[sides], "triggers": [fractals.TRIGGERS[t] for t in a.get("triggers", [])],
         "above": next((f for f in highs if price is None or f.level > price), None) if sides != "low" else None,
         "below": next((f for f in lows if price is None or f.level < price), None) if sides != "high" else None,
@@ -233,29 +234,38 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
 
 
 def _fractal_options() -> dict:
-    return {"fractal_timeframes": fractals.TIMEFRAMES, "fractal_default": fractals.DEFAULT_TIMEFRAME,
-            "fractal_triggers": fractals.TRIGGERS, "fractal_sides": fractals.SIDES}
+    return {"fractal_timeframes": {k: (*v, fractals.minutes(k)) for k, v in fractals.TIMEFRAMES.items()},
+            "fractal_default": fractals.DEFAULT_TIMEFRAME,
+            "fractal_triggers": fractals.TRIGGERS, "fractal_sides": fractals.SIDES,
+            "trigger_candles": [(tf, fractals.label(tf), fractals.minutes(tf)) for tf in TIMEFRAMES if tf != "1d"]}
 
 
-def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str]) -> tuple[dict, str | None]:
+def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str],
+                    confirm_timeframe: str = "") -> tuple[dict, str | None]:
     """The fractal part of the form as alert fields. Returns (fields, None) or ({}, error)."""
     if fractal_timeframe not in fractals.TIMEFRAMES:
         return {}, "Choose a timeframe to find fractals on."
+    if confirm_timeframe == fractal_timeframe:
+        confirm_timeframe = ""  # the same candles: nothing separate to remember
+    if confirm_timeframe and confirm_timeframe not in fractals.trigger_choices(fractal_timeframe):
+        return {}, (f"A {fractals.label(confirm_timeframe).lower()} trigger candle doesn't fit {fractals.label(fractal_timeframe).lower()} "
+                    "fractals. Pick a shorter candle that divides into the fractal timeframe.")
     if sides not in fractals.SIDES:
         return {}, "Choose which fractals to watch."
     chosen = [t for t in fractals.TRIGGERS if t in triggers]
     if not chosen:
         return {}, "Choose at least one thing to be alerted about."
-    return {"timeframe": fractal_timeframe, "sides": sides, "triggers": chosen}, None
+    return {"timeframe": fractal_timeframe, "confirm_timeframe": confirm_timeframe, "sides": sides, "triggers": chosen}, None
 
 
 def _build_fractal_alert(user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str], note: str,
-                         channels: list[str], hooks: str = "", hook_payload: str = "") -> tuple[dict | None, str | None]:
+                         channels: list[str], hooks: str = "", hook_payload: str = "",
+                         confirm_timeframe: str = "") -> tuple[dict | None, str | None]:
     """Validate the New alert form in Fractals mode. Returns (alert, None) or (None, error message)."""
     inst = _instrument(symbol)
     if not inst:
         return None, f"We couldn't find {symbol.strip().upper() or 'that symbol'}. Pick one from the suggestions."
-    fields, error = _fractal_fields(fractal_timeframe, sides, triggers)
+    fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe)
     if error:
         return None, error
     hook_fields, error = _webhook_fields(hooks, hook_payload)
@@ -360,12 +370,13 @@ def create(
     webhooks: str = Form(""),
     webhook_payload: str = Form(""),
     fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
 ):
     if kind == "fractal":
         alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, note, channels,
-                                            webhooks, webhook_payload)
+                                            webhooks, webhook_payload, confirm_timeframe)
     else:
         alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
                                     extra_condition, extra_level, webhooks, webhook_payload)
@@ -397,6 +408,7 @@ def simulate(
     extra_condition: list[str] = Form([]),
     extra_level: list[str] = Form([]),
     fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
 ):
@@ -404,7 +416,7 @@ def simulate(
     result to the chosen channels. Nothing is saved. In Fractals mode: a backtest over the
     sessions fractals are searched on, shown on the page."""
     if kind == "fractal":
-        return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers)
+        return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers, confirm_timeframe)
     alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
                                 extra_condition, extra_level)
     if error:
@@ -429,32 +441,66 @@ def simulate(
     return toast(render(request, "partials/simulation.html", ctx), msg, "success" if sent else "error")
 
 
-def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str]):
-    alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, "", [])
+def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str],
+                      confirm_timeframe: str = ""):
+    alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, "", [],
+                                        confirm_timeframe=confirm_timeframe)
     if error:
         return fail(error)
-    s, tf = load_settings(), alert["timeframe"]
+    s, now, tf, trigger_tf = load_settings(), now_ist(), alert["timeframe"], scanner.trigger_timeframe(alert)
     try:
-        candles = scanner.fractal_candles(brokers.client_for(user["username"]), alert, s, now_ist())
+        client = brokers.client_for(user["username"])
+        history = scanner.fractal_candles(client, alert, s, now)
+        if len(history) < 3:
+            return fail(f"Kite returned too few candles for {alert['symbol']} to find fractals.")
+        trigger_candles = None if trigger_tf == tf else scanner.fractal_trigger_candles(
+            client, alert, history[0].start.date(), s, now)
     except KiteAuthError:
         return fail("Kite isn't connected or the session has expired. Log in on the Broker page first.")
     except KiteError as e:
         return fail(f"Couldn't get prices from Kite: {e}")
-    if len(candles) < 3:
-        return fail(f"Kite returned too few candles for {alert['symbol']} to find fractals.")
-    hits, unmitigated = fractals.walk(candles)
-    rows = [{"hit": h, "reached": fractals.target_reached(h, candles),
-             # A touch is dated by the candle it happened in, the others by that candle's close.
-             "when": h.candle.start if h.trigger == "touch" else scanner.candle_end(h.candle, tf, s)}
-            for h in hits if scanner.fractal_wanted(alert, h)]
-    with_target = [r for r in rows if r["hit"].target]
+    found, stream, first = scanner.fractal_stream(alert, history, trigger_candles, s)
+    if first >= len(stream):
+        return fail(f"Kite returned no {fractals.label(trigger_tf).lower()} candles for {alert['symbol']}.")
+    hits, unmitigated = fractals.replay(found, stream)
+    daily = trigger_tf == "1d"
+
+    def chart_time(c: Candle):
+        return c.start.astimezone(prices.IST).date().isoformat() if daily else int(c.start.timestamp()) + prices.IST_OFFSET
+
+    # Signals come only from the trigger candles; anything earlier just settles what was already mitigated.
+    shown = stream[first:][-6000:]  # what the chart draws
+    rows = []
+    for h in hits:
+        if h.index < first or not scanner.fractal_wanted(alert, h):
+            continue
+        rows.append({"hit": h, "outcome": fractals.outcome(h, stream),
+                     # A touch is dated by the candle it happened in, the others by that candle's close.
+                     "when": h.candle.start if h.trigger == "touch" else scanner.candle_end(h.candle, trigger_tf, s),
+                     "n": None})
+    signals = []
+    for r in rows:
+        h = r["hit"]
+        if h.candle.start >= shown[0].start:
+            r["n"] = len(signals)
+            signals.append({"time": chart_time(h.candle), "signal": h.signal, "level": h.fractal.level,
+                            "side": h.fractal.side, "target": h.target.level if h.target else None,
+                            "stop": r["outcome"].stop,
+                            "label": f"{scanner.FRACTAL_OUTCOME[h.trigger].capitalize()} {h.fractal.level:g}"})
+    results = [r["outcome"].result for r in rows]
     ctx = {
-        "alert": alert, "tf_label": fractals.TIMEFRAMES[tf][0], "daily": tf == "1d",
-        "first": candles[0].start, "last": candles[-1].start, "sessions": len({c.start.date() for c in candles}),
+        "alert": alert, "tf_label": fractals.label(tf), "trigger_label": fractals.label(trigger_tf),
+        "same_candles": trigger_tf == tf, "daily": daily, "fractal_daily": tf == "1d",
+        "first": stream[first].start, "last": stream[-1].start, "sessions": len({c.start.date() for c in stream[first:]}),
         "rows": rows[::-1][:60], "total": len(rows),
-        "with_target": len(with_target), "reached": sum(1 for r in with_target if r["reached"]),
+        "tally": {"target": results.count("target"), "stop": results.count("stop"),
+                  "open": results.count("open") + results.count("none"),
+                  "late": sum(1 for r in rows if r["outcome"].reached_after_stop)},
         "highs": sorted((f for f in unmitigated if f.side == "high"), key=lambda f: f.level),
         "lows": sorted((f for f in unmitigated if f.side == "low"), key=lambda f: f.level, reverse=True),
+        "chart": {"daily": daily, "signals": signals,
+                  "candles": [{"time": chart_time(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close}
+                              for c in shown]},
     }
     return toast(render(request, "partials/fractal_backtest.html", ctx), f"Backtest ready: {len(rows)} signal{'s' if len(rows) != 1 else ''}")
 
@@ -509,6 +555,7 @@ def edit(
     webhooks: str = Form(""),
     webhook_payload: str = Form(""),
     fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
 ):
@@ -517,7 +564,7 @@ def edit(
     if not a:
         return HTMLResponse(status_code=404)
     if scanner.is_fractal(a):
-        fields, error = _fractal_fields(fractal_timeframe, sides, triggers)
+        fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe)
         if not error:
             hook_fields, error = _webhook_fields(webhooks, webhook_payload)
         if error:
