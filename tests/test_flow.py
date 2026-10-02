@@ -705,3 +705,129 @@ def test_edit_alert_add_change_remove_and_rearm_levels(client, monkeypatch):
     assert client.post("/alerts/e2/edit", data={"extra_index": ["new"], "extra_condition": ["cross"], "extra_level": ["1"]}).status_code == 404
     store.delete("alerts", "e1")
     store.delete("alerts", "e2")
+
+
+def test_webhooks_are_optional_and_post_json_when_a_level_is_hit(client, monkeypatch):
+    from app import webhooks
+    login(client, "boss", "boss-pass-123")
+    monkeypatch.setattr("app.routes.alerts._armed_price", lambda u, a: None)
+    monkeypatch.setattr(webhooks, "_is_public", lambda host: host != "localhost")
+    posted = []
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    def fake_post(url, json, timeout, follow_redirects, headers):
+        posted.append((url, json))
+        return Resp(500 if "down" in url else 200)
+    monkeypatch.setattr(webhooks.httpx, "post", fake_post)
+
+    def create(**more):
+        return client.post("/alerts", data={"symbol": "INFY", "condition": "cross", "level": "1510", **more})
+
+    # Bad input is refused and nothing is saved.
+    for bad in ({"webhooks": "ftp://example.com/x"}, {"webhooks": "http://localhost/hook"},
+                {"webhooks": "https://a.example/h", "webhook_payload": "{not json"}, {"webhook_payload": '{"a": 1}'},
+                {"webhooks": "\n".join(f"https://h{i}.example/x" for i in range(6))}):
+        assert create(**bad).headers.get("HX-Reswap") == "none", bad
+    assert store.list("alerts", user="boss") == []
+
+    r = create(webhooks="https://bot.example/hook\nhttps://down.example/hook\nhttps://bot.example/hook",
+               webhook_payload='{"strategy": "sweep",\n "qty": 50, "tags": [["a"], ["b"]]}')
+    assert "2 webhooks" in r.text
+    a = store.list("alerts", user="boss")[0]
+    assert a["webhooks"] == ["https://bot.example/hook", "https://down.example/hook"]
+    assert a["webhook_payload"] == '{"strategy":"sweep","qty":50,"tags":[["a"],["b"]]}'
+
+    # The edit panel shows them, can test them, and can change them.
+    form = client.get(f"/alerts/{a['id']}/edit").text
+    assert "https://bot.example/hook" in form and "&#34;strategy&#34;" in form and "Send a test request" in form
+    r = client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://bot.example/hook", "webhook_payload": '{"x": 1}'})
+    assert "Test request sent to 1 webhook URL" in r.headers["HX-Trigger"]
+    assert posted[-1][1]["test"] is True and posted[-1][1]["payload"] == {"x": 1} and posted[-1][1]["symbol"] == "INFY"
+    assert "HTTP 500" in client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://down.example/h"}).headers["HX-Trigger"]
+    assert store.get("alerts", a["id"])["webhooks"] == a["webhooks"]          # testing saves nothing
+
+    # A hit posts to every URL; one failing endpoint doesn't stop the other, and the result is logged.
+    now = datetime(2026, 9, 28, 11, 0, 30, tzinfo=IST)
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.update("alerts", a["id"], {"armed_at": now.replace(second=0).isoformat(), "note": "Range high"})
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return [Candle(now.replace(second=0), 1500, 1512, 1499, 1505)]
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    posted.clear()
+    scanner.run_scan(now)
+    assert [url for url, _ in posted] == a["webhooks"]
+    body = posted[0][1]
+    assert body["symbol"] == "INFY" and body["message"] == "Range high" and body["test"] is False
+    assert (body["direction"], body["level"], body["price"], body["condition"]) == ("above", 1510.0, 1512, "high_above")
+    assert body["text"] == "INFY crossed above your level of 1510." and body["time"] == now.isoformat()
+    assert body["payload"] == {"strategy": "sweep", "qty": 50, "tags": [["a"], ["b"]]}
+    event = [e for e in store.list("events", user="boss") if e["alert_id"] == a["id"]][0]
+    assert event["delivery"]["webhook"] == "Reached 1 of 2. down.example: HTTP 500"
+
+    # Clearing the box in the edit panel removes the webhooks.
+    client.post(f"/alerts/{a['id']}/edit", data={"extra_index": ["0"], "extra_condition": ["cross"], "extra_level": ["1510"]})
+    saved = store.get("alerts", a["id"])
+    assert saved["webhooks"] == [] and saved["webhook_payload"] == ""
+    store.delete("alerts", a["id"])
+
+
+def test_webhook_urls_must_be_public():
+    from app import webhooks
+    assert "isn't a web address" in webhooks.url_problem("javascript:alert(1)")
+    for private in ("http://127.0.0.1/x", "http://10.0.0.5/x", "http://169.254.169.254/latest/meta-data", "http://[::1]/x"):
+        assert "can't be reached from the internet" in webhooks.url_problem(private), private
+    assert webhooks.send(["http://127.0.0.1/x"], {}) == "127.0.0.1: not a public address"
+
+
+def test_nothing_is_scanned_outside_market_hours_or_on_holidays(client, monkeypatch):
+    from app import market
+    store.put("alerts", "h1", {"id": "h1", "user": "hari", "symbol": "INFY", "token": 1, "timeframe": "", "status": "active",
+                               "channels": ["telegram"], "armed_at": "2026-09-25T10:00:00+05:30",
+                               "levels": [{"level": 1, "condition": "high_above", "status": "active"}]})
+    store.put("contacts", "hari", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    sent, asked = [], []
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append(s))
+
+    def no_kite(u, doc=None):
+        asked.append(u)
+        raise AssertionError("Kite was called outside market hours")
+    monkeypatch.setattr(brokers, "client_for", no_kite)
+
+    thursday = datetime(2026, 10, 1, tzinfo=IST)
+    closed = [thursday.replace(hour=9, minute=14, second=59),     # a second before the open
+              thursday.replace(hour=15, minute=32),               # after the close and its 2-minute grace
+              thursday.replace(hour=23), thursday.replace(hour=3),
+              datetime(2026, 10, 2, 11, 0, tzinfo=IST),            # Gandhi Jayanti, a Friday
+              datetime(2026, 10, 3, 11, 0, tzinfo=IST)]            # Saturday
+    for when in closed:
+        scanner.run_scan(when)
+    assert asked == [] and sent == []                              # no Kite calls, no alerts, no login notices
+    assert store.get("alerts", "h1")["status"] == "active"
+    assert scanner.next_open(market.load_settings(), closed[4]) == datetime(2026, 10, 5, 9, 15, tzinfo=IST)
+
+    # The same alert is picked up as soon as the market is open.
+    scanner.run_scan(thursday.replace(hour=9, minute=15, second=5))
+    assert len(sent) == 1 and "Kite" in sent[0]                    # broker isn't connected: the usual notice
+    store.delete("alerts", "h1")
+
+    # The super admin manages the holiday list.
+    login(client, "boss", "boss-pass-123")
+    assert "Mahatma Gandhi Jayanti" in client.get("/admin/market").text or datetime.now(IST).date().isoformat() > "2026-10-02"
+    r = client.post("/admin/market/holidays", data={"day": "2026-12-31", "name": "Year end"})
+    assert "Year end" in r.text and not market.is_trading_day(datetime(2026, 12, 31, 11, tzinfo=IST))
+    client.post("/admin/market", data={"open_time": "09:15", "close_time": "15:30", "scan_interval": "60"})
+    assert "2026-12-31" in market.load_settings().holidays                      # saving hours keeps the holidays
+    client.post("/admin/market/holidays/remove", data={"day": "2026-12-31"})
+    assert market.is_trading_day(datetime(2026, 12, 31, 11, tzinfo=IST))
+    monkeypatch.setattr("app.routes.admin.fetch_nse_holidays", lambda: {"2027-01-26": "Republic Day", "2026-12-25": "Christmas"})
+    r = client.post("/admin/market/holidays/fetch")
+    assert "Added 1 holiday from NSE" in r.headers["HX-Trigger"] and "Republic Day" in r.text
+    store.delete("settings", "market")

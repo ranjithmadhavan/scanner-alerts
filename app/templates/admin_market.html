@@ -2,7 +2,7 @@
 {% block title %}Market hours{% endblock %}
 {% block content %}
 <h1 class="text-4xl font-bold">Market hours</h1>
-<p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Alerts are only checked inside these hours, Monday to Friday. Times are always India time, wherever the server runs.</p>
+<p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Alerts are only checked inside these hours, Monday to Friday, and not on market holidays. Times are always India time, wherever the server runs.</p>
 
 <form class="panel mt-8 max-w-2xl p-6 shadow-soft sm:p-7" hx-post="/admin/market">
   <div class="grid gap-5 sm:grid-cols-2">
@@ -23,4 +23,6 @@
   </fieldset>
   <div class="mt-6 flex justify-end border-t border-line pt-5"><button class="btn-primary htmx-busy">Save hours</button></div>
 </form>
+
+{% include "partials/holidays.html" %}
 {% endblock %}

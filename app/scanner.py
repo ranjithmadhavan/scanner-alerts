@@ -16,6 +16,7 @@ then switched off; the alert keeps watching its other levels and moves to "trigg
 only when the last one has fired. It stays there until the user re-arms it.
 """
 
+import json
 import logging
 import threading
 from collections import defaultdict
@@ -26,7 +27,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import brokers, config, notify
+from app import brokers, config, notify, webhooks
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError
 from app.market import CLOSE_GRACE, IST, MarketSettings, in_scan_window, is_trading_day, load_settings, now_ist
 from app.store import new_id, store
@@ -204,9 +205,10 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
     signal = custom or ("Potential sell" if up else "Potential buy")
     moved = ("closed" if uses_close(hit["condition"]) else "crossed") + (" above" if up else " below")
     subject = f"🔔 {signal if len(signal) <= 60 else signal[:59] + '…'}: {describe(hit)}"
+    what = (f"{alert['symbol']} {moved} your level of {hit['level']:g}"
+            f"{' on the ' + hit['timeframe'] + ' candle' if uses_close(hit['condition']) else ''}.")
     body = (
-        f"{signal}{chr(10) if custom else '. '}{alert['symbol']} {moved} your level of {hit['level']:g}"
-        f"{' on the ' + hit['timeframe'] + ' candle' if uses_close(hit['condition']) else ''}.\n"
+        f"{signal}{chr(10) if custom else '. '}{what}\n"
         f"Price: {price:g} (candle {candle.start.astimezone(IST):%-I:%M %p})\n"
         f"Time: {now:%d %b, %-I:%M %p} IST"
     )
@@ -214,12 +216,38 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
         waiting = [describe(v).removeprefix(alert["symbol"] + " ") for _, v in open_views(alert)]
         body += f"\nStill watching: {', '.join(waiting)}" if waiting else "\nThat was the last level on this alert."
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
+    if alert.get("webhooks"):
+        results["webhook"] = webhooks.send(alert["webhooks"], webhook_body(alert, hit, signal, what, price, candle, now))
     store.put("events", new_id(), {
         "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
         "summary": describe(hit), "price": price, "at": now.isoformat(), "delivery": results,
     })
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
     return alert
+
+
+def webhook_body(alert: dict, hit: dict, message: str, text: str, price: float, candle: Candle | None,
+                 now: datetime, test: bool = False) -> dict:
+    """What is POSTed to an alert's webhooks. `hit` is the level view that fired, with its direction resolved."""
+    return {
+        "event": "level_hit",
+        "test": test,
+        "alert_id": alert["id"],
+        "symbol": alert["symbol"],
+        "exchange": alert.get("exchange") or "NSE",
+        "name": alert.get("name", ""),
+        "message": message,
+        "text": text,
+        "condition": hit["condition"],
+        "direction": "above" if hit["condition"] in ("high_above", "close_above") else "below",
+        "level": hit["level"],
+        "price": price,
+        "timeframe": hit["timeframe"] if uses_close(hit["condition"]) else None,
+        "candle": candle.start.isoformat() if candle else None,
+        "time": now.isoformat(),
+        "still_watching": [{"condition": v["condition"], "level": v["level"]} for _, v in open_views(alert)],
+        "payload": json.loads(alert["webhook_payload"]) if alert.get("webhook_payload") else None,
+    }
 
 
 # ---- schedule info for the UI ----------------------------------------------------

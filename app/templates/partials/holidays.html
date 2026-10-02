@@ -1,0 +1,33 @@
+{% from "partials/icons.html" import icon %}
+<section id="holidays" class="panel mt-6 max-w-2xl p-6 shadow-soft sm:p-7">
+  <div class="flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <h2 class="text-xl font-bold">Market holidays</h2>
+      <p class="mt-1 text-sm text-ink-soft">Nothing is scanned on these days, and nobody is asked to log in to Kite.</p>
+    </div>
+    <button type="button" class="btn-outline htmx-busy px-3 py-1.5 text-sm" hx-post="/admin/market/holidays/fetch" hx-target="#holidays" hx-swap="outerHTML"
+            title="Add the trading holidays published by NSE to this list">{{ icon('refresh', 'h-3.5 w-3.5') }} Update from NSE</button>
+  </div>
+
+  {% if upcoming %}
+  <ul class="mt-4 divide-y divide-line rounded-2xl border border-line">
+    {% for h in upcoming %}
+    <li class="flex items-center gap-3 px-4 py-2 text-[15px]">
+      <span class="num w-28 shrink-0 font-semibold">{{ h.day.strftime('%a %-d %b') }}</span>
+      <span class="min-w-0 flex-1 truncate text-ink-soft">{{ h.name }}{% if h.day.year != today.year %} ({{ h.day.year }}){% endif %}</span>
+      {% if h.day == today %}<span class="shrink-0 rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Today</span>{% endif %}
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" aria-label="Remove {{ h.name }}" title="Scan on this day after all"
+              hx-post="/admin/market/holidays/remove" hx-vals='{{ {"day": h.date}|tojson }}' hx-target="#holidays" hx-swap="outerHTML">{{ icon('close', 'h-4 w-4') }}</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="mt-4 rounded-2xl border border-dashed border-line px-4 py-5 text-center text-sm text-ink-soft">No holidays ahead on the list. Add them, or update from NSE.</p>
+  {% endif %}
+
+  <form class="mt-4 flex flex-wrap items-end gap-2" hx-post="/admin/market/holidays" hx-target="#holidays" hx-swap="outerHTML">
+    <div><label class="label" for="hd">Date</label><input id="hd" type="date" name="day" required class="field num py-2 text-sm"></div>
+    <div class="min-w-[10rem] flex-1"><label class="label" for="hn">Name</label><input id="hn" name="name" maxlength="60" placeholder="e.g. Diwali" class="field py-2 text-sm"></div>
+    <button class="btn-primary htmx-busy px-4 py-2 text-sm">Add holiday</button>
+  </form>
+</section>

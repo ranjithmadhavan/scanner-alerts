@@ -20,7 +20,7 @@
 
 <form id="new-alert" class="level-form panel mt-8 shadow-soft"
       hx-post="/alerts" hx-target="#alert-list" hx-swap="outerHTML"
-      hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('#extra-levels').innerHTML=''; this.dispatchEvent(new Event('levels:changed', {bubbles: true})); this.querySelector('[name=note]').value=''; this.querySelector('[name=symbol]').select(); }">
+      hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') { this.querySelector('[name=level]').value=''; this.querySelector('#extra-levels').innerHTML=''; this.dispatchEvent(new Event('levels:changed', {bubbles: true})); this.querySelector('[name=note]').value=''; this.querySelector('[name=webhooks]').value=''; this.querySelector('[name=webhook_payload]').value=''; this.querySelector('[name=symbol]').select(); }">
   <details id="new-alert-panel" class="group/new" {{ 'open' if not total }}>
   <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
     <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white transition group-open/new:rotate-45">{{ icon('plus', 'h-4 w-4') }}</span>
@@ -108,6 +108,8 @@
       <input id="note" name="note" maxlength="140" placeholder="Leave empty for “Potential sell” / “Potential buy”" class="field">
     </div>
   </div>
+
+  {% with hooks=[], hook_payload='', prefix='new-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
 
   <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
     <div class="flex flex-wrap items-center gap-2">

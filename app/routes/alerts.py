@@ -1,9 +1,11 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import brokers, notify, prices
+from app import webhooks as hooks_module  # the forms have a field called `webhooks`
 from app import scanner
 from app.kite import TIMEFRAMES, KiteAuthError, KiteError, find_instrument, search_instruments
 from app.market import in_scan_window, load_settings, now_ist
@@ -171,7 +173,7 @@ def _levels(condition: str, level: float, extra_condition: list[str], extra_leve
 
 def _build_alert(user: dict, symbol: str, condition: str, level: float, timeframe: str,
                  note: str, channels: list[str], extra_condition: list[str] = (),
-                 extra_level: list[str] = ()) -> tuple[dict | None, str | None]:
+                 extra_level: list[str] = (), hooks: str = "", hook_payload: str = "") -> tuple[dict | None, str | None]:
     """Validate the New alert form. Returns (alert, None) or (None, error message)."""
     inst = _instrument(symbol)
     if not inst:
@@ -182,8 +184,12 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
     closes = any(uses_close(lv["condition"]) for lv in levels)
     if closes and timeframe not in TIMEFRAMES:
         return None, "Choose a candle timeframe."
+    hook_fields, error = _webhook_fields(hooks, hook_payload)
+    if error:
+        return None, error
     now = now_ist().isoformat()
     return {
+        **hook_fields,
         "id": new_id(),
         "user": user["username"],
         "symbol": inst.symbol,
@@ -199,6 +205,19 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
         "created_at": now,
         "armed_at": now,
     }, None
+
+
+def _webhook_fields(hooks: str, hook_payload: str) -> tuple[dict, str | None]:
+    """The form's webhook boxes as alert fields. Returns (fields, None) or ({}, error)."""
+    urls, error = hooks_module.parse_urls(hooks)
+    if error:
+        return {}, error
+    payload, error = hooks_module.parse_payload(hook_payload)
+    if error:
+        return {}, error
+    if payload and not urls:
+        return {}, "Add a webhook URL to send that JSON to, or clear the JSON box."
+    return {"webhooks": urls, "webhook_payload": payload}, None
 
 
 def _instrument(symbol: str):
@@ -262,8 +281,11 @@ def create(
     channels: list[str] = Form([]),
     extra_condition: list[str] = Form([]),
     extra_level: list[str] = Form([]),
+    webhooks: str = Form(""),
+    webhook_payload: str = Form(""),
 ):
-    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level)
+    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level,
+                                webhooks, webhook_payload)
     if error:
         return fail(error)
     alert["armed_price"] = _armed_price(user["username"], alert)
@@ -341,8 +363,10 @@ def edit_form(request: Request, alert_id: str, user: dict = Depends(guard)):
     a = _own(alert_id, user)
     if not a:
         return HTMLResponse(status_code=404)
+    payload = json.dumps(json.loads(a["webhook_payload"]), indent=2) if a.get("webhook_payload") else ""
     return render(request, "partials/alert_edit.html", {
         "a": a, "levels": levels_of(a), "conditions": CONDITIONS, "max_levels": MAX_LEVELS,
+        "hooks": a.get("webhooks") or [], "hook_payload": payload,
         "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"]})
 
 
@@ -357,6 +381,8 @@ def edit(
     rearm: list[str] = Form([]),
     timeframe: str = Form("15m"),
     note: str = Form(""),
+    webhooks: str = Form(""),
+    webhook_payload: str = Form(""),
 ):
     """Save the Edit panel: levels changed, removed, added or put back on watch."""
     a = _own(alert_id, user)
@@ -390,7 +416,10 @@ def edit(
     closes = any(uses_close(lv["condition"]) for lv in levels)
     if closes and timeframe not in TIMEFRAMES:
         return fail("Choose a candle timeframe.")
-    changes = {"levels": levels, "timeframe": timeframe if closes else "", "note": note.strip()[:140]}
+    hook_fields, error = _webhook_fields(webhooks, webhook_payload)
+    if error:
+        return fail(error)
+    changes = {"levels": levels, "timeframe": timeframe if closes else "", "note": note.strip()[:140], **hook_fields}
     waiting = any(lv["status"] == "active" for lv in levels)
     if fresh:
         # Re-arm from now so a new level can't fire on a move that happened before it was added.
@@ -403,6 +432,31 @@ def edit(
         changes.update(status="triggered", triggered_at=last.get("hit_at"), trigger_price=last.get("hit_price"))
     store.update("alerts", alert_id, changes)
     return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} alert updated")
+
+
+@router.post("/{alert_id}/webhooks/test")
+def webhook_test(alert_id: str, user: dict = Depends(guard), webhooks: str = Form(""), webhook_payload: str = Form(""),
+                 note: str = Form("")):
+    """POST a sample hit, marked as a test, to the URLs currently in the Edit panel (saved or not)."""
+    a = _own(alert_id, user)
+    if not a:
+        return HTMLResponse(status_code=404)
+    fields, error = _webhook_fields(webhooks, webhook_payload)
+    if error:
+        return fail(error)
+    if not fields["webhooks"]:
+        return fail("Add a webhook URL first.")
+    sample = {**a, **fields}
+    hit = scanner.resolved(scanner.level_view(sample, levels_of(sample)[0]), float("inf"))
+    up = hit["condition"] in ("high_above", "close_above")
+    message = note.strip()[:140] or ("Potential sell" if up else "Potential buy")
+    text = f"Test: {scanner.describe(hit)}. Nothing was hit."
+    body = scanner.webhook_body(sample, hit, message, text, hit["level"], None, now_ist(), test=True)
+    result = hooks_module.send(fields["webhooks"], body)
+    if result != "sent":
+        return fail(f"Webhook test failed. {result}")
+    count = len(fields["webhooks"])
+    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {count} webhook URL{'s' if count != 1 else ''}")
 
 
 @router.post("/{alert_id}/pause")

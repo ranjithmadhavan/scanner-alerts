@@ -23,3 +23,12 @@ def test_closed_on_weekends_and_after_close():
 def test_scan_window_has_grace_after_close():
     assert in_scan_window(S, datetime(2026, 9, 28, 15, 31, tzinfo=IST))
     assert not in_scan_window(S, datetime(2026, 9, 28, 15, 33, tzinfo=IST))
+
+
+def test_holidays_are_not_trading_days():
+    from app.market import is_trading_day, status_text
+    gandhi_jayanti = datetime(2026, 10, 2, 11, 0, tzinfo=IST)          # a Friday
+    assert not is_trading_day(gandhi_jayanti)
+    assert not is_market_open(S, gandhi_jayanti) and not in_scan_window(S, gandhi_jayanti)
+    assert status_text(S, gandhi_jayanti) == (False, "Market holiday today (Mahatma Gandhi Jayanti), opens Monday at 9:15 am")
+    assert is_trading_day(datetime(2026, 10, 1, 11, 0, tzinfo=IST))

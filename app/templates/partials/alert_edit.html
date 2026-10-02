@@ -65,6 +65,8 @@
       </div>
     </div>
 
+    {% with prefix='edit-', test_url='/alerts/' ~ a.id ~ '/webhooks/test' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+
     <div class="mt-6 flex items-center justify-end gap-2 border-t border-line pt-5">
       <button type="button" class="btn-quiet" onclick="document.getElementById('alert-editor').innerHTML=''">Cancel</button>
       <button class="btn-primary htmx-busy">Save changes</button>

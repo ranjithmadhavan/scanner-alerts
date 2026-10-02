@@ -54,7 +54,22 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 **Confirmed email addresses.** An email address is added on its own and only after its owner enters a 6-digit code we email to it (valid 10 minutes, 5 tries, one resend a minute; only a hash of the code is stored). Alerts go to confirmed addresses only. An address saved before this existed is shown as not confirmed and receives nothing until it is.
 
+**Webhooks (optional).** An alert can have up to 5 webhook URLs, set in the New alert form or the edit panel. When a level is hit, each URL gets a JSON `POST`:
+
+```json
+{"event": "level_hit", "test": false, "alert_id": "…", "symbol": "SENSEX", "exchange": "BSE", "name": "SENSEX",
+ "message": "Potential sell", "text": "SENSEX crossed above your level of 82000.",
+ "condition": "high_above", "direction": "above", "level": 82000.0, "price": 82014.5, "timeframe": null,
+ "candle": "2026-10-01T11:00:00+05:30", "time": "2026-10-01T11:00:30+05:30",
+ "still_watching": [{"condition": "cross", "level": 84000.0}],
+ "payload": {"strategy": "sweep", "qty": 50}}
+```
+
+`message` is the alert's own message, or *Potential sell* / *Potential buy*. `payload` is the alert's own JSON, passed through untouched (`null` if none). Any 2xx reply counts as delivered; the result is shown under *Recently sent* on the Notifications page. URLs must be public http(s) addresses, redirects aren't followed, and each request times out after 8 seconds (`app/webhooks.py`). **Send a test request** in the edit panel posts a sample with `"test": true`. Simulations never call webhooks.
+
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
+
+**When scanning happens.** Only on trading days, from the open until two minutes after the close (so the day's last candle can be checked once it has finished). Trading days are Monday to Friday minus the market holidays listed on the Market hours page. That list starts with NSE's 2026 holidays; the super admin can add or remove days, or pull NSE's current list with **Update from NSE**. Outside those times the scheduler still ticks but returns straight away: no Kite calls, no alerts, no login notices.
 
 **Kite sessions.** An expired session isn't treated as an error. At market open, the scanner checks each user who has active alerts once. If Kite isn't connected or the session has died, it tells that user on all their ready channels (once a day) and skips them until they log in again. Scanning then resumes straight away.
 
@@ -68,5 +83,5 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 ## Known limits
 
-- Exchange holidays aren't skipped. The scanner runs on those weekdays, and Kite just returns no new candles.
+- Special sessions outside normal hours (Muhurat trading, weekend sessions) aren't scanned.
 - Last prices shown on the alerts page live in memory and appear after the first scan following a restart.

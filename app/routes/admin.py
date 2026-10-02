@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 
 from app import scanner
-from app.market import SCAN_INTERVALS, load_settings, parse_hhmm, save_settings
+from datetime import date
+
+from app.market import SCAN_INTERVALS, fetch_nse_holidays, load_settings, now_ist, parse_hhmm, save_holidays, save_settings
 from app.modules import MODULES
 from app.security import hash_password, password_problem, require_superadmin, set_password
 from app.store import store
@@ -86,7 +88,46 @@ def delete_user(request: Request, username: str, admin: dict = Depends(require_s
 
 @router.get("/market")
 def market_page(request: Request, admin: dict = Depends(require_superadmin)):
-    return render(request, "admin_market.html", {"s": load_settings(), "intervals": SCAN_INTERVALS})
+    return render(request, "admin_market.html", {"s": load_settings(), "intervals": SCAN_INTERVALS, **_holidays_ctx()})
+
+
+def _holidays_ctx() -> dict:
+    today = now_ist().date()
+    days = [{"date": d, "day": date.fromisoformat(d), "name": n} for d, n in sorted(load_settings().holidays.items())]
+    return {"today": today, "upcoming": [h for h in days if h["day"] >= today]}
+
+
+def _holidays(request: Request, message: str, kind: str = "success"):
+    return toast(render(request, "partials/holidays.html", _holidays_ctx()), message, kind)
+
+
+@router.post("/market/holidays")
+def add_holiday(request: Request, admin: dict = Depends(require_superadmin), day: str = Form(...), name: str = Form("")):
+    try:
+        day = date.fromisoformat(day.strip()).isoformat()
+    except ValueError:
+        return fail("Pick the holiday's date.")
+    save_holidays({**load_settings().holidays, day: name.strip()[:60] or "Market holiday"})
+    return _holidays(request, "Holiday added. Nothing is scanned that day.")
+
+
+@router.post("/market/holidays/remove")
+def remove_holiday(request: Request, admin: dict = Depends(require_superadmin), day: str = Form(...)):
+    save_holidays({d: n for d, n in load_settings().holidays.items() if d != day})
+    return _holidays(request, "Removed. That day is scanned like any other.")
+
+
+@router.post("/market/holidays/fetch")
+def fetch_holidays(request: Request, admin: dict = Depends(require_superadmin)):
+    try:
+        found = fetch_nse_holidays()
+    except RuntimeError:
+        return _holidays(request, "NSE didn't answer (it often blocks cloud servers). Add the dates by hand instead.", "error")
+    current = load_settings().holidays
+    new = {d: n for d, n in found.items() if d not in current}
+    save_holidays({**current, **new})
+    return _holidays(request, f"Added {len(new)} holiday{'s' if len(new) != 1 else ''} from NSE." if new
+                     else "Already up to date with NSE's list.")
 
 
 @router.post("/market")
