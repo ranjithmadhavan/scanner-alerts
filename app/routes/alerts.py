@@ -92,7 +92,9 @@ def _fractal_view(a: dict, price: float | None) -> dict:
     sides = a.get("sides", "both")
     return {
         "tf": fractals.TIMEFRAMES[a["timeframe"]][0], "scanned": found is not None,
-        "trigger": fractals.label(scanner.trigger_timeframe(a)),
+        "trigger": fractals.label(scanner.trigger_timeframe(a)), "min_candles": scanner.min_between(a),
+        "last": (a.get("last_hit") or {}).get("text", "").removeprefix(
+            f"{a['symbol']} {fractals.label(a['timeframe']).lower()} fractal "),
         "sides": fractals.SIDES[sides], "triggers": [fractals.TRIGGERS[t] for t in a.get("triggers", [])],
         "above": next((f for f in highs if price is None or f.level > price), None) if sides != "low" else None,
         "below": next((f for f in lows if price is None or f.level < price), None) if sides != "high" else None,
@@ -237,11 +239,12 @@ def _fractal_options() -> dict:
     return {"fractal_timeframes": {k: (*v, fractals.minutes(k)) for k, v in fractals.TIMEFRAMES.items()},
             "fractal_default": fractals.DEFAULT_TIMEFRAME,
             "fractal_triggers": fractals.TRIGGERS, "fractal_sides": fractals.SIDES,
+            "min_choices": fractals.MIN_BETWEEN_CHOICES, "min_default": fractals.DEFAULT_MIN_BETWEEN,
             "trigger_candles": [(tf, fractals.label(tf), fractals.minutes(tf)) for tf in TIMEFRAMES if tf != "1d"]}
 
 
-def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str],
-                    confirm_timeframe: str = "") -> tuple[dict, str | None]:
+def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str], confirm_timeframe: str = "",
+                    min_candles: int = fractals.DEFAULT_MIN_BETWEEN) -> tuple[dict, str | None]:
     """The fractal part of the form as alert fields. Returns (fields, None) or ({}, error)."""
     if fractal_timeframe not in fractals.TIMEFRAMES:
         return {}, "Choose a timeframe to find fractals on."
@@ -255,17 +258,20 @@ def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str],
     chosen = [t for t in fractals.TRIGGERS if t in triggers]
     if not chosen:
         return {}, "Choose at least one thing to be alerted about."
-    return {"timeframe": fractal_timeframe, "confirm_timeframe": confirm_timeframe, "sides": sides, "triggers": chosen}, None
+    if min_candles not in fractals.MIN_BETWEEN_CHOICES:
+        return {}, "Choose how many candles there must be between a fractal and the candle that takes it."
+    return {"timeframe": fractal_timeframe, "confirm_timeframe": confirm_timeframe, "sides": sides, "triggers": chosen,
+            "min_candles": min_candles}, None
 
 
 def _build_fractal_alert(user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str], note: str,
-                         channels: list[str], hooks: str = "", hook_payload: str = "",
-                         confirm_timeframe: str = "") -> tuple[dict | None, str | None]:
+                         channels: list[str], hooks: str = "", hook_payload: str = "", confirm_timeframe: str = "",
+                         min_candles: int = fractals.DEFAULT_MIN_BETWEEN) -> tuple[dict | None, str | None]:
     """Validate the New alert form in Fractals mode. Returns (alert, None) or (None, error message)."""
     inst = _instrument(symbol)
     if not inst:
         return None, f"We couldn't find {symbol.strip().upper() or 'that symbol'}. Pick one from the suggestions."
-    fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe)
+    fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe, min_candles)
     if error:
         return None, error
     hook_fields, error = _webhook_fields(hooks, hook_payload)
@@ -373,10 +379,11 @@ def create(
     confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
+    min_candles: int = Form(fractals.DEFAULT_MIN_BETWEEN),
 ):
     if kind == "fractal":
         alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, note, channels,
-                                            webhooks, webhook_payload, confirm_timeframe)
+                                            webhooks, webhook_payload, confirm_timeframe, min_candles)
     else:
         alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
                                     extra_condition, extra_level, webhooks, webhook_payload)
@@ -411,12 +418,13 @@ def simulate(
     confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
+    min_candles: int = Form(fractals.DEFAULT_MIN_BETWEEN),
 ):
     """Replay the form's alert on the last trading day with real Kite data and send the
     result to the chosen channels. Nothing is saved. In Fractals mode: a backtest over the
     sessions fractals are searched on, shown on the page."""
     if kind == "fractal":
-        return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers, confirm_timeframe)
+        return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers, confirm_timeframe, min_candles)
     alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
                                 extra_condition, extra_level)
     if error:
@@ -442,9 +450,9 @@ def simulate(
 
 
 def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str],
-                      confirm_timeframe: str = ""):
+                      confirm_timeframe: str = "", min_candles: int = fractals.DEFAULT_MIN_BETWEEN):
     alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, "", [],
-                                        confirm_timeframe=confirm_timeframe)
+                                        confirm_timeframe=confirm_timeframe, min_candles=min_candles)
     if error:
         return fail(error)
     s, now, tf, trigger_tf = load_settings(), now_ist(), alert["timeframe"], scanner.trigger_timeframe(alert)
@@ -459,10 +467,9 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
         return fail("Kite isn't connected or the session has expired. Log in on the Broker page first.")
     except KiteError as e:
         return fail(f"Couldn't get prices from Kite: {e}")
-    found, stream, first = scanner.fractal_stream(alert, history, trigger_candles, s)
+    hits, unmitigated, stream, first, _ = scanner.fractal_run(alert, history, trigger_candles, s)
     if first >= len(stream):
         return fail(f"Kite returned no {fractals.label(trigger_tf).lower()} candles for {alert['symbol']}.")
-    hits, unmitigated = fractals.replay(found, stream)
     daily = trigger_tf == "1d"
 
     def chart_time(c: Candle):
@@ -498,6 +505,7 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
     ctx = {
         "alert": alert, "tf_label": fractals.label(tf), "trigger_label": fractals.label(trigger_tf),
         "same_candles": trigger_tf == tf, "daily": daily, "fractal_daily": tf == "1d",
+        "min_candles": alert["min_candles"],
         "first": stream[first].start, "last": stream[-1].start, "sessions": len({c.start.date() for c in stream[first:]}),
         "rows": rows[::-1][:60], "total": len(rows),
         "points": {"earned": sum(p for p in scored if p > 0), "lost": -sum(p for p in scored if p < 0),
@@ -567,13 +575,14 @@ def edit(
     confirm_timeframe: str = Form(""),
     sides: str = Form("both"),
     triggers: list[str] = Form([]),
+    min_candles: int = Form(fractals.DEFAULT_MIN_BETWEEN),
 ):
     """Save the Edit panel: levels changed, removed, added or put back on watch."""
     a = _own(alert_id, user)
     if not a:
         return HTMLResponse(status_code=404)
     if scanner.is_fractal(a):
-        fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe)
+        fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe, min_candles)
         if not error:
             hook_fields, error = _webhook_fields(webhooks, webhook_payload)
         if error:

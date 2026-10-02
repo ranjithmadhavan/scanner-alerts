@@ -17,13 +17,22 @@
     {% endfor %}
   </div>
 </fieldset>
-<div class="mt-4 sm:w-[320px]">
+<div class="mt-4 grid gap-4 sm:grid-cols-2">
+<div>
+  <label class="label">Candles between the fractal and the candle that takes it</label>
+  <select name="min_candles" class="field" aria-label="Minimum candles between the fractal and the candle that takes it">
+    {% for n in min_choices %}<option value="{{ n }}" {{ 'selected' if n == f_min }}>{{ 'No minimum' if n == 0 else 'At least ' ~ n }}</option>{% endfor %}
+  </select>
+  <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">Counted in fractal candles. A fractal taken sooner than this is dropped without a message.</p>
+</div>
+<div>
   <label class="label">Candle that decides a sweep or failed break</label>
   <select name="confirm_timeframe" class="field" aria-label="Candle that decides a sweep or failed break">
     <option value="" {{ 'selected' if not f_confirm }}>Same as the fractal candles</option>
     {% for key, label, mins in trigger_candles %}<option value="{{ key }}" data-min="{{ mins }}" {{ 'selected' if key == f_confirm }}>{{ label }} candles</option>{% endfor %}
   </select>
   <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">“Is swept” and “Break fails” wait for this candle to close. It can be shorter than the fractal candles, as long as it divides into them.</p>
+</div>
 </div>
 <div class="mt-4 flex flex-wrap items-center gap-2">
   <span class="text-sm text-ink-soft">Watch</span>

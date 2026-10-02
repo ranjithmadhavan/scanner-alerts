@@ -11,6 +11,8 @@ trades beyond it. That candle decides what is reported:
 * fail   — it closed beyond the level, and the very next candle closed back (a failed break).
 
 A candle that *opens* beyond the level (a gap) mitigates it silently: nothing is reported.
+The same goes for a fractal taken too soon: an alert can ask for a minimum number of candles
+(of the fractal's own timeframe) between the fractal and the candle that takes it.
 Taking a fractal high reads as a potential sell, a fractal low as a potential buy, and the
 target is the nearest unmitigated fractal on the other side of price.
 
@@ -22,8 +24,9 @@ past them.
 Everything here is pure: it works on lists of completed candles, oldest first.
 """
 
+from bisect import bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from app.kite import TIMEFRAMES as CANDLES
@@ -46,6 +49,9 @@ TRIGGERS = {
     "fail": "Closes beyond, next candle closes back",
 }
 SIDES = {"both": "Highs and lows", "high": "Fractal highs only", "low": "Fractal lows only"}
+# Candles of the fractal timeframe that must sit between a fractal and the candle that takes it.
+MIN_BETWEEN_CHOICES = [0, 2, 3, 4, 5, 6, 8, 10]
+DEFAULT_MIN_BETWEEN = 5
 SESSION_MINUTES = 375  # what a daily candle counts as when comparing timeframes
 # Kite serves this many days of each candle size per request; a backtest on small trigger candles is capped by it.
 MAX_DAYS = {"1m": 60, "3m": 100, "5m": 100, "10m": 100, "15m": 200, "30m": 200, "1h": 400, "1d": 2000}
@@ -70,6 +76,7 @@ class Fractal:
     side: str  # "high" | "low"
     level: float
     at: datetime  # start of the middle candle
+    index: int = field(default=-1, compare=False)  # position of the middle candle among the candles it was found on
 
     @property
     def key(self) -> str:
@@ -114,18 +121,27 @@ def find(candles: list[Candle], end: Callable[[Candle], datetime]) -> list[tuple
     """Every fractal in `candles` with the moment it came into being: the close of its third candle
     (`end` gives a candle's closing time). In that order."""
     found = []
-    for before, middle, after in zip(candles, candles[1:], candles[2:]):
+    for i, (before, middle, after) in enumerate(zip(candles, candles[1:], candles[2:]), start=1):
         if middle.high >= before.high and middle.high >= after.high:
-            found.append((end(after), Fractal("high", middle.high, middle.start)))
+            found.append((end(after), Fractal("high", middle.high, middle.start, i)))
         if middle.low <= before.low and middle.low <= after.low:
-            found.append((end(after), Fractal("low", middle.low, middle.start)))
+            found.append((end(after), Fractal("low", middle.low, middle.start, i)))
     return found
 
 
-def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle]) -> tuple[list[Hit], list[Fractal]]:
+def candles_between(f: Fractal, when: datetime, closes: list[datetime]) -> int:
+    """How many candles of the fractal's timeframe sit between its middle candle and the one in which
+    `when` falls. `closes` are the closing times of the candles the fractal was found on. The third
+    candle of the fractal is one of them, so the soonest a fractal can be taken is with 1 between."""
+    return bisect_right(closes, when) - f.index - 1
+
+
+def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes: list[datetime] | None = None,
+           min_between: int = 0) -> tuple[list[Hit], list[Fractal]]:
     """Run completed candles (of any size, oldest first) past the fractals. A fractal is in play for
-    candles that start at or after it came into being. Returns every hit in order, and the fractals
-    still unmitigated at the end."""
+    candles that start at or after it came into being. With `closes` (see candles_between) and
+    `min_between`, a fractal taken sooner than that many candles after it formed is retired silently.
+    Returns every hit in order, and the fractals still unmitigated at the end."""
     hits: list[Hit] = []
     active: list[Fractal] = []
     broke: list[Fractal] = []  # closed beyond on the previous candle; this candle decides if the break fails
@@ -148,6 +164,8 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle]) -> tupl
                 still.append(f)
             elif f.is_beyond(c.open):
                 pass  # gapped through: mitigated without a word
+            elif min_between and closes is not None and candles_between(f, c.start, closes) < min_between:
+                pass  # taken too soon after it formed to count
             else:
                 new.append(Hit(f, "touch", c, j, f.level))
                 if f.is_beyond(c.close):
@@ -162,9 +180,11 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle]) -> tupl
     return hits, active
 
 
-def walk(candles: list[Candle]) -> tuple[list[Hit], list[Fractal]]:
+def walk(candles: list[Candle], min_between: int = 0) -> tuple[list[Hit], list[Fractal]]:
     """find() and replay() on the same candles: a fractal is in play from the candle after its third."""
-    return replay(find(candles, lambda c: c.start + timedelta(microseconds=1)), candles)
+    def end(c: Candle) -> datetime:
+        return c.start + timedelta(microseconds=1)
+    return replay(find(candles, end), candles, [end(c) for c in candles], min_between)
 
 
 @dataclass

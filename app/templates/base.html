@@ -63,8 +63,8 @@
   <main class="min-w-0 px-4 pb-16 pt-5 sm:px-8 lg:pl-4 lg:pr-10 lg:pt-7">
     <header class="mb-8 flex items-center gap-3">
       <button id="menu" class="rounded-full p-2 text-ink-soft hover:bg-white lg:hidden" aria-label="Open menu">{{ icon('menu') }}</button>
-      <div class="ml-auto flex items-center gap-2.5 rounded-full border border-line bg-white px-4 py-2 text-sm text-ink-soft">
-        <span class="h-2.5 w-2.5 rounded-full {{ 'bg-rise breathe' if market_open else 'bg-ink-soft/30' }}"></span>
+      <div class="ml-auto flex items-center gap-2.5 rounded-2xl border border-line bg-white px-4 py-2 text-sm leading-snug text-ink-soft sm:rounded-full">
+        <span class="h-2.5 w-2.5 shrink-0 rounded-full {{ 'bg-rise breathe' if market_open else 'bg-ink-soft/30' }}"></span>
         {{ market_text }}
       </div>
     </header>

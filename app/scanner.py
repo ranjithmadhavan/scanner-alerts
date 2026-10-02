@@ -300,6 +300,19 @@ def fractal_stream(alert: dict, history: list[Candle], trigger_candles: list[Can
     return found, earlier + trigger_candles, len(earlier)
 
 
+def min_between(alert: dict) -> int:
+    return int(alert.get("min_candles", fractals.DEFAULT_MIN_BETWEEN))
+
+
+def fractal_run(alert: dict, history: list[Candle], trigger_candles: list[Candle] | None, s: MarketSettings):
+    """Replay an alert's candles. Returns (hits, unmitigated fractals, the candles replayed, index where
+    the trigger candles start, closing times of the fractal candles)."""
+    found, stream, first = fractal_stream(alert, history, trigger_candles, s)
+    closes = [candle_end(c, alert["timeframe"], s) for c in history]
+    hits, unmitigated = fractals.replay(found, stream, closes, min_between(alert))
+    return hits, unmitigated, stream, first, closes
+
+
 def _cached(what: str, client, username: str, alert: dict, tf: str, s: MarketSettings, now: datetime, fetch) -> list[Candle]:
     """Candles only change when one of that size completes, so fetch once per candle."""
     key = (username, alert["token"], tf, what)
@@ -351,6 +364,7 @@ def fractal_webhook_body(alert: dict, hit: fractals.Hit, message: str, text: str
         "price": price,
         "timeframe": alert["timeframe"],
         "trigger_timeframe": trigger_timeframe(alert),
+        "min_candles": min_between(alert),
         "fractal_time": f.at.isoformat(),
         "target": hit.target.level if hit.target else None,
         "candle": hit.candle.start.isoformat(),
@@ -407,8 +421,7 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
     else:
         today = _cached("today", client, username, alert, trigger_tf, s, now,
                         lambda: fractal_trigger_candles(client, alert, now.date(), s, now))
-    found, stream, first = fractal_stream(alert, history, today, s)
-    hits, unmitigated = fractals.replay(found, stream)
+    hits, unmitigated, stream, first, closes = fractal_run(alert, history, today, s)
     armed_at = datetime.fromisoformat(alert["armed_at"])
     fired = set(alert.get("fired", []))
     to_fire: list[tuple[fractals.Hit, float]] = []
@@ -433,8 +446,9 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
             continue
         touched.append(f)
         gap = first_beyond.start <= s.open_at(now) and f.is_beyond(first_beyond.open)  # the session opened beyond the level
+        too_soon = fractals.candles_between(f, first_beyond.start, closes) < min_between(alert)
         hit = fractals.Hit(f, "touch", first_beyond, -1, f.level)
-        if (not gap and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
+        if (not gap and not too_soon and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
                 and fractal_wanted(alert, hit) and hit.key not in fired):
             touches.append((hit, first_beyond.high if f.side == "high" else first_beyond.low))
     remaining = [f for f in unmitigated if f not in touched]

@@ -44,10 +44,12 @@ scrim?.addEventListener("click", () => setMenu(false));
     if (!kind) return;
     form.querySelectorAll("[data-kind-section]").forEach((section) => {
       const off = section.dataset.kindSection !== kind;
+      section.classList.toggle("section-in", !off && section.hidden && form.dataset.kindSet === "1");
       section.hidden = off;
       section.querySelectorAll("input, select, textarea").forEach((el) => { el.disabled = off; });
     });
     form.querySelectorAll("[data-label-price]").forEach((b) => { b.textContent = b.dataset[kind === "fractal" ? "labelFractal" : "labelPrice"]; });
+    form.dataset.kindSet = "1";
     sync(form);
   }
 
@@ -93,10 +95,19 @@ scrim?.addEventListener("click", () => setMenu(false));
   document.addEventListener("change", (e) => { if (e.target.name === "fractal_timeframe") syncTrigger(e.target.form); });
   document.addEventListener("htmx:afterSwap", syncTriggers);
   syncTriggers();
+  const editor = document.getElementById("alert-editor");
   document.addEventListener("keydown", (e) => {
-    const editor = document.getElementById("alert-editor");
     if (e.key === "Escape" && editor?.children.length) editor.innerHTML = "";
   });
+  // The editor is a dialog: focus moves into it when it opens and back to its button when it closes.
+  if (editor) {
+    let opener = null;
+    document.addEventListener("click", (e) => { opener = e.target.closest('[hx-target="#alert-editor"]')?.getAttribute("hx-get") || opener; });
+    new MutationObserver(() => {
+      if (editor.children.length) editor.querySelector("select, input:not([type=hidden]), button")?.focus();
+      else document.querySelector(`.layout-list [hx-get="${opener}"], [hx-get="${opener}"]`)?.focus();
+    }).observe(editor, { childList: true });
+  }
   document.querySelectorAll(".level-form").forEach(setKind);
   syncAll();
 })();
@@ -218,7 +229,27 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
 
 // ---- Fractal backtest: trigger candles with every signal marked ------------------------
 (() => {
-  let chart, series, data, lines = [], position = new Map();
+  let chart, below, series, data, lines = [], position = new Map();
+  const RSI_PERIOD = 14;
+
+  // Wilder's RSI on the candles' closes: the first value needs RSI_PERIOD changes, then it is smoothed.
+  function rsi(candles) {
+    const out = [];
+    let gain = 0, loss = 0;
+    for (let i = 1; i < candles.length; i++) {
+      const change = candles[i].close - candles[i - 1].close;
+      const up = Math.max(change, 0), down = Math.max(-change, 0);
+      if (i <= RSI_PERIOD) {
+        gain += up / RSI_PERIOD; loss += down / RSI_PERIOD;
+        if (i < RSI_PERIOD) continue;
+      } else {
+        gain = (gain * (RSI_PERIOD - 1) + up) / RSI_PERIOD;
+        loss = (loss * (RSI_PERIOD - 1) + down) / RSI_PERIOD;
+      }
+      out.push({ time: candles[i].time, value: loss === 0 ? 100 : 100 - 100 / (1 + gain / loss) });
+    }
+    return out;
+  }
 
   function focus(n) {
     const signal = data?.signals[n];
@@ -246,6 +277,44 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
     chart.applyOptions({ timeScale: { timeVisible: !data.daily, secondsVisible: false } });
     series = chart.addCandlestickSeries(candleLook);
     series.setData(data.candles);
+
+    // RSI in its own small chart underneath, so it has a proper 0-100 axis. The two share one time axis
+    // (drawn under the RSI) and scroll and zoom together.
+    const gutter = { rightPriceScale: { borderColor: "#ECE6DC", minimumWidth: box.clientWidth < 520 ? 78 : 96 } };  // same width, so bars line up
+    chart.applyOptions({ ...gutter, timeScale: { visible: false } });
+    below?.remove();
+    below = L.createChart(root.querySelector("#bt-rsi-chart"), chartLook(L));
+    const marked = (v) => (Math.abs(v - 70) < 0.01 || Math.abs(v - 30) < 0.01 ? v.toFixed(0) : "");  // label only the two lines
+    below.applyOptions({ ...gutter, localization: { priceFormatter: marked }, layout: { attributionLogo: false },
+      crosshair: { horzLine: { labelVisible: false } },
+      timeScale: { timeVisible: !data.daily, secondsVisible: false } });
+    const strength = below.addLineSeries({
+      color: "#0F5E5C", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, crosshairMarkerRadius: 3,
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    });
+    below.priceScale("right").applyOptions({ scaleMargins: { top: 0.06, bottom: 0.06 } });  // 0 to 100 fills the panel
+    const values = rsi(data.candles);
+    // Candles before the first RSI value still get an (empty) point, so both charts count bars the same way.
+    strength.setData([...data.candles.slice(0, data.candles.length - values.length).map((c) => ({ time: c.time })), ...values]);
+    [70, 30].forEach((price) => strength.createPriceLine({ price, color: "#B8AFA2", lineWidth: 1, lineStyle: 2, axisLabelVisible: true }));
+    // Long price labels can make the candle axis wider than the minimum; give the RSI axis the same width
+    // so the two plots stay bar-for-bar aligned.
+    requestAnimationFrame(() => {
+      const width = Math.max(chart.priceScale("right").width(), below.priceScale("right").width());
+      [chart, below].forEach((c) => c.applyOptions({ rightPriceScale: { minimumWidth: width } }));
+    });
+    const follow = (from, to) => from.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (range) to.timeScale().setVisibleLogicalRange(range);
+    });
+    follow(chart, below);
+    follow(below, chart);
+    const byTime = new Map(values.map((v) => [String(v.time), v.value]));
+    const readout = root.querySelector("#bt-rsi");
+    const show = (v) => { readout.textContent = `RSI ${RSI_PERIOD}` + (v === undefined ? "" : `: ${v.toFixed(1)}`); };
+    const onMove = (move) => show(move.time === undefined ? values.at(-1)?.value : byTime.get(String(move.time)));
+    show(values.at(-1)?.value);
+    chart.subscribeCrosshairMove(onMove);
+    below.subscribeCrosshairMove(onMove);
     series.setMarkers(data.signals.map((s) => ({
       time: s.time, text: s.label,
       position: s.signal === "sell" ? "aboveBar" : "belowBar",
@@ -262,6 +331,12 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
     if (!row) return;
     focus(Number(row.dataset.btSignal));
     document.getElementById("bt-chart")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+  document.addEventListener("keydown", (e) => {
+    const row = e.target.matches?.("[data-bt-signal]") ? e.target : null;
+    if (!row || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    focus(Number(row.dataset.btSignal));
   });
   document.addEventListener("htmx:afterSwap", (e) => { if (e.detail.target.id === "sim-result") build(e.detail.target); });
 })();
@@ -383,6 +458,54 @@ const StockChart = (() => {
   form?.addEventListener("levels:input", fromForm);
 
   return { open, close };
+})();
+
+// ---- Alert list: show what changed between one refresh and the next -------------------------
+// The list is replaced wholesale every 30 seconds, so nothing would ever appear to move. Remember
+// each alert's state just before the swap and, just after, let the difference show: the price dot
+// glides, a changed price flashes, and a level that was hit sweeps its row.
+(() => {
+  let before = null;
+  const rows = () => [...document.querySelectorAll("#alert-list .alert-row")];
+  const counts = () => Object.fromEntries([...document.querySelectorAll("#alert-list [data-count]")]
+    .map((el) => [el.dataset.count, Number(el.textContent)]));
+
+  document.addEventListener("htmx:beforeSwap", (e) => {
+    if (e.detail.target.id !== "alert-list") return;
+    before = { counts: counts(), alerts: new Map() };
+    rows().forEach((row) => before.alerts.set(row.dataset.alert, {
+      ...row.dataset, dot: row.querySelector(".rail-dot")?.style.left }));
+  });
+
+  document.addEventListener("htmx:afterSettle", () => {
+    if (!before || !document.getElementById("alert-list")) return;
+    const was = before;
+    before = null;
+    rows().forEach((row) => {
+      const old = was.alerts.get(row.dataset.alert);
+      if (!old) return;
+      const now = row.dataset;
+      const hit = Number(now.hits) > Number(old.hits) || (now.last && now.last !== old.last)
+        || (old.status === "active" && now.status === "triggered");
+      if (hit) row.classList.add("just-hit");
+      const price = row.querySelector(".price-now");
+      if (price && old.price && now.price && Number(now.price) !== Number(old.price)) {
+        price.classList.add(Number(now.price) > Number(old.price) ? "tick-up" : "tick-down");
+      }
+      const dot = row.querySelector(".rail-dot");
+      if (dot && old.dot && old.dot !== dot.style.left) {
+        const to = dot.style.left;
+        dot.style.transition = "none";
+        dot.style.left = old.dot;
+        dot.getBoundingClientRect();  // settle at the old spot, then let the transition carry it
+        dot.style.transition = "";
+        dot.style.left = to;
+      }
+    });
+    document.querySelectorAll('#alert-list [data-count="triggered"]').forEach((badge) => {
+      if (Number(badge.textContent) > (was.counts.triggered ?? Infinity)) badge.classList.add("count-pulse");
+    });
+  });
 })();
 
 // ---- Remember whether the New alert form was left open --------------------------

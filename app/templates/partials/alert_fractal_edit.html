@@ -1,8 +1,8 @@
 {% from "partials/icons.html" import icon %}
 {# Edit a fractal alert: timeframe, which fractals, what to report, message and webhooks. #}
-<div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="edit-title">
-  <div class="fixed inset-0 bg-ink/25 backdrop-blur-[2px]" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
-  <form class="panel arrive relative w-full max-w-2xl p-6 shadow-2xl sm:p-7"
+<div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain p-4" role="dialog" aria-modal="true" aria-labelledby="edit-title">
+  <div class="scrim-in fixed inset-0 bg-ink/25 backdrop-blur-[2px]" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
+  <form class="panel dialog-in relative my-auto w-full max-w-2xl p-6 shadow-2xl sm:p-7"
         hx-post="/alerts/{{ a.id }}/edit" hx-target="#alert-list" hx-swap="outerHTML"
         hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') document.getElementById('alert-editor').innerHTML='';">
     <div class="flex items-start gap-4">
@@ -20,10 +20,10 @@
         {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" data-min="{{ tf[2] }}" {{ 'selected' if key == a.timeframe }}>{{ tf[0] }} candles</option>{% endfor %}
       </select>
     </div>
-    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers, f_confirm=a.confirm_timeframe or '' %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
+    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers, f_confirm=a.confirm_timeframe or '', f_min=a.min_candles if a.min_candles is defined else min_default %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
 
     <div class="mt-5">
-      <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft/70">(optional)</span></label>
+      <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft">(optional)</span></label>
       <input id="edit-note" name="note" maxlength="140" value="{{ a.note or '' }}" placeholder="Leave empty for “Potential sell” / “Potential buy”" class="field">
     </div>
 

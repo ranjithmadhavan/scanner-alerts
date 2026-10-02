@@ -20,30 +20,30 @@
   {% if a.fractal -%}
     {# A fractal alert's levels are the instrument's unmitigated fractals; show the nearest on each side. #}
     <span class="inline-flex flex-wrap items-center gap-1 align-middle">
-      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
-      {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft/80">levels appear after the first scan</span>
+      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
+      {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft">levels appear after the first scan</span>
       {% else %}
         {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal high, formed {{ a.fractal.above.at|ist }}">High <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}
         {% if a.fractal.below %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal low, formed {{ a.fractal.below.at|ist }}">Low <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span>{% endif %}
-        <span class="text-[13px] text-ink-soft/80">{{ a.fractal.count }} unmitigated</span>
+        <span class="text-[13px] text-ink-soft">{{ a.fractal.count }} unmitigated</span>
       {% endif %}
-      {% if a.note %}<span class="text-[13px] text-ink-soft/70" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
+      {% if a.note %}<span class="text-[13px] text-ink-soft" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
     </span>
   {%- elif a.levels|length > 1 -%}
     {# One chip per level; the ones that have fired are marked and no longer watched. #}
     <span class="inline-flex flex-wrap items-center gap-1 align-middle">
     {% for lv in a.levels %}
       {% if lv.status == 'hit' %}
-      <span class="inline-flex items-center gap-1 rounded-full bg-marigold-50 px-2 py-0.5 text-[13px] font-medium text-marigold-dark"
+      <span class="hit-chip inline-flex items-center gap-1 rounded-full bg-marigold-50 px-2 py-0.5 text-[13px] font-medium text-marigold-dark"
             title="Hit at ₹{{ lv.hit_price|price }} on {{ lv.hit_at|ist }}. This level is switched off.">{{ icon('check', 'h-3 w-3') }}{{ lv.label }} <span class="num">₹{{ lv.level|price }}</span></span>
       {% else %}
-      <span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]">{{ lv.label }} <strong class="num font-semibold text-ink">₹{{ lv.level|price }}</strong>{% if lv.is_close %}<span class="text-ink-soft/80">{{ tf_label(a.timeframe) }}</span>{% endif %}</span>
+      <span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]">{{ lv.label }} <strong class="num font-semibold text-ink">₹{{ lv.level|price }}</strong>{% if lv.is_close %}<span class="text-ink-soft">{{ tf_label(a.timeframe) }}</span>{% endif %}</span>
       {% endif %}
     {% endfor %}
-    {% if a.note %}<span class="text-[13px] text-ink-soft/70" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
+    {% if a.note %}<span class="text-[13px] text-ink-soft" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
     </span>
   {%- else -%}
-  {{ a.label }} <strong class="num font-semibold text-ink">₹{{ a.level|price }}</strong>{% if a.is_close %}<span class="text-ink-soft/80">, {{ tf_label(a.timeframe) }}</span>{% endif %}{% if a.note %}<span class="text-ink-soft/70" title="{{ a.note }}">, {{ a.note|truncate(note_len) }}</span>{% endif %}
+  {{ a.label }} <strong class="num font-semibold text-ink">₹{{ a.level|price }}</strong>{% if a.is_close %}<span class="text-ink-soft">, {{ tf_label(a.timeframe) }}</span>{% endif %}{% if a.note %}<span class="text-ink-soft" title="{{ a.note }}">, {{ a.note|truncate(note_len) }}</span>{% endif %}
   {%- endif %}
 {%- endmacro %}
 
@@ -51,7 +51,7 @@
   <span class="flex flex-wrap items-center gap-1" aria-label="Where this alert is sent">
   {% for ch in channels if ch.ready or ch.key in a.channels %}
     {% set on = ch.key in a.channels %}
-    <button class="rounded-full border px-2 py-px text-[11px] font-medium transition {{ 'border-peacock/25 bg-peacock-50 text-peacock hover:border-peacock/50' if on and ch.ready else ('border-fall/25 bg-fall-50 text-fall line-through' if on else 'border-dashed border-line text-ink-soft/60 hover:border-peacock/40 hover:text-ink') }}"
+    <button class="rounded-full border px-2 py-px text-[11px] font-medium transition {{ 'border-peacock/25 bg-peacock-50 text-peacock hover:border-peacock/50' if on and ch.ready else ('border-fall/25 bg-fall-50 text-fall line-through' if on else 'border-dashed border-line text-ink-soft hover:border-peacock/40 hover:text-ink') }}"
             aria-pressed="{{ 'true' if on else 'false' }}" title="{{ ('Stop sending to ' if on else 'Also send to ') ~ ch.label }}{{ '' if ch.ready else ' (not set up)' }}"
             hx-post="/alerts/{{ a.id }}/channels/{{ ch.key }}" hx-target="#alert-list" hx-swap="outerHTML">{{ ch.label }}</button>
   {% else %}
@@ -64,19 +64,19 @@
 
 {% macro price_bar(a) -%}
   {% if a.fractal and a.price is not none %}
-    <p class="num text-sm"><strong class="font-semibold">₹{{ a.price|price }}</strong>
+    <p class="num text-sm"><strong class="price-now font-semibold">₹{{ a.price|price }}</strong>
       {% if a.fractal.above %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }} below the high</span>{% endif %}
       {%- if a.fractal.above and a.fractal.below %}<span class="text-ink-soft">,</span>{% endif %}
       {% if a.fractal.below %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }} above the low</span>{% endif %}
     </p>
   {% elif a.rail %}
-    <div class="flex items-center gap-3">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
       <div class="relative h-5 min-w-[60px] flex-1" title="Last price ₹{{ a.price|price }}">
         <div class="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-line"></div>
         <div class="absolute left-1/2 top-1/2 h-4 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-marigold"></div>
         <div class="rail-dot absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-soft {{ 'bg-rise' if a.rail.side == 'above' else 'bg-fall' }}" style="left: {{ a.rail.pos }}%"></div>
       </div>
-      <span class="num shrink-0 text-sm"><strong class="font-semibold">₹{{ a.price|price }}</strong>
+      <span class="num text-sm"><strong class="price-now font-semibold">₹{{ a.price|price }}</strong>
         <span class="{{ 'text-marigold-dark' if a.rail.reached else 'text-ink-soft' }}">{{ 'past level' if a.rail.reached else '%.2f%% away'|format(a.rail.pct) }}{% if a.levels|length > 1 %} from ₹{{ a.level|price }}{% endif %}</span></span>
     </div>
   {% endif %}
@@ -92,7 +92,7 @@
       Paused, not being checked
     {% else %}
       {% if a.hit_count %}<span class="font-semibold text-marigold-dark">{{ a.hit_count }} of {{ a.levels|length }} hit.</span>{% endif %}
-      {% if a.fractal and a.last_hit %}<span class="font-semibold text-marigold-dark">Last: {{ a.last_hit.text }}, {{ a.last_hit.at|when }}.</span>{% endif %}
+      {% if a.fractal and a.last_hit %}<span class="font-semibold text-marigold-dark">Last: {{ a.fractal.last }}, {{ a.last_hit.at|when }}.</span>{% endif %}
       {{ ('Checked ' ~ (a.checked_at|when)) if a.checked_at else 'Not checked yet' }}
       {%- if a.next and a.next.at -%}
         , next {{ 'after the ' ~ (a.next.at|when) ~ ' candle closes' if a.next.after_candle else a.next.at|when }}
@@ -104,17 +104,17 @@
 {%- endmacro %}
 
 {% macro actions(a) -%}
-  <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
+  <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
           data-chart="{{ a.key }}" data-levels="{{ (a.fractal.all if a.fractal else a.levels)|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
-  <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Edit {{ a.symbol }} alert" title="Edit or add levels"
+  <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-peacock-50 hover:text-peacock" aria-label="Edit {{ a.symbol }} alert" title="Edit or add levels"
           hx-get="/alerts/{{ a.id }}/edit" hx-target="#alert-editor" hx-swap="innerHTML">{{ icon('edit', 'h-4 w-4') }}</button>
   {% if a.status == 'active' %}
-    <button class="rounded-full p-2 text-ink-soft/80 transition hover:bg-canvas hover:text-ink" title="Pause" aria-label="Pause {{ a.symbol }} alert"
+    <button class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" title="Pause" aria-label="Pause {{ a.symbol }} alert"
             hx-post="/alerts/{{ a.id }}/pause" hx-target="#alert-list" hx-swap="outerHTML">{{ icon('pause', 'h-4 w-4') }}</button>
   {% else %}
     <button class="btn-outline px-3 py-1 text-sm" hx-post="/alerts/{{ a.id }}/rearm" hx-target="#alert-list" hx-swap="outerHTML">{{ icon('refresh', 'h-3.5 w-3.5') }} {{ 'Watch again' if a.status == 'triggered' else 'Resume' }}</button>
   {% endif %}
-  <button class="rounded-full p-2 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" aria-label="Remove {{ a.symbol }} alert" title="Remove"
+  <button class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove {{ a.symbol }} alert" title="Remove"
           hx-delete="/alerts/{{ a.id }}" hx-target="#alert-list" hx-swap="outerHTML" hx-confirm="Remove the {{ a.symbol }} alert?">{{ icon('trash', 'h-4 w-4') }}</button>
 {%- endmacro %}
 
@@ -135,14 +135,14 @@
   </p>
 
   <div class="flex flex-wrap items-center gap-3">
-    <div class="inline-flex flex-wrap rounded-full bg-white p-1 ring-1 ring-line" role="tablist" aria-label="Filter alerts">
+    <div class="inline-flex max-w-full overflow-x-auto rounded-full bg-white p-1 ring-1 ring-line" role="tablist" aria-label="Filter alerts">
       {% for key, label in tabs.items() %}
         {% set on = filters.tab == key %}
         <button type="button" role="tab" aria-selected="{{ 'true' if on else 'false' }}"
-                hx-get="/alerts/list?tab={{ key }}" hx-target="#alert-list" hx-swap="outerHTML"
-                class="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if on else 'text-ink-soft hover:text-ink' }}">
+                hx-get="/alerts/list?tab={{ key }}" hx-target="#alert-list" hx-swap="outerHTML transition:true"
+                class="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-sm font-semibold transition sm:px-3.5 {{ 'bg-ink text-white' if on else 'text-ink-soft hover:text-ink' }}">
           {{ label }}
-          <span class="num rounded-full px-1.5 text-xs {{ 'bg-white/15' if on else ('bg-marigold-50 text-marigold-dark' if key == 'triggered' and counts[key] else 'bg-canvas') }}">{{ counts[key] }}</span>
+          <span data-count="{{ key }}" class="num rounded-full px-1.5 text-xs {{ 'bg-white/15' if on else ('bg-marigold-50 text-marigold-dark' if key == 'triggered' and counts[key] else 'bg-canvas') }}">{{ counts[key] }}</span>
         </button>
       {% endfor %}
     </div>
@@ -151,7 +151,7 @@
       <input id="alert-search" hx-preserve="true" type="search" name="q" value="{{ filters.q }}" placeholder="Search symbol or note" aria-label="Search alerts"
              hx-get="/alerts/list" hx-trigger="input changed delay:250ms, search" hx-target="#alert-list" hx-swap="outerHTML"
              class="field w-52 py-2 text-sm">
-      <select id="alert-sort" name="sort" aria-label="Sort alerts" hx-get="/alerts/list" hx-trigger="change" hx-target="#alert-list" hx-swap="outerHTML"
+      <select id="alert-sort" name="sort" aria-label="Sort alerts" hx-get="/alerts/list" hx-trigger="change" hx-target="#alert-list" hx-swap="outerHTML transition:true"
               class="field w-auto py-2 pr-9 text-sm">
         {% for key, label in sorts.items() %}<option value="{{ key }}" {{ 'selected' if filters.sort == key }}>{{ label }}</option>{% endfor %}
       </select>
@@ -168,7 +168,7 @@
   {# ---- List layout ---- #}
   <ul class="layout-list mt-4 divide-y divide-line overflow-hidden rounded-3xl border border-line bg-white">
   {% for a in alerts %}
-    <li class="grid items-center gap-x-5 gap-y-2 px-5 py-3.5 sm:px-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_auto] {{ 'arrive' if a.id == fresh_id }} {{ 'bg-marigold-50/60' if a.status == 'triggered' }}">
+    <li data-alert="{{ a.id }}" data-hits="{{ a.hit_count }}" data-last="{{ a.last_hit.at if a.last_hit else '' }}" data-status="{{ a.status }}" data-price="{{ a.price if a.price is not none else '' }}" style="view-transition-name: alert-{{ a.id }}" class="alert-row grid items-center gap-x-5 gap-y-2 px-5 py-3.5 sm:px-6 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto] {{ 'arrive' if a.id == fresh_id }} {{ 'bg-marigold-50/60' if a.status == 'triggered' }}">
       <div class="min-w-0 {{ 'opacity-60' if a.status == 'paused' }}">
         <div class="flex items-baseline gap-2">
           <span class="font-display text-[17px] font-bold">{{ a.symbol }}</span>
@@ -193,7 +193,7 @@
   {# ---- Card layout ---- #}
   <div class="layout-cards mt-4 gap-3 sm:grid-cols-2 lg:grid-cols-3">
   {% for a in alerts %}
-    <article class="flex min-w-0 flex-col rounded-2xl border p-4 transition hover:shadow-soft {{ 'arrive' if a.id == fresh_id }}
+    <article data-alert="{{ a.id }}" data-hits="{{ a.hit_count }}" data-last="{{ a.last_hit.at if a.last_hit else '' }}" data-status="{{ a.status }}" data-price="{{ a.price if a.price is not none else '' }}" style="view-transition-name: alert-{{ a.id }}" class="alert-row flex min-w-0 flex-col rounded-2xl border p-4 transition hover:shadow-soft {{ 'arrive' if a.id == fresh_id }}
                     {{ 'border-marigold/30 bg-marigold-50/60' if a.status == 'triggered' else 'border-line bg-white' }}">
       <div class="mb-3 {{ 'opacity-60' if a.status == 'paused' }}">
         <div class="flex items-start gap-2">

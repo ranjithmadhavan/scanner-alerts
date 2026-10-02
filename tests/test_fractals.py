@@ -161,3 +161,27 @@ def test_trigger_candle_choices_fit_inside_the_fractal_timeframe():
     assert trigger_choices("3m") == ["1m"] and trigger_choices("5m") == ["1m"]
     assert trigger_choices("10m") == ["1m", "5m"]                     # 3 doesn't fit into 10
     assert trigger_choices("1d") == ["1m", "3m", "5m", "10m", "15m", "30m", "1h"]
+
+
+def test_minimum_candles_between_fractal_and_the_candle_that_takes_it():
+    from app.fractals import candles_between
+    quiet = (105, 107, 103, 106)
+    sweep = (105, 111, 104, 109)
+    soon = series(*SETUP, sweep)                                       # only the fractal's third candle in between
+    assert keys(walk(soon)[0]) == [("high", "touch"), ("high", "reject")]
+    hits, active = walk(soon, min_between=5)
+    assert hits == [] and [f.side for f in active] == ["low"]          # dropped, and no longer in play
+    later = series(*SETUP, quiet, quiet, quiet, quiet, sweep)          # third candle + 4 quiet ones = 5 between
+    assert keys(walk(later, min_between=5)[0]) == [("high", "touch"), ("high", "reject")]
+    assert walk(later, min_between=6)[0] == []
+
+    # With smaller trigger candles the count is still in fractal candles.
+    half_hour = series(*SETUP, quiet, quiet)
+    closes = [c.start + timedelta(minutes=30) for c in half_hour]
+    found = find(half_hour, lambda c: c.start + timedelta(minutes=30))
+    high = [f for _, f in found if f.side == "high"][0]
+    assert candles_between(high, T0 + timedelta(minutes=90), closes) == 1      # right after the third candle
+    assert candles_between(high, T0 + timedelta(minutes=155), closes) == 3     # inside the next, still-forming half hour
+    five = [Candle(T0 + timedelta(minutes=155), 106, 111, 105, 109)]
+    assert keys(replay(found, five, closes, 3)[0]) == [("high", "touch"), ("high", "reject")]
+    assert replay(found, five, closes, 4)[0] == []

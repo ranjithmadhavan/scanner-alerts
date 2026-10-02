@@ -1,8 +1,8 @@
 {% from "partials/icons.html" import icon %}
 {# Edit an alert: change or remove levels, add more, re-arm ones that fired. Opened over the page from the alert list. #}
-<div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="edit-title">
-  <div class="fixed inset-0 bg-ink/25 backdrop-blur-[2px]" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
-  <form class="level-form panel arrive relative w-full max-w-xl p-6 shadow-2xl sm:p-7"
+<div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain p-4" role="dialog" aria-modal="true" aria-labelledby="edit-title">
+  <div class="scrim-in fixed inset-0 bg-ink/25 backdrop-blur-[2px]" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
+  <form class="level-form panel dialog-in relative my-auto w-full max-w-xl p-6 shadow-2xl sm:p-7"
         hx-post="/alerts/{{ a.id }}/edit" hx-target="#alert-list" hx-swap="outerHTML"
         hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') document.getElementById('alert-editor').innerHTML='';">
     <div class="flex items-start gap-4">
@@ -18,27 +18,29 @@
     <div data-extra-levels class="space-y-2">
       {% for lv in levels %}
       {% if lv.status == 'hit' %}
-      <div class="extra-level flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-marigold-50 px-3 py-2 text-sm">
+      <div class="extra-level flex items-center gap-x-3 rounded-xl bg-marigold-50 py-1.5 pl-3 pr-1.5 text-sm">
         <input type="hidden" name="extra_index" value="{{ loop.index0 }}">
         <input type="hidden" name="extra_condition" value="{{ lv.condition }}">
         <input type="hidden" name="extra_level" value="{{ '%g'|format(lv.level) }}">
-        <span class="font-medium text-marigold-dark">{{ conditions[lv.condition] }} <span class="num">₹{{ lv.level|price }}</span></span>
-        <span class="text-ink-soft">hit at ₹{{ lv.hit_price|price }}{% if lv.hit_at %}, {{ lv.hit_at|ist }}{% endif %}</span>
-        <label class="ml-auto inline-flex cursor-pointer items-center gap-1.5 font-medium">
+        <span class="min-w-0 flex-1">
+          <span class="font-medium text-marigold-dark">{{ conditions[lv.condition] }} <span class="num">₹{{ lv.level|price }}</span></span>
+          <span class="num text-ink-soft">hit at ₹{{ lv.hit_price|price }}{% if lv.hit_at %}, {{ lv.hit_at|ist }}{% endif %}</span>
+        </span>
+        <label class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap font-medium">
           <input type="checkbox" name="rearm" value="{{ loop.index0 }}" class="h-4 w-4 rounded border-line text-peacock"> Watch again
         </label>
-        <button type="button" data-remove-level class="rounded-full p-1.5 text-ink-soft/70 transition hover:bg-white hover:text-fall"
+        <button type="button" data-remove-level class="shrink-0 rounded-full p-2 text-ink-soft transition hover:bg-white hover:text-fall"
                 aria-label="Remove this level" title="Remove this level">{{ icon('close', 'h-4 w-4') }}</button>
       </div>
       {% else %}
       <div class="extra-level flex items-center gap-2">
         <input type="hidden" name="extra_index" value="{{ loop.index0 }}">
-        <select name="extra_condition" aria-label="When this level should fire" class="field w-auto py-2 pr-9 text-sm">
+        <select name="extra_condition" aria-label="When this level should fire" class="field w-auto shrink-0 py-2 pr-9 text-sm">
           {% for key, label in conditions.items() %}<option value="{{ key }}" {{ 'selected' if key == lv.condition }}>{{ label }}</option>{% endfor %}
         </select>
         <input name="extra_level" type="number" step="0.05" min="0.05" value="{{ '%g'|format(lv.level) }}" placeholder="0.00" aria-label="Price level (₹)"
-               class="field num level-input w-36 py-2 text-sm sm:w-44">
-        <button type="button" data-remove-level class="rounded-full p-2 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall"
+               class="field num level-input min-w-0 flex-1 py-2 text-sm sm:w-44 sm:flex-none">
+        <button type="button" data-remove-level class="shrink-0 rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall"
                 aria-label="Remove this level" title="Remove this level">{{ icon('close', 'h-4 w-4') }}</button>
       </div>
       {% endif %}
@@ -60,7 +62,7 @@
         </select>
       </div>
       <div class="flex-1">
-        <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft/70">(optional)</span></label>
+        <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft">(optional)</span></label>
         <input id="edit-note" name="note" maxlength="140" value="{{ a.note or '' }}" placeholder="Leave empty for “Potential sell” / “Potential buy”" class="field">
       </div>
     </div>

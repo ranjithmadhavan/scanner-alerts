@@ -1,7 +1,7 @@
 {# Optional webhooks for an alert. `hooks` is the saved list of URLs, `hook_payload` the saved JSON text. #}
 <details class="group/hooks mt-5" {{ 'open' if hooks }}>
   <summary class="flex cursor-pointer items-center gap-1.5 text-sm font-semibold text-peacock">
-    Webhooks <span class="font-normal text-ink-soft/70">(optional{{ ', ' ~ hooks|length ~ ' set' if hooks }})</span>
+    Webhooks <span class="font-normal text-ink-soft">(optional{{ ', ' ~ hooks|length ~ ' set' if hooks }})</span>
     <svg class="h-4 w-4 transition group-open/hooks:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
   </summary>
   <div class="mt-3 grid gap-4 sm:grid-cols-2">
@@ -12,7 +12,7 @@
       <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">When a level is hit we POST JSON to each URL: symbol, message, level, price, direction and time.</p>
     </div>
     <div>
-      <label for="{{ prefix }}hook-payload" class="label">Your own JSON <span class="font-normal text-ink-soft/70">(optional)</span></label>
+      <label for="{{ prefix }}hook-payload" class="label">Your own JSON <span class="font-normal text-ink-soft">(optional)</span></label>
       <textarea id="{{ prefix }}hook-payload" name="webhook_payload" rows="4" spellcheck="false" autocomplete="off"
                 class="field font-mono text-[13px]" placeholder='{"strategy": "sweep", "qty": 50}'>{{ hook_payload or '' }}</textarea>
       <p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">Sent as it is under <code class="rounded bg-canvas px-1">"payload"</code> in every request.</p>

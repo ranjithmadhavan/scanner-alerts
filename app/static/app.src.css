@@ -6,10 +6,13 @@
   body { @apply bg-canvas text-ink font-sans antialiased; font-feature-settings: "tnum" 0; }
   h1, h2, h3 { @apply font-display tracking-tight; }
   :focus-visible { @apply outline-none ring-2 ring-marigold ring-offset-2 ring-offset-canvas; }
+  /* The parts the browser draws: selection, caret, checkboxes and scrollbars take the palette too. */
+  ::selection { background: #D3E7E3; color: #16373A; }
+  html { accent-color: #0F5E5C; caret-color: #0F5E5C; scrollbar-color: #D9D1C3 transparent; }
 }
 
 @layer components {
-  .field { @apply w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-soft/60 transition focus:border-peacock focus:ring-4 focus:ring-peacock-50 focus:outline-none; }
+  .field { @apply w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-soft transition focus:border-peacock focus:ring-4 focus:ring-peacock-50 focus:outline-none; }
   .label { @apply mb-1.5 block text-sm font-medium text-ink-soft; }
   .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[15px] font-semibold transition active:scale-[.98] disabled:opacity-50; }
   .btn-primary { @apply btn bg-peacock text-white hover:bg-peacock-dark shadow-sm; }
@@ -19,7 +22,9 @@
   .num { font-variant-numeric: tabular-nums; }
 }
 
-/* Motion: only what answers an action, plus the market-open pulse. */
+/* Motion: only what answers an action or explains a change, plus the market-open pulse.
+   The one authored moment is a level being hit (.just-hit): the row is swept in marigold. */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes arrive { from { opacity: 0; transform: translateY(-6px) scale(.99); } to { opacity: 1; transform: none; } }
 @keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,139,87,.35); } 50% { box-shadow: 0 0 0 6px rgba(46,139,87,0); } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
@@ -28,6 +33,31 @@
 .toast-in { animation: toast-in .3s cubic-bezier(.2,.8,.2,1) both; }
 .htmx-request.htmx-busy, .htmx-request .htmx-busy { opacity: .6; pointer-events: none; }
 .rail-dot { transition: left .8s cubic-bezier(.2,.8,.2,1); }
+/* A price that moved since the last look flashes the way it went, then settles. */
+@keyframes tick-up { 0%, 35% { color: #2E8B57; } }
+@keyframes tick-down { 0%, 35% { color: #C2475A; } }
+.tick-up { animation: tick-up 1.1s ease-out; }
+.tick-down { animation: tick-down 1.1s ease-out; }
+/* A level was hit while you were looking: marigold sweeps the row the way price swept the level,
+   the fired level's chip lands, and the Triggered count pulses if the alert moved there. */
+@keyframes level-hit { 0% { clip-path: inset(0 100% 0 0); opacity: 1; } 40% { clip-path: inset(0); opacity: 1; } 100% { clip-path: inset(0); opacity: 0; } }
+@keyframes chip-land { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: none; } }
+@keyframes count-pulse { 0% { transform: scale(1); } 30% { transform: scale(1.45); } 100% { transform: scale(1); } }
+.just-hit { position: relative; isolation: isolate; }
+.just-hit::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+  background: linear-gradient(90deg, rgba(233,162,59,.34), rgba(233,162,59,.14) 65%, rgba(233,162,59,0));
+  animation: level-hit 1.6s cubic-bezier(.2,.8,.2,1) both; }
+.just-hit .hit-chip { animation: chip-land .45s .3s cubic-bezier(.2,.8,.2,1) both; }
+.count-pulse { animation: count-pulse .7s cubic-bezier(.2,.8,.2,1); }
+/* The alert editor: the page dims, the dialog rises into place. */
+@keyframes dialog-in { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+.scrim-in { animation: fade-in .25s ease-out both; }
+.dialog-in { animation: dialog-in .34s cubic-bezier(.2,.8,.2,1) both; }
+/* Switching between price levels and fractals: the other set of fields eases in. */
+.section-in { animation: arrive .28s cubic-bezier(.2,.8,.2,1) both; }
+/* Changing tab or sort: rows keep their identity and glide to where they now belong. */
+::view-transition-group(*) { animation-duration: .32s; animation-timing-function: cubic-bezier(.2,.8,.2,1); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .16s; }
 /* A low marigold glow at the foot of the sidebar: warmth without decoration elsewhere. */
 .sidebar-panel::after { content: ""; position: absolute; inset: auto -30% -35% -30%; height: 55%; pointer-events: none;
   background: radial-gradient(closest-side, rgba(233,162,59,.22), transparent); }
@@ -54,6 +84,16 @@ html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"] { backgroun
 /* Channel chips show a tick only when selected. */
 .tick { display: none; }
 input:checked + span .tick { display: inline; }
+/* A dialog over the page (the alert editor): the page behind it stays put. */
+body:has(#alert-editor > *) { overflow: hidden; }
 details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+/* Reduced motion: nothing travels, pulses or sweeps, but fades and colour changes that carry meaning stay. */
+@media (prefers-reduced-motion: reduce) {
+  .arrive, .toast-in, .quote-in, .section-in, .dialog-in { animation: fade-in .2s ease-out both; }
+  .breathe, .count-pulse, .just-hit .hit-chip { animation: none; }
+  .just-hit::before { animation: fade-in 1.6s ease-in reverse both; clip-path: none; }
+  .rail-dot, .drawer-panel { transition: none; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+  * { scroll-behavior: auto !important; }
+}
