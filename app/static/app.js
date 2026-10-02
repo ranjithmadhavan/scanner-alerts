@@ -31,15 +31,30 @@ scrim?.addEventListener("click", () => setMenu(false));
     const extras = form.querySelector("[data-extra-levels]");
     const tf = form.querySelector("[data-timeframe-field]");
     const addBtn = form.querySelector("[data-add-level]");
-    const chosen = [...form.querySelectorAll('[name="condition"]:checked, [name="extra_condition"]')].map((el) => el.value);
+    const chosen = [...form.querySelectorAll('[name="condition"]:checked:enabled, [name="extra_condition"]:enabled')].map((el) => el.value);
     if (tf) tf.hidden = !chosen.some((c) => c.startsWith("close_"));
     if (addBtn) addBtn.hidden = extras.children.length >= Number(addBtn.dataset.max);
   }
   const syncAll = () => document.querySelectorAll(".level-form").forEach(sync);
 
+  // New alert form: price levels or fractals. The other kind's fields are hidden and switched off,
+  // so they are neither required nor sent.
+  function setKind(form) {
+    const kind = form.querySelector('[name="kind"]:checked')?.value;
+    if (!kind) return;
+    form.querySelectorAll("[data-kind-section]").forEach((section) => {
+      const off = section.dataset.kindSection !== kind;
+      section.hidden = off;
+      section.querySelectorAll("input, select, textarea").forEach((el) => { el.disabled = off; });
+    });
+    form.querySelectorAll("[data-label-price]").forEach((b) => { b.textContent = b.dataset[kind === "fractal" ? "labelFractal" : "labelPrice"]; });
+    sync(form);
+  }
+
   document.addEventListener("change", (e) => {
     const form = e.target.closest(".level-form");
-    if (form && (e.target.name === "condition" || e.target.name === "extra_condition")) sync(form);
+    if (form && e.target.name === "kind") setKind(form);
+    else if (form && (e.target.name === "condition" || e.target.name === "extra_condition")) sync(form);
   });
   document.addEventListener("levels:changed", (e) => sync(e.target)); // the form was cleared after saving
 
@@ -65,6 +80,7 @@ scrim?.addEventListener("click", () => setMenu(false));
     const editor = document.getElementById("alert-editor");
     if (e.key === "Escape" && editor?.children.length) editor.innerHTML = "";
   });
+  document.querySelectorAll(".level-form").forEach(setKind);
   syncAll();
 })();
 
@@ -283,14 +299,14 @@ const StockChart = (() => {
     const btn = e.target.closest("[data-chart]");
     if (!btn) return;
     open(btn.dataset.chart, btn.dataset.levels ? parseLevels(btn.dataset.levels.split(","))
-      : fieldLevels(btn.dataset.levelsFrom));
+      : btn.dataset.levelsFrom ? fieldLevels(btn.dataset.levelsFrom) : []);
   });
 
   // Typing a level in the form (or removing a row) moves the lines live.
   const form = document.getElementById("new-alert");
   function fromForm() {
     const formSymbol = document.getElementById("symbol")?.value.trim().toUpperCase();
-    if (!drawer.hidden && formSymbol === state.symbol) setLevels(fieldLevels("#new-alert .level-input"));
+    if (!drawer.hidden && formSymbol === state.symbol) setLevels(fieldLevels("#new-alert .level-input:enabled"));
   }
   form?.addEventListener("input", (e) => { if (e.target.classList.contains("level-input")) fromForm(); });
   form?.addEventListener("levels:input", fromForm);

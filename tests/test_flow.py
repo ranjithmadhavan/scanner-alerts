@@ -831,3 +831,191 @@ def test_nothing_is_scanned_outside_market_hours_or_on_holidays(client, monkeypa
     r = client.post("/admin/market/holidays/fetch")
     assert "Added 1 holiday from NSE" in r.headers["HX-Trigger"] and "Republic Day" in r.text
     store.delete("settings", "market")
+
+
+def test_fractal_alert_end_to_end(client, monkeypatch):
+    from datetime import timedelta
+    from app import webhooks
+    login(client, "boss", "boss-pass-123")
+    scanner._fractal_history.clear()
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "boss", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    sent, posted = [], []
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
+    monkeypatch.setattr(webhooks, "_is_public", lambda host: True)
+
+    class Ok:
+        status_code = 200
+    monkeypatch.setattr(webhooks.httpx, "post", lambda url, json, timeout, follow_redirects, headers: posted.append(json) or Ok())
+
+    friday = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    monday = datetime(2026, 9, 28, 9, 15, tzinfo=IST)
+    # Friday leaves a fractal high at 110 and a fractal low at 100 (the 9:45 candle).
+    history = [Candle(friday + timedelta(minutes=30 * i), *row) for i, row in enumerate(
+        [(104, 106, 102, 105), (105, 110, 100, 104), (104, 108, 101, 105), (105, 107, 103, 106)])]
+    state = {"minutes": [], "today": []}
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            assert tf == "1m"
+            return state["minutes"]
+
+        def candles_range(self, token, tf, start, end):
+            assert tf == "30m"
+            return history + state["today"]
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+
+    # Created from the New alert form in Fractals mode: no price level needed.
+    r = client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m", "sides": "both",
+                                     "triggers": ["touch", "reject"], "channels": ["telegram"],
+                                     "webhooks": "https://bot.example/hook", "webhook_payload": '{"qty": 50}'})
+    assert "Watching INFY 30 min fractals" in r.headers["HX-Trigger"] and "Fractal 30 min" in r.text
+    assert "levels appear after the first scan" in r.text
+    a = store.list("alerts", user="boss")[0]
+    assert (a["kind"], a["timeframe"], a["sides"], a["triggers"], a["levels"]) == ("fractal", "30m", "both", ["touch", "reject"], [])
+    assert client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "triggers": []}).headers.get("HX-Reswap") == "none"
+    store.update("alerts", a["id"], {"armed_at": friday.replace(hour=14).isoformat()})
+
+    def minute(m, *ohlc):
+        return Candle(monday.replace(minute=m), *ohlc)
+
+    # 9:18 on Monday: price is between the two fractals, nothing to report, levels are known.
+    state["minutes"] = [minute(15, 106, 107, 105, 106.5), minute(16, 106.5, 108, 106, 107), minute(17, 107, 109.5, 106.8, 109)]
+    scanner.run_scan(monday.replace(minute=18, second=5))
+    assert sent == []
+    page = client.get("/alerts/list?tab=active&q=").text
+    assert "110.00" in page and "100.00" in page and "2 unmitigated" in page and 'data-levels="110,100"' in page
+
+    # 9:20: a trade goes above the fractal high. One "taken" message, with the fractal low as the target.
+    state["minutes"].append(minute(20, 109, 110.8, 108.9, 110.2))
+    scanner.run_scan(monday.replace(minute=20, second=40))
+    assert len(sent) == 1
+    subject, body = sent[0]
+    assert subject == "🔔 Potential sell: INFY 30 min fractal high 110 taken"
+    assert "INFY traded above the 30 min fractal high of 110." in body and "Price: 110.8" in body
+    assert "Target: 100, the nearest unmitigated fractal low." in body and "Fractal formed 25 Sep, 9:45 AM." in body
+    hook = posted[0]
+    assert (hook["event"], hook["side"], hook["trigger"], hook["signal"]) == ("fractal_hit", "high", "touch", "sell")
+    assert (hook["level"], hook["price"], hook["target"], hook["timeframe"]) == (110, 110.8, 100, "30m")
+    assert hook["payload"] == {"qty": 50} and hook["fractal_time"] == history[1].start.isoformat()
+
+    # Later scans in the same candle stay quiet, and the alert keeps watching.
+    scanner.run_scan(monday.replace(minute=21, second=40))
+    assert len(sent) == 1 and store.get("alerts", a["id"])["status"] == "active"
+    assert "1 unmitigated" in client.get("/alerts/list").text
+
+    # 9:45: the 30-minute candle closes back below 110, so the sweep is reported too.
+    state["today"] = [Candle(monday, 106, 110.8, 105, 109)]
+    state["minutes"].append(minute(44, 109.5, 109.8, 108.8, 109))
+    scanner.run_scan(monday.replace(minute=45, second=20))
+    assert len(sent) == 2 and sent[1][0] == "🔔 Potential sell: INFY 30 min fractal high 110 swept"
+    assert "swept the 30 min fractal high of 110 and closed back below it at 109." in sent[1][1]
+    assert posted[1]["trigger"] == "reject"
+    scanner.run_scan(monday.replace(minute=46, second=20))
+    assert len(sent) == 2
+    saved = store.get("alerts", a["id"])
+    assert len(saved["fired"]) == 2 and saved["last_hit"]["signal"] == "sell"
+    assert "Last: INFY 30 min fractal high 110 swept" in client.get("/alerts/list").text
+    events = [e for e in store.list("events", user="boss") if e["alert_id"] == a["id"]]
+    assert {e["delivery"].get("webhook") for e in events} == {"sent"}
+
+    # The edit panel is the fractal one; changing the timeframe starts afresh.
+    form = client.get(f"/alerts/{a['id']}/edit").text
+    assert "Edit INFY fractal alert" in form and "Break fails" in form and "https://bot.example/hook" in form
+    r = client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://bot.example/hook"})
+    assert "Test request sent" in r.headers["HX-Trigger"] and posted[-1]["test"] is True and posted[-1]["event"] == "fractal_hit"
+    r = client.post(f"/alerts/{a['id']}/edit", data={"fractal_timeframe": "1h", "sides": "low", "triggers": ["fail"], "note": "Sweep"})
+    assert "INFY fractal alert updated" in r.headers["HX-Trigger"]
+    saved = store.get("alerts", a["id"])
+    assert (saved["timeframe"], saved["sides"], saved["triggers"], saved["note"], saved["fired"]) == ("1h", "low", ["fail"], "Sweep", [])
+    assert saved["webhooks"] == []                                            # the box was left empty
+    client.post(f"/alerts/{a['id']}/pause")
+    client.post(f"/alerts/{a['id']}/rearm")
+    assert store.get("alerts", a["id"])["status"] == "active"
+    store.delete("alerts", a["id"])
+    scanner._fractal_history.clear()
+
+
+def test_fractal_gap_is_silent_and_sides_are_respected(monkeypatch):
+    from datetime import timedelta
+    scanner._fractal_history.clear()
+    friday = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    monday = datetime(2026, 9, 28, 9, 15, tzinfo=IST)
+    history = [Candle(friday + timedelta(minutes=30 * i), *row) for i, row in enumerate(
+        [(104, 106, 102, 105), (105, 110, 100, 104), (104, 108, 101, 105), (105, 107, 103, 106)])]
+    minutes = []
+
+    class FakeKite:
+        def profile(self):
+            return {}
+
+        def candles(self, token, tf, day):
+            return minutes
+
+        def candles_range(self, token, tf, start, end):
+            return history
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
+    sent = []
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append(s))
+    store.put("brokers", "gita", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    store.put("contacts", "gita", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
+    base = {"user": "gita", "kind": "fractal", "symbol": "INFY", "token": 7, "timeframe": "30m", "levels": [], "fired": [],
+            "triggers": ["touch", "reject", "fail"], "status": "active", "channels": ["telegram"],
+            "armed_at": friday.replace(hour=14).isoformat()}
+    store.put("alerts", "g1", {**base, "id": "g1", "sides": "both"})
+    store.put("alerts", "g2", {**base, "id": "g2", "sides": "high"})
+
+    # Monday opens above the fractal high: it is retired without a message.
+    minutes.append(Candle(monday, 111, 112, 110.5, 111.5))
+    scanner.run_scan(monday.replace(minute=16, second=5))
+    assert sent == [] and scanner.fractal_levels["g1"]["highs"] == []
+    assert [f.level for f in scanner.fractal_levels["g1"]["lows"]] == [100]
+
+    # Price then falls through the fractal low: the both-sides alert reports it, the highs-only one doesn't.
+    minutes.append(Candle(monday.replace(minute=17), 104, 104, 99.5, 100.2))
+    scanner.run_scan(monday.replace(minute=17, second=40))
+    assert sent == ["🔔 Potential buy: INFY 30 min fractal low 100 taken"]
+    assert store.get("alerts", "g2").get("fired") == []
+
+    # A fractal alert armed after the move doesn't report it.
+    store.put("alerts", "g3", {**base, "id": "g3", "sides": "both", "armed_at": monday.replace(minute=18).isoformat()})
+    scanner.run_scan(monday.replace(minute=18, second=40))
+    assert len(sent) == 1
+    for aid in ("g1", "g2", "g3"):
+        store.delete("alerts", aid)
+    scanner._fractal_history.clear()
+
+
+def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch):
+    from datetime import timedelta
+    login(client, "boss", "boss-pass-123")
+    day = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    rows = [(104, 106, 102, 105), (105, 110, 100, 104), (104, 108, 101, 105),      # fractal high 110, low 100
+            (105, 111, 104, 109),                                                    # sweeps 110, closes back
+            (109, 109, 103, 104), (104, 105, 99.5, 101)]                             # falls to the target, sweeps 100
+    candles = [Candle(day + timedelta(minutes=30 * i), *row) for i, row in enumerate(rows)]
+
+    class FakeKite:
+        def candles_range(self, token, tf, start, end):
+            assert tf == "30m"
+            return candles
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr("app.routes.alerts.now_ist", lambda: datetime(2026, 9, 26, 12, 0, tzinfo=IST))
+
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m",
+                                              "sides": "both", "triggers": ["touch", "reject", "fail"]})
+    page = r.text
+    assert "Backtest ready: 4 signals" in r.headers["HX-Trigger"]
+    assert "INFY: 4 signals, 2 of 4 reached their target" in page                   # both sell signals reached 100
+    assert "Potential sell" in page and "Potential buy" in page and "Swept, closed back" in page
+    assert "₹100.00" in page and "Reached 25 Sep" in page
+    assert "₹111.00" in page and "Not reached yet" in page       # the buys aim at the new fractal high left by the sweep
+    assert store.list("alerts", user="boss") == []                                  # nothing saved
+
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "sides": "low", "triggers": ["touch"]})
+    assert "INFY: 1 signal" in r.text

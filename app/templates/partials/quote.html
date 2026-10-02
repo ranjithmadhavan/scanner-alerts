@@ -19,7 +19,7 @@
     </span>
   {% endif %}
   {% if not needs_login %}
-  <button type="button" data-chart="{{ inst.key }}" data-levels-from="#new-alert .level-input"
+  <button type="button" data-chart="{{ inst.key }}" data-levels-from="#new-alert .level-input:enabled"
           class="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-sm font-medium text-peacock transition hover:border-peacock/40 hover:bg-peacock-50">
     {{ icon('chart', 'h-4 w-4') }} View chart
   </button>

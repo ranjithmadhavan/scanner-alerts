@@ -4,10 +4,10 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app import brokers, notify, prices
+from app import brokers, fractals, notify, prices
 from app import webhooks as hooks_module  # the forms have a field called `webhooks`
 from app import scanner
-from app.kite import TIMEFRAMES, KiteAuthError, KiteError, find_instrument, search_instruments
+from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError, find_instrument, search_instruments
 from app.market import in_scan_window, load_settings, now_ist
 from app.scanner import CONDITIONS, EITHER_WAY, alert_key, last_prices, levels_of, uses_close
 from app.security import require
@@ -60,6 +60,15 @@ def _view(alerts: list[dict], username: str, broker_ok: bool, now) -> list[dict]
     for a in alerts:
         key = alert_key(a)
         price, as_of = last_prices.get((username, key), (None, None))
+        if scanner.is_fractal(a):
+            out.append({
+                **a, "key": key, "levels": [], "hit_count": 0, "level": 0, "label": "", "is_close": False,
+                "price": price, "price_at": as_of, "rail": None, "fractal": _fractal_view(a, price),
+                "expired": bool(a.get("expiry")) and a["expiry"] < today,
+                "checked_at": scanner.last_checked_at.get(a["id"]),
+                "next": scanner.next_check(a, s, now, tick) if a["status"] == "active" and broker_ok else None,
+            })
+            continue
         levels = [{**lv, "label": CONDITIONS[lv["condition"]], "is_close": uses_close(lv["condition"]),
                    "rail": rail(lv, price)} for lv in levels_of(a)]
         waiting = [lv for lv in levels if lv["status"] == "active"]
@@ -76,6 +85,21 @@ def _view(alerts: list[dict], username: str, broker_ok: bool, now) -> list[dict]
     return out
 
 
+def _fractal_view(a: dict, price: float | None) -> dict:
+    """What the list shows for a fractal alert: its unmitigated levels as of the last scan."""
+    found = scanner.fractal_levels.get(a["id"])
+    highs, lows = (found or {}).get("highs", []), (found or {}).get("lows", [])  # highs rising, lows falling
+    sides = a.get("sides", "both")
+    return {
+        "tf": fractals.TIMEFRAMES[a["timeframe"]][0], "scanned": found is not None,
+        "sides": fractals.SIDES[sides], "triggers": [fractals.TRIGGERS[t] for t in a.get("triggers", [])],
+        "above": next((f for f in highs if price is None or f.level > price), None) if sides != "low" else None,
+        "below": next((f for f in lows if price is None or f.level < price), None) if sides != "high" else None,
+        "count": len(highs) * (sides != "low") + len(lows) * (sides != "high"),
+        "all": [f for f in highs if sides != "low"] + [f for f in lows if sides != "high"],
+    }
+
+
 def _sorted(alerts: list[dict], f: dict) -> list[dict]:
     q = f["q"].lower()
     if q:
@@ -84,7 +108,7 @@ def _sorted(alerts: list[dict], f: dict) -> list[dict]:
     if f["tab"] != "all":
         alerts = [a for a in alerts if a["status"] == f["tab"]]
     if f["sort"] == "symbol":
-        return sorted(alerts, key=lambda a: (a["symbol"], a["level"]))
+        return sorted(alerts, key=lambda a: (a["symbol"], a["level"] or 0))
     if f["sort"] == "new":
         return sorted(alerts, key=lambda a: a.get("created_at", ""), reverse=True)
     # Closest to level: triggered ones by most recent, then watching ones nearest to firing.
@@ -122,6 +146,7 @@ def _page_ctx(request: Request, user: dict) -> dict:
         "broker_ok": broker_ok,
         "conditions": CONDITIONS,
         "max_levels": MAX_LEVELS,
+        **_fractal_options(),
         "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"],
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],
@@ -207,6 +232,56 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
     }, None
 
 
+def _fractal_options() -> dict:
+    return {"fractal_timeframes": fractals.TIMEFRAMES, "fractal_default": fractals.DEFAULT_TIMEFRAME,
+            "fractal_triggers": fractals.TRIGGERS, "fractal_sides": fractals.SIDES}
+
+
+def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str]) -> tuple[dict, str | None]:
+    """The fractal part of the form as alert fields. Returns (fields, None) or ({}, error)."""
+    if fractal_timeframe not in fractals.TIMEFRAMES:
+        return {}, "Choose a timeframe to find fractals on."
+    if sides not in fractals.SIDES:
+        return {}, "Choose which fractals to watch."
+    chosen = [t for t in fractals.TRIGGERS if t in triggers]
+    if not chosen:
+        return {}, "Choose at least one thing to be alerted about."
+    return {"timeframe": fractal_timeframe, "sides": sides, "triggers": chosen}, None
+
+
+def _build_fractal_alert(user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str], note: str,
+                         channels: list[str], hooks: str = "", hook_payload: str = "") -> tuple[dict | None, str | None]:
+    """Validate the New alert form in Fractals mode. Returns (alert, None) or (None, error message)."""
+    inst = _instrument(symbol)
+    if not inst:
+        return None, f"We couldn't find {symbol.strip().upper() or 'that symbol'}. Pick one from the suggestions."
+    fields, error = _fractal_fields(fractal_timeframe, sides, triggers)
+    if error:
+        return None, error
+    hook_fields, error = _webhook_fields(hooks, hook_payload)
+    if error:
+        return None, error
+    now = now_ist().isoformat()
+    return {
+        **hook_fields, **fields,
+        "id": new_id(), "kind": "fractal", "user": user["username"],
+        "symbol": inst.symbol, "name": inst.name, "token": inst.token, "exchange": inst.exchange, "expiry": inst.expiry,
+        "levels": [],  # its levels are the instrument's fractals, worked out by the scanner
+        "fired": [],
+        "channels": [c for c in notify.CHANNELS if c in channels],
+        "note": note.strip()[:140],
+        "status": "active", "created_at": now, "armed_at": now,
+    }, None
+
+
+def _price_level(raw: str) -> float:
+    """The form's first price box; 0 (rejected as a level) if it's empty or not a number."""
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
 def _webhook_fields(hooks: str, hook_payload: str) -> tuple[dict, str | None]:
     """The form's webhook boxes as alert fields. Returns (fields, None) or ({}, error)."""
     urls, error = hooks_module.parse_urls(hooks)
@@ -274,8 +349,9 @@ def create(
     request: Request,
     user: dict = Depends(guard),
     symbol: str = Form(...),
-    condition: str = Form(...),
-    level: float = Form(...),
+    kind: str = Form("price"),
+    condition: str = Form(""),
+    level: str = Form(""),
     timeframe: str = Form("15m"),
     note: str = Form(""),
     channels: list[str] = Form([]),
@@ -283,9 +359,16 @@ def create(
     extra_level: list[str] = Form([]),
     webhooks: str = Form(""),
     webhook_payload: str = Form(""),
+    fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    sides: str = Form("both"),
+    triggers: list[str] = Form([]),
 ):
-    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level,
-                                webhooks, webhook_payload)
+    if kind == "fractal":
+        alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, note, channels,
+                                            webhooks, webhook_payload)
+    else:
+        alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
+                                    extra_condition, extra_level, webhooks, webhook_payload)
     if error:
         return fail(error)
     alert["armed_price"] = _armed_price(user["username"], alert)
@@ -295,8 +378,9 @@ def create(
     ctx = _page_ctx(request, user)
     ctx["fresh_id"] = alert["id"]
     count = len(alert["levels"])
+    what = f" {fractals.TIMEFRAMES[alert['timeframe']][0].lower()} fractals" if kind == "fractal" else ""
     return toast(render(request, "partials/alert_list.html", ctx),
-                 f"Watching {alert['symbol']}" + (f" at {count} levels" if count > 1 else ""))
+                 f"Watching {alert['symbol']}{what}" + (f" at {count} levels" if count > 1 else ""))
 
 
 @router.post("/simulate")
@@ -304,17 +388,25 @@ def simulate(
     request: Request,
     user: dict = Depends(guard),
     symbol: str = Form(...),
-    condition: str = Form(...),
-    level: float = Form(...),
+    kind: str = Form("price"),
+    condition: str = Form(""),
+    level: str = Form(""),
     timeframe: str = Form("15m"),
     note: str = Form(""),
     channels: list[str] = Form([]),
     extra_condition: list[str] = Form([]),
     extra_level: list[str] = Form([]),
+    fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    sides: str = Form("both"),
+    triggers: list[str] = Form([]),
 ):
     """Replay the form's alert on the last trading day with real Kite data and send the
-    result to the chosen channels. Nothing is saved."""
-    alert, error = _build_alert(user, symbol, condition, level, timeframe, note, channels, extra_condition, extra_level)
+    result to the chosen channels. Nothing is saved. In Fractals mode: a backtest over the
+    sessions fractals are searched on, shown on the page."""
+    if kind == "fractal":
+        return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers)
+    alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
+                                extra_condition, extra_level)
     if error:
         return fail(error)
     if not alert["channels"]:
@@ -335,6 +427,36 @@ def simulate(
     ctx = {"alert": alert, "result": result, "sent": sent, "failed": failed, "conditions": CONDITIONS}
     msg = f"Simulation sent to {', '.join(sent)}" if sent else "Simulation ran, but the message couldn't be sent"
     return toast(render(request, "partials/simulation.html", ctx), msg, "success" if sent else "error")
+
+
+def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str]):
+    alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, "", [])
+    if error:
+        return fail(error)
+    s, tf = load_settings(), alert["timeframe"]
+    try:
+        candles = scanner.fractal_candles(brokers.client_for(user["username"]), alert, s, now_ist())
+    except KiteAuthError:
+        return fail("Kite isn't connected or the session has expired. Log in on the Broker page first.")
+    except KiteError as e:
+        return fail(f"Couldn't get prices from Kite: {e}")
+    if len(candles) < 3:
+        return fail(f"Kite returned too few candles for {alert['symbol']} to find fractals.")
+    hits, unmitigated = fractals.walk(candles)
+    rows = [{"hit": h, "reached": fractals.target_reached(h, candles),
+             # A touch is dated by the candle it happened in, the others by that candle's close.
+             "when": h.candle.start if h.trigger == "touch" else scanner.candle_end(h.candle, tf, s)}
+            for h in hits if scanner.fractal_wanted(alert, h)]
+    with_target = [r for r in rows if r["hit"].target]
+    ctx = {
+        "alert": alert, "tf_label": fractals.TIMEFRAMES[tf][0], "daily": tf == "1d",
+        "first": candles[0].start, "last": candles[-1].start, "sessions": len({c.start.date() for c in candles}),
+        "rows": rows[::-1][:60], "total": len(rows),
+        "with_target": len(with_target), "reached": sum(1 for r in with_target if r["reached"]),
+        "highs": sorted((f for f in unmitigated if f.side == "high"), key=lambda f: f.level),
+        "lows": sorted((f for f in unmitigated if f.side == "low"), key=lambda f: f.level, reverse=True),
+    }
+    return toast(render(request, "partials/fractal_backtest.html", ctx), f"Backtest ready: {len(rows)} signal{'s' if len(rows) != 1 else ''}")
 
 
 def _own(alert_id: str, user: dict) -> dict | None:
@@ -364,6 +486,9 @@ def edit_form(request: Request, alert_id: str, user: dict = Depends(guard)):
     if not a:
         return HTMLResponse(status_code=404)
     payload = json.dumps(json.loads(a["webhook_payload"]), indent=2) if a.get("webhook_payload") else ""
+    if scanner.is_fractal(a):
+        return render(request, "partials/alert_fractal_edit.html", {
+            "a": a, "hooks": a.get("webhooks") or [], "hook_payload": payload, **_fractal_options()})
     return render(request, "partials/alert_edit.html", {
         "a": a, "levels": levels_of(a), "conditions": CONDITIONS, "max_levels": MAX_LEVELS,
         "hooks": a.get("webhooks") or [], "hook_payload": payload,
@@ -383,11 +508,27 @@ def edit(
     note: str = Form(""),
     webhooks: str = Form(""),
     webhook_payload: str = Form(""),
+    fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
+    sides: str = Form("both"),
+    triggers: list[str] = Form([]),
 ):
     """Save the Edit panel: levels changed, removed, added or put back on watch."""
     a = _own(alert_id, user)
     if not a:
         return HTMLResponse(status_code=404)
+    if scanner.is_fractal(a):
+        fields, error = _fractal_fields(fractal_timeframe, sides, triggers)
+        if not error:
+            hook_fields, error = _webhook_fields(webhooks, webhook_payload)
+        if error:
+            return fail(error)
+        changes = {**fields, **hook_fields, "note": note.strip()[:140]}
+        if fields["timeframe"] != a["timeframe"]:
+            # Different candles, different fractals: start afresh from now.
+            changes.update(fired=[], armed_at=now_ist().isoformat())
+            scanner.fractal_levels.pop(alert_id, None)
+        store.update("alerts", alert_id, changes)
+        return toast(render(request, "partials/alert_list.html", _page_ctx(request, user)), f"{a['symbol']} fractal alert updated")
     old, levels, fresh = levels_of(a), [], False
     for index, cond, raw in zip(extra_index, extra_condition, extra_level):
         if not raw.strip():
@@ -447,15 +588,27 @@ def webhook_test(alert_id: str, user: dict = Depends(guard), webhooks: str = For
     if not fields["webhooks"]:
         return fail("Add a webhook URL first.")
     sample = {**a, **fields}
+    if scanner.is_fractal(a):
+        known = scanner.fractal_levels.get(a["id"], {})
+        f = (known.get("highs") or known.get("lows") or [fractals.Fractal("high", 0.0, now_ist())])[0]
+        sample_hit = fractals.Hit(f, "touch", Candle(now_ist(), f.level, f.level, f.level, f.level), -1, f.level)
+        message = note.strip()[:140] or f"Potential {sample_hit.signal}"
+        text = f"Test: {scanner.fractal_text(sample, sample_hit)[0]} Nothing was hit."
+        body = scanner.fractal_webhook_body(sample, sample_hit, message, text, f.level, now_ist(), test=True)
+        return _webhook_test_result(fields["webhooks"], body)
     hit = scanner.resolved(scanner.level_view(sample, levels_of(sample)[0]), float("inf"))
     up = hit["condition"] in ("high_above", "close_above")
     message = note.strip()[:140] or ("Potential sell" if up else "Potential buy")
     text = f"Test: {scanner.describe(hit)}. Nothing was hit."
     body = scanner.webhook_body(sample, hit, message, text, hit["level"], None, now_ist(), test=True)
-    result = hooks_module.send(fields["webhooks"], body)
+    return _webhook_test_result(fields["webhooks"], body)
+
+
+def _webhook_test_result(urls: list[str], body: dict):
+    result = hooks_module.send(urls, body)
     if result != "sent":
         return fail(f"Webhook test failed. {result}")
-    count = len(fields["webhooks"])
+    count = len(urls)
     return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {count} webhook URL{'s' if count != 1 else ''}")
 
 

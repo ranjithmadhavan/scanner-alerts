@@ -1,0 +1,29 @@
+{# What a fractal alert reports. `f_sides` and `f_triggers` are the current choices. #}
+<fieldset>
+  <legend class="label">Alert me when a fractal…</legend>
+  <div class="grid gap-2 sm:grid-cols-3">
+    {% for key, label in fractal_triggers.items() %}
+    <label class="cursor-pointer">
+      <input type="checkbox" name="triggers" value="{{ key }}" class="peer sr-only" {{ 'checked' if key in f_triggers }}>
+      <span class="flex h-full flex-col rounded-2xl border border-line px-4 py-3 transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">
+        <span class="text-[15px] font-semibold">{{ {'touch': 'Is taken', 'reject': 'Is swept', 'fail': 'Break fails'}[key] }}</span>
+        <span class="mt-0.5 text-[13px] leading-snug text-ink-soft">
+          {%- if key == 'touch' %}Any trade goes beyond the level
+          {%- elif key == 'reject' %}A candle trades beyond it but closes back
+          {%- else %}A candle closes beyond it, the next one closes back{% endif -%}
+        </span>
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+</fieldset>
+<div class="mt-4 flex flex-wrap items-center gap-2">
+  <span class="text-sm text-ink-soft">Watch</span>
+  {% for key, label in fractal_sides.items() %}
+  <label class="cursor-pointer">
+    <input type="radio" name="sides" value="{{ key }}" class="peer sr-only" {{ 'checked' if key == f_sides }}>
+    <span class="inline-block rounded-full border border-line px-3 py-1.5 text-sm font-medium text-ink-soft transition peer-checked:border-peacock/30 peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">{{ label }}</span>
+  </label>
+  {% endfor %}
+</div>
+<p class="mt-2 text-[13px] leading-relaxed text-ink-soft">A fractal high being taken reads as a potential sell, a fractal low as a potential buy. Each message gives the target: the nearest unmitigated fractal on the other side. A gap through a level retires it without a message.</p>

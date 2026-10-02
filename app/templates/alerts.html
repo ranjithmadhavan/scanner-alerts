@@ -4,7 +4,7 @@
 <div class="flex flex-wrap items-end justify-between gap-4">
   <div>
     <h1 class="text-4xl font-bold">Price alerts</h1>
-    <p class="mt-2 text-[17px] text-ink-soft">Pick a stock, index or contract and your levels. You'll hear from us when price gets there.</p>
+    <p class="mt-2 text-[17px] text-ink-soft">Pick a stock, index or contract and your levels, or let its fractals be the levels. You'll hear from us when price gets there.</p>
   </div>
 </div>
 
@@ -29,6 +29,16 @@
   </summary>
   <div class="px-6 pb-6 sm:px-7 sm:pb-7">
 
+  {# Two kinds of alert share this form: levels you type, or the instrument's own fractal levels. #}
+  <div class="mb-5 inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Kind of alert">
+    {% for key, label in [('price', 'Price levels'), ('fractal', 'Fractals')] %}
+    <label class="cursor-pointer">
+      <input type="radio" name="kind" value="{{ key }}" class="peer sr-only" {{ 'checked' if loop.first }}>
+      <span class="inline-block rounded-full px-4 py-1.5 text-sm font-semibold text-ink-soft transition peer-checked:bg-white peer-checked:text-ink peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-marigold">{{ label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+
   <div class="grid gap-5 sm:grid-cols-[1.3fr_1fr]">
     <div>
       <label for="symbol" class="label">Stock, index or contract</label>
@@ -44,12 +54,23 @@
       </div>
       <div id="quote" aria-live="polite"></div>
     </div>
-    <div>
+    <div data-kind-section="price">
       <label for="level" class="label">Price level (₹)</label>
       <input id="level" name="level" type="number" step="0.05" min="0.05" required placeholder="0.00" class="field num level-input">
     </div>
+    <div data-kind-section="fractal" hidden>
+      <label for="fractal-timeframe" class="label">Fractals on</label>
+      <select id="fractal-timeframe" name="fractal_timeframe" class="field">
+        {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" {{ 'selected' if key == fractal_default }}>{{ tf[0] }} candles, last {{ tf[1] }} sessions</option>{% endfor %}
+      </select>
+    </div>
   </div>
 
+  <div data-kind-section="fractal" class="mt-5" hidden>
+    {% with f_sides='both', f_triggers=['touch'] %}{% include "partials/fractal_fields.html" %}{% endwith %}
+  </div>
+
+  <div data-kind-section="price">
   <fieldset class="mt-5">
     <legend class="label">Tell me when it…</legend>
     <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -95,6 +116,7 @@
       </div>
     </template>
   </div>
+  </div>
 
   <div class="mt-5 flex flex-col gap-5 sm:flex-row">
     <div id="timeframe-field" data-timeframe-field class="sm:w-[180px] sm:shrink-0">
@@ -128,7 +150,8 @@
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <button type="button" class="btn-outline htmx-busy" hx-post="/alerts/simulate" hx-include="#new-alert"
-              hx-target="#sim-result" hx-swap="innerHTML" title="Replay this alert on the last trading day with real Kite prices and send yourself the result">
+              hx-target="#sim-result" hx-swap="innerHTML" title="Replay this alert on real Kite prices. Nothing is saved."
+              data-label-price="Simulate on last session" data-label-fractal="Backtest fractals">
         Simulate on last session
       </button>
       <button class="btn-primary htmx-busy">{{ icon('plus', 'h-4 w-4') }} Start watching</button>

@@ -14,6 +14,10 @@ Conditions
 An alert holds one or more levels, each with its own condition. A level fires once and is
 then switched off; the alert keeps watching its other levels and moves to "triggered"
 only when the last one has fired. It stays there until the user re-arms it.
+
+A fractal alert (kind "fractal") has no levels of its own: its levels are the unmitigated
+fractals of the instrument on the alert's timeframe (see fractals.py), recalculated as candles
+close. It reports each fractal once per trigger and keeps watching until paused or removed.
 """
 
 import json
@@ -27,7 +31,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import brokers, config, notify, webhooks
+from app import brokers, config, fractals, notify, webhooks
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError
 from app.market import CLOSE_GRACE, IST, MarketSettings, in_scan_window, is_trading_day, load_settings, now_ist
 from app.store import new_id, store
@@ -165,6 +169,8 @@ last_prices: dict[tuple[str, str], tuple[float, datetime]] = {}  # (user, alert_
 last_checked_at: dict[str, datetime] = {}  # alert id -> when the scanner last evaluated it
 last_run: dict = {}  # {"at": datetime, "alerts": int} for the most recent scan inside market hours
 _last_checked: dict[str, datetime] = {}  # alert id -> last candle boundary evaluated
+fractal_levels: dict[str, dict] = {}  # fractal alert id -> {"highs": [Fractal], "lows": [Fractal]} still unmitigated
+_fractal_history: dict[tuple[str, int, str], tuple[tuple, list[Candle]]] = {}  # (user, token, tf) -> (fetched for, candles)
 _scan_lock = threading.Lock()
 
 
@@ -248,6 +254,156 @@ def webhook_body(alert: dict, hit: dict, message: str, text: str, price: float, 
         "still_watching": [{"condition": v["condition"], "level": v["level"]} for _, v in open_views(alert)],
         "payload": json.loads(alert["webhook_payload"]) if alert.get("webhook_payload") else None,
     }
+
+
+# ---- fractal alerts ---------------------------------------------------------------
+
+FRACTAL_OUTCOME = {"touch": "taken", "reject": "swept", "fail": "break failed"}
+
+
+def is_fractal(alert: dict) -> bool:
+    return alert.get("kind") == "fractal"
+
+
+def fractal_candles(client, alert: dict, s: MarketSettings, now: datetime) -> list[Candle]:
+    """Completed candles of the alert's timeframe, for as many sessions as fractals are searched over."""
+    tf = alert["timeframe"]
+    sessions = fractals.TIMEFRAMES[tf][1]
+    history = client.candles_range(alert["token"], tf, now.date() - timedelta(days=int(sessions * 1.5) + 7), now.date())
+    return fractals.last_sessions([c for c in history if candle_end(c, tf, s) <= now - SETTLE], sessions)
+
+
+def _fractal_candles_cached(client, username: str, alert: dict, s: MarketSettings, now: datetime) -> list[Candle]:
+    """History only changes when a candle of the timeframe completes, so fetch it once per candle."""
+    key = (username, alert["token"], alert["timeframe"])
+    fetched_for = (now.date(), last_boundary(alert["timeframe"], s, now - SETTLE))
+    if key not in _fractal_history or _fractal_history[key][0] != fetched_for:
+        _fractal_history[key] = (fetched_for, fractal_candles(client, alert, s, now))
+    return _fractal_history[key][1]
+
+
+def fractal_wanted(alert: dict, hit: fractals.Hit) -> bool:
+    return alert.get("sides", "both") in ("both", hit.fractal.side) and hit.trigger in alert.get("triggers", [])
+
+
+def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
+    """(what happened, when the fractal formed, the target) in words, for messages and backtests."""
+    f, tf = hit.fractal, alert["timeframe"]
+    name = f"{fractals.TIMEFRAMES[tf][0].lower()} fractal {f.side} of {f.level:g}"
+    beyond, back = ("above", "below") if f.side == "high" else ("below", "above")
+    what = {
+        "touch": f"{alert['symbol']} traded {beyond} the {name}.",
+        "reject": f"{alert['symbol']} swept the {name} and closed back {back} it at {hit.price:g}.",
+        "fail": f"{alert['symbol']} closed {beyond} the {name}, then the next candle closed back {back} it at {hit.price:g}.",
+    }[hit.trigger]
+    formed = "Fractal formed " + f.at.astimezone(IST).strftime("%d %b" if tf == "1d" else "%d %b, %-I:%M %p")
+    other = "low" if f.side == "high" else "high"
+    target = (f"Target: {hit.target.level:g}, the nearest unmitigated fractal {other}" if hit.target
+              else f"Target: none, there is no unmitigated fractal {other} {back} price")
+    return what, formed, target
+
+
+def fractal_webhook_body(alert: dict, hit: fractals.Hit, message: str, text: str, price: float, now: datetime,
+                         test: bool = False) -> dict:
+    f = hit.fractal
+    return {
+        "event": "fractal_hit",
+        "test": test,
+        "alert_id": alert["id"],
+        "symbol": alert["symbol"],
+        "exchange": alert.get("exchange") or "NSE",
+        "name": alert.get("name", ""),
+        "message": message,
+        "text": text,
+        "side": f.side,
+        "trigger": hit.trigger,
+        "signal": hit.signal,
+        "level": f.level,
+        "price": price,
+        "timeframe": alert["timeframe"],
+        "fractal_time": f.at.isoformat(),
+        "target": hit.target.level if hit.target else None,
+        "candle": hit.candle.start.isoformat(),
+        "time": now.isoformat(),
+        "payload": json.loads(alert["webhook_payload"]) if alert.get("webhook_payload") else None,
+    }
+
+
+def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) -> dict:
+    """Tell the user about one fractal hit and remember it so it isn't reported twice."""
+    what, formed, target = fractal_text(alert, hit)
+    custom = (alert.get("note") or "").strip()
+    signal = custom or f"Potential {hit.signal}"
+    f = hit.fractal
+    short = f"{alert['symbol']} {fractals.TIMEFRAMES[alert['timeframe']][0].lower()} fractal {f.side} {f.level:g}"
+    summary = f"{short} {FRACTAL_OUTCOME[hit.trigger]}"
+    subject = f"🔔 {signal if len(signal) <= 60 else signal[:59] + '…'}: {summary}"
+    body = (
+        f"{signal}{chr(10) if custom else '. '}{what}\n"
+        f"{target}.\n"
+        f"Price: {price:g} (candle {hit.candle.start.astimezone(IST):%-I:%M %p})\n"
+        f"{formed}.\n"
+        f"Time: {now:%d %b, %-I:%M %p} IST"
+    )
+    changes = {"fired": (alert.get("fired", []) + [hit.key])[-300:],
+               "last_hit": {"at": now.isoformat(), "text": summary, "price": price, "signal": hit.signal}}
+    store.update("alerts", alert["id"], changes)
+    results = notify.send(alert["user"], alert.get("channels", []), subject, body)
+    if alert.get("webhooks"):
+        results["webhook"] = webhooks.send(alert["webhooks"], fractal_webhook_body(alert, hit, signal, what, price, now))
+    store.put("events", new_id(), {
+        "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
+        "summary": summary, "price": price, "at": now.isoformat(), "delivery": results,
+    })
+    log.info("fractal %s for %s: %s %s", alert["id"], alert["user"], hit.key, results)
+    return {**alert, **changes}
+
+
+def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSettings, now: datetime) -> None:
+    tf = alert["timeframe"]
+    done = _fractal_candles_cached(client, username, alert, s, now)
+    hits, unmitigated = fractals.walk(done)
+    armed_at = datetime.fromisoformat(alert["armed_at"])
+    fired = set(alert.get("fired", []))
+    to_fire: list[tuple[fractals.Hit, float]] = []
+
+    # Sweeps and failed breaks are decided by candles of the timeframe that closed today.
+    for hit in hits:
+        end = candle_end(hit.candle, tf, s)
+        if (hit.trigger != "touch" and end.date() == now.date() and end > armed_at
+                and fractal_wanted(alert, hit) and hit.key not in fired):
+            to_fire.append((hit, hit.price))
+
+    # Touches are caught as they happen, on the minutes of the candle that is still forming.
+    key = (alert["token"], "1m")
+    if key not in cache:
+        cache[key] = client.candles(alert["token"], "1m", now.date())
+    minutes = cache[key]
+    if minutes:
+        last_prices[(username, alert_key(alert))] = (minutes[-1].close, now)
+    forming_from = candle_end(done[-1], tf, s) if done and done[-1].start.date() == now.date() and tf != "1d" else s.open_at(now)
+    forming = [m for m in minutes if m.start >= forming_from]
+    touched, touches = [], []
+    for f in unmitigated:
+        first = next((m for m in forming if f.traded_beyond(m)), None)
+        if not first:
+            continue
+        touched.append(f)
+        gap = first.start <= s.open_at(now) and f.is_beyond(first.open)  # the session opened beyond the level
+        hit = fractals.Hit(f, "touch", first, -1, f.level)
+        if (not gap and first.start >= armed_at.replace(second=0, microsecond=0)
+                and fractal_wanted(alert, hit) and hit.key not in fired):
+            touches.append((hit, first.high if f.side == "high" else first.low))
+    remaining = [f for f in unmitigated if f not in touched]
+    for hit, _ in touches:
+        hit.target = fractals.target_for(hit.fractal.side, hit.price, remaining)
+    fractal_levels[alert["id"]] = {
+        "highs": sorted((f for f in remaining if f.side == "high"), key=lambda f: f.level),
+        "lows": sorted((f for f in remaining if f.side == "low"), key=lambda f: f.level, reverse=True),
+    }
+    last_checked_at[alert["id"]] = now
+    for hit, price in to_fire + touches:
+        alert = fire_fractal(alert, hit, price, now)
 
 
 # ---- schedule info for the UI ----------------------------------------------------
@@ -419,6 +575,15 @@ def _scan_user(username: str, alerts: list[dict], s: MarketSettings, now: dateti
         return
     cache: dict[tuple[int, str], list[Candle]] = {}
     for alert in alerts:
+        if is_fractal(alert):
+            try:
+                _scan_fractal(username, alert, client, cache, s, now)
+            except KiteAuthError as e:
+                session_notice(username, "expired", str(e), len(alerts), now)
+                return
+            except KiteError as e:
+                log.warning("fractal scan failed for %s: %s", alert["symbol"], e)
+            continue
         hits, close_checked = [], False
         for index, view in open_views(alert):
             if not _due(view, s, now):

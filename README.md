@@ -42,6 +42,16 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 **Levels.** An alert can hold up to 10 levels, each with its own condition. A level sends one message when it is hit and is then switched off; the other levels stay on watch. When the last level has fired the alert moves to *Triggered* and waits there until the user taps **Watch again**, which puts every level back on watch. Alerts saved before this (a single `level` and `condition` on the document) are read as one-level alerts.
 
+**Fractal alerts.** The New alert form has a second kind, *Fractals*, where no price is entered: the levels are the instrument's unmitigated fractals. A fractal is three completed candles, the same rule as algo-nisha: a fractal high when the middle candle's high is >= both neighbours, a fractal low when its low is <= both. It is unmitigated until a later candle trades beyond it (`app/fractals.py`).
+
+- Timeframes: 15 min, 30 min (default) and 1 hour look back 10, 10 and 20 sessions; Daily looks back 120.
+- Per alert you choose what to hear about: the fractal is *taken* (any trade beyond it, caught on 1-minute data), *swept* (a candle of the timeframe trades beyond it but closes back), or its *break fails* (a candle closes beyond it and the next one closes back). You can also watch highs only or lows only.
+- A fractal high reads as a potential sell and a fractal low as a potential buy. Every message gives the target: the nearest unmitigated fractal on the other side of price.
+- A gap through a fractal (the session, or a candle, opens beyond it) retires it without a message.
+- The levels are recalculated each time a candle of the timeframe closes. A fractal alert never moves to *Triggered*; it keeps watching until paused or removed. Each fractal is reported once per chosen outcome.
+- **Backtest fractals** (the Simulate button in Fractals mode) replays the look-back period and lists every signal with its target and whether the target was reached. Nothing is saved or sent.
+- Webhooks get `"event": "fractal_hit"` with `side`, `trigger` (`touch` / `reject` / `fail`), `signal`, `level`, `price`, `target`, `timeframe` and `fractal_time`.
+
 **Editing.** The pencil on an alert opens an edit panel: add levels, change or remove existing ones, tick *Watch again* on a level that has fired, and change the candle timeframe or message. Levels left untouched keep their state. If anything was added, changed or re-armed, the alert is re-armed from that moment, so a new level can't fire on a move that happened before it was added.
 
 **Instruments.** Kite's public lists for NSE, BSE, NFO and BFO are loaded at start and refreshed every 4 hours, so newly listed futures and options show up in the search the same day. NSE symbols are plain (`INFY`); the others carry their exchange (`BSE:SENSEX`, `NFO:NIFTY26OCT24500CE`). The search matches every word against the symbol and a spelled-out name, so `nifty 24500 ce` or `sensex oct fut` finds contracts. An alert on a contract is paused once the contract has expired.

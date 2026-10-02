@@ -17,7 +17,19 @@
 {%- endmacro %}
 
 {% macro rule(a, note_len=32) -%}
-  {% if a.levels|length > 1 -%}
+  {% if a.fractal -%}
+    {# A fractal alert's levels are the instrument's unmitigated fractals; show the nearest on each side. #}
+    <span class="inline-flex flex-wrap items-center gap-1 align-middle">
+      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}.">Fractal {{ a.fractal.tf|lower }}</span>
+      {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft/80">levels appear after the first scan</span>
+      {% else %}
+        {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal high, formed {{ a.fractal.above.at|ist }}">High <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}
+        {% if a.fractal.below %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal low, formed {{ a.fractal.below.at|ist }}">Low <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span>{% endif %}
+        <span class="text-[13px] text-ink-soft/80">{{ a.fractal.count }} unmitigated</span>
+      {% endif %}
+      {% if a.note %}<span class="text-[13px] text-ink-soft/70" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
+    </span>
+  {%- elif a.levels|length > 1 -%}
     {# One chip per level; the ones that have fired are marked and no longer watched. #}
     <span class="inline-flex flex-wrap items-center gap-1 align-middle">
     {% for lv in a.levels %}
@@ -51,7 +63,13 @@
 {%- endmacro %}
 
 {% macro price_bar(a) -%}
-  {% if a.rail %}
+  {% if a.fractal and a.price is not none %}
+    <p class="num text-sm"><strong class="font-semibold">₹{{ a.price|price }}</strong>
+      {% if a.fractal.above %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }} below the high</span>{% endif %}
+      {%- if a.fractal.above and a.fractal.below %}<span class="text-ink-soft">,</span>{% endif %}
+      {% if a.fractal.below %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }} above the low</span>{% endif %}
+    </p>
+  {% elif a.rail %}
     <div class="flex items-center gap-3">
       <div class="relative h-5 min-w-[60px] flex-1" title="Last price ₹{{ a.price|price }}">
         <div class="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-line"></div>
@@ -74,6 +92,7 @@
       Paused, not being checked
     {% else %}
       {% if a.hit_count %}<span class="font-semibold text-marigold-dark">{{ a.hit_count }} of {{ a.levels|length }} hit.</span>{% endif %}
+      {% if a.fractal and a.last_hit %}<span class="font-semibold text-marigold-dark">Last: {{ a.last_hit.text }}, {{ a.last_hit.at|when }}.</span>{% endif %}
       {{ ('Checked ' ~ (a.checked_at|when)) if a.checked_at else 'Not checked yet' }}
       {%- if a.next and a.next.at -%}
         , next {{ 'after the ' ~ (a.next.at|when) ~ ' candle closes' if a.next.after_candle else a.next.at|when }}
@@ -86,7 +105,7 @@
 
 {% macro actions(a) -%}
   <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
-          data-chart="{{ a.key }}" data-levels="{{ a.levels|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
+          data-chart="{{ a.key }}" data-levels="{{ (a.fractal.all if a.fractal else a.levels)|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
   <button type="button" class="rounded-full p-2 text-ink-soft/80 transition hover:bg-peacock-50 hover:text-peacock" aria-label="Edit {{ a.symbol }} alert" title="Edit or add levels"
           hx-get="/alerts/{{ a.id }}/edit" hx-target="#alert-editor" hx-swap="innerHTML">{{ icon('edit', 'h-4 w-4') }}</button>
   {% if a.status == 'active' %}

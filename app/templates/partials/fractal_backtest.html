@@ -1,0 +1,54 @@
+<div class="arrive mt-5 rounded-3xl border border-line bg-white px-6 py-5">
+  <div class="flex flex-wrap items-start justify-between gap-3">
+    <div class="min-w-0">
+      <p class="text-sm font-medium text-ink-soft">Fractal backtest, {{ tf_label|lower }} candles, {{ first.strftime('%-d %b') }} to {{ last.strftime('%-d %b') }} ({{ sessions }} session{{ 's' if sessions != 1 }}) with real Kite prices</p>
+      <p class="mt-1 font-display text-xl font-bold">
+        {{ alert.symbol }}: {{ total }} signal{{ 's' if total != 1 }}{% if with_target %}, {{ reached }} of {{ with_target }} reached their target{% endif %}
+      </p>
+    </div>
+    <button type="button" class="rounded-full p-2 text-ink-soft hover:bg-canvas" aria-label="Close" onclick="this.closest('#sim-result').innerHTML=''">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  {% if rows %}
+  <div class="mt-4 overflow-x-auto">
+    <table class="w-full min-w-[640px] text-left text-sm">
+      <thead class="text-[13px] text-ink-soft">
+        <tr class="border-b border-line">
+          <th class="py-2 pr-3 font-medium">When</th><th class="py-2 pr-3 font-medium">Signal</th><th class="py-2 pr-3 font-medium">Fractal</th>
+          <th class="py-2 pr-3 font-medium">What happened</th><th class="py-2 pr-3 text-right font-medium">Price</th>
+          <th class="py-2 pr-3 text-right font-medium">Target</th><th class="py-2 font-medium">Outcome</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-line">
+        {% for r in rows %}
+        <tr>
+          <td class="num whitespace-nowrap py-2 pr-3">{{ r.when|ist('%-d %b' if daily else '%-d %b, %-I:%M %p') }}</td>
+          <td class="py-2 pr-3"><span class="rounded-full px-2 py-0.5 text-xs font-semibold {{ 'bg-fall-50 text-fall' if r.hit.signal == 'sell' else 'bg-rise-50 text-rise' }}">Potential {{ r.hit.signal }}</span></td>
+          <td class="num whitespace-nowrap py-2 pr-3">{{ r.hit.fractal.side|capitalize }} ₹{{ r.hit.fractal.level|price }}<span class="block text-xs text-ink-soft">formed {{ r.hit.fractal.at|ist('%-d %b' if daily else '%-d %b, %-I:%M %p') }}</span></td>
+          <td class="py-2 pr-3">{{ {'touch': 'Taken', 'reject': 'Swept, closed back', 'fail': 'Break failed'}[r.hit.trigger] }}</td>
+          <td class="num py-2 pr-3 text-right">₹{{ r.hit.price|price }}</td>
+          <td class="num py-2 pr-3 text-right">{% if r.hit.target %}₹{{ r.hit.target.level|price }}{% else %}<span class="text-ink-soft">none</span>{% endif %}</td>
+          <td class="py-2">
+            {% if not r.hit.target %}<span class="text-ink-soft">No opposite fractal</span>
+            {% elif r.reached %}<span class="font-medium text-rise">Reached {{ r.reached.start|ist('%-d %b' if daily else '%-d %b, %-I:%M %p') }}</span>
+            {% else %}<span class="text-ink-soft">Not reached yet</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total > rows|length %}<p class="mt-2 text-[13px] text-ink-soft">Showing the latest {{ rows|length }} of {{ total }}.</p>{% endif %}
+  {% else %}
+  <p class="mt-3 text-[15px] text-ink-soft">No fractal was {{ 'taken, swept or failed' }} in this period with the options you chose.</p>
+  {% endif %}
+
+  <p class="mt-4 text-sm text-ink-soft">
+    <span class="font-medium text-ink">Unmitigated now:</span>
+    {% if highs %}highs {% for f in highs %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal highs{% endif %};
+    {% if lows %}lows {% for f in lows %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal lows{% endif %}.
+  </p>
+  <p class="mt-1 text-[13px] text-ink-soft">Times are the candle in which it happened. Gaps through a level are left out, as they are in live alerts. Nothing was saved or sent.</p>
+</div>
