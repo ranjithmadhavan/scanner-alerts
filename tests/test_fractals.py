@@ -108,6 +108,23 @@ def test_stop_loss_is_the_extreme_made_while_taking_the_fractal():
     assert (buy.stop, buy.result) == (99, "stop")
 
 
+def test_points_earned_and_lost():
+    sweep = (105, 111, 104, 109)                                      # sell at the 109 close, stop 111, target 100
+    candles = series(*SETUP, sweep, (109, 109, 99.5, 101))
+    won = outcome(walk(candles)[0][1], candles)
+    assert (won.entry, won.target, won.points) == (109, 100, 9)       # entry to target
+    candles = series(*SETUP, sweep, (109, 111.5, 108, 110), (110, 110, 99, 101))
+    lost = outcome(walk(candles)[0][1], candles)
+    assert lost.points == -2                                          # entry to stop, even though the target came later
+    touch = outcome(walk(candles)[0][0], candles)
+    assert (touch.entry, touch.points) == (110, -1)                   # a touch is entered at the fractal level
+    candles = series(*SETUP, sweep)
+    assert outcome(walk(candles)[0][1], candles).points is None       # still open
+    candles = series(*SETUP, (104, 105, 99, 101), (101, 102, 98.5, 100))
+    buy = outcome(walk(candles)[0][1], candles)
+    assert (buy.entry, buy.stop, buy.points) == (101, 99, -2)
+
+
 def test_last_sessions_keeps_recent_days():
     candles = [Candle(T0 + timedelta(days=d), 1, 2, 0, 1) for d in range(5)]
     assert [c.start.day for c in last_sessions(candles, 2)] == [1, 2]

@@ -488,11 +488,20 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
                             "stop": r["outcome"].stop,
                             "label": f"{scanner.FRACTAL_OUTCOME[h.trigger].capitalize()} {h.fractal.level:g}"})
     results = [r["outcome"].result for r in rows]
+    # Points: target hit earns entry-to-target, SL gone loses entry-to-SL. Added up in the order the trades were taken.
+    running = 0.0
+    for r in rows:
+        r["points"] = r["outcome"].points
+        running += r["points"] or 0
+        r["running"] = running
+    scored = [r["points"] for r in rows if r["points"] is not None]
     ctx = {
         "alert": alert, "tf_label": fractals.label(tf), "trigger_label": fractals.label(trigger_tf),
         "same_candles": trigger_tf == tf, "daily": daily, "fractal_daily": tf == "1d",
         "first": stream[first].start, "last": stream[-1].start, "sessions": len({c.start.date() for c in stream[first:]}),
         "rows": rows[::-1][:60], "total": len(rows),
+        "points": {"earned": sum(p for p in scored if p > 0), "lost": -sum(p for p in scored if p < 0),
+                   "net": sum(scored), "trades": len(scored)},
         "tally": {"target": results.count("target"), "stop": results.count("stop"),
                   "open": results.count("open") + results.count("none"),
                   "late": sum(1 for r in rows if r["outcome"].reached_after_stop)},

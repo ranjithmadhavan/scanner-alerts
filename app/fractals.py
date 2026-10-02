@@ -170,6 +170,8 @@ def walk(candles: list[Candle]) -> tuple[list[Hit], list[Fractal]]:
 @dataclass
 class Outcome:
     """How a hit would have gone as a trade, for backtests."""
+    entry: float  # the fractal level for a touch, the deciding candle's close otherwise
+    target: float | None
     stop: float  # the extreme price made while the fractal was being taken; beyond it the idea has failed
     stopped: Candle | None  # first later candle that traded beyond the stop
     reached: Candle | None  # first later candle that traded to the target
@@ -178,6 +180,14 @@ class Outcome:
     @property
     def reached_after_stop(self) -> bool:
         return self.result == "stop" and self.reached is not None
+
+    @property
+    def points(self) -> float | None:
+        """Points made (entry to target) or lost (entry to stop). None while the trade is open, or when
+        there was no target and so no trade to take."""
+        if self.target is None or self.result not in ("target", "stop"):
+            return None
+        return abs(self.entry - self.target) if self.result == "target" else -abs(self.stop - self.entry)
 
 
 def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
@@ -203,7 +213,7 @@ def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
         result = "target"
     else:
         result = "open" if hit.target else "none"
-    return Outcome(stop, stopped, reached, result)
+    return Outcome(hit.price, target, stop, stopped, reached, result)
 
 
 def last_sessions(candles: list[Candle], sessions: int) -> list[Candle]:

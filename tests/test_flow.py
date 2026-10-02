@@ -1021,6 +1021,9 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
     assert "₹100.00" in page and "Target reached 25 Sep" in page         # both sell signals fell to the fractal low
     assert "₹111.00" in page and "Open: neither target nor SL yet" in page   # the buys aim at the new high left by the sweep
     assert ">SL<" in page and "₹99.50" in page                             # each row shows its stop
+    # Sells: taken at 110 and swept at 109, both to the target of 100. The two buys are still open.
+    assert "+19.00" in page and "−0.00" in page and "Over 2 closed trades" in page
+    assert "+10.00" in page and "+9.00" in page and "Running net" in page
 
     # Same morning, but price pushes above the sweep's high before falling: SL gone, target reached later.
     candles[4:] = [Candle(day + timedelta(minutes=120), 109, 111.6, 108, 110), Candle(day + timedelta(minutes=150), 110, 110, 99.5, 101)]
@@ -1028,6 +1031,7 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
                                               "sides": "high", "triggers": ["reject"]})
     assert "0 reached target" in r.text and "1 SL gone (1 reached target later)" in r.text
     assert "SL gone 25 Sep, 11:15 AM" in r.text and "reached target later, 25 Sep, 11:45 AM" in r.text
+    assert "+0.00" in r.text and "−2.00" in r.text and "Over 1 closed trade," in r.text     # sold 109, stopped at 111
     candles[4:] = [Candle(day + timedelta(minutes=120), 109, 109, 103, 104), Candle(day + timedelta(minutes=150), 104, 105, 99.5, 101)]
     assert store.list("alerts", user="boss") == []                                  # nothing saved
 

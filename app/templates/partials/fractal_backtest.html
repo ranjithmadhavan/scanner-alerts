@@ -11,6 +11,12 @@
         <span class="rounded-full bg-fall-50 px-2.5 py-0.5 font-semibold text-fall">{{ tally.stop }} SL gone{% if tally.late %} ({{ tally.late }} reached target later){% endif %}</span>
         <span class="rounded-full bg-canvas px-2.5 py-0.5 font-semibold text-ink-soft">{{ tally.open }} still open</span>
       </p>
+      <dl class="mt-3 grid max-w-xl grid-cols-3 gap-2 text-sm">
+        <div class="rounded-2xl bg-rise-50 px-3.5 py-2.5"><dt class="text-ink-soft">Points earned</dt><dd class="num font-display text-xl font-bold text-rise">+{{ points.earned|price }}</dd></div>
+        <div class="rounded-2xl bg-fall-50 px-3.5 py-2.5"><dt class="text-ink-soft">Points lost</dt><dd class="num font-display text-xl font-bold text-fall">−{{ points.lost|price }}</dd></div>
+        <div class="rounded-2xl bg-canvas px-3.5 py-2.5"><dt class="text-ink-soft">Net</dt><dd class="num font-display text-xl font-bold {{ 'text-rise' if points.net > 0 else 'text-fall' if points.net < 0 else 'text-ink' }}">{{ '+' if points.net > 0 else '−' if points.net < 0 else '' }}{{ points.net|abs|price }}</dd></div>
+      </dl>
+      <p class="mt-1.5 text-[13px] text-ink-soft">Over {{ points.trades }} closed trade{{ 's' if points.trades != 1 }}, one unit each. Open trades and signals with no target aren't counted.</p>
       {% endif %}
     </div>
     <button type="button" class="rounded-full p-2 text-ink-soft hover:bg-canvas" aria-label="Close" onclick="this.closest('#sim-result').innerHTML=''">
@@ -32,12 +38,13 @@
 
   {% if rows %}
   <div class="mt-4 overflow-x-auto">
-    <table class="w-full min-w-[760px] text-left text-sm">
+    <table class="w-full min-w-[920px] text-left text-sm">
       <thead class="text-[13px] text-ink-soft">
         <tr class="border-b border-line">
           <th class="py-2 pr-3 font-medium">When</th><th class="py-2 pr-3 font-medium">Signal</th><th class="py-2 pr-3 font-medium">Fractal</th>
           <th class="py-2 pr-3 font-medium">What happened</th><th class="py-2 pr-3 text-right font-medium">Price</th>
-          <th class="py-2 pr-3 text-right font-medium">Target</th><th class="py-2 pr-3 text-right font-medium">SL</th><th class="py-2 font-medium">Outcome</th>
+          <th class="py-2 pr-3 text-right font-medium">Target</th><th class="py-2 pr-3 text-right font-medium">SL</th><th class="py-2 pr-3 font-medium">Outcome</th>
+          <th class="py-2 pr-3 text-right font-medium">Points</th><th class="py-2 text-right font-medium" title="Net points after this trade, adding up from the first">Running net</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-line">
@@ -50,7 +57,7 @@
           <td class="num py-2 pr-3 text-right">₹{{ r.hit.price|price }}</td>
           <td class="num py-2 pr-3 text-right">{% if r.hit.target %}₹{{ r.hit.target.level|price }}{% else %}<span class="text-ink-soft">none</span>{% endif %}</td>
           <td class="num py-2 pr-3 text-right">₹{{ r.outcome.stop|price }}</td>
-          <td class="py-2">
+          <td class="py-2 pr-3">
             {% set o = r.outcome %}{% set fmt = '%-d %b' if daily else '%-d %b, %-I:%M %p' %}
             {% if o.result == 'target' %}<span class="font-medium text-rise">Target reached {{ o.reached.start|ist(fmt) }}</span>
             {% elif o.result == 'stop' %}<span class="font-medium text-fall">SL gone {{ o.stopped.start|ist(fmt) }}</span>
@@ -58,6 +65,10 @@
             {% elif o.result == 'open' %}<span class="text-ink-soft">Open: neither target nor SL yet</span>
             {% else %}<span class="text-ink-soft">No opposite fractal, SL not hit</span>{% endif %}
           </td>
+          <td class="num whitespace-nowrap py-2 pr-3 text-right font-semibold {{ 'text-rise' if r.points and r.points > 0 else 'text-fall' if r.points else 'text-ink-soft' }}">
+            {%- if r.points is none %}<span class="font-normal">–</span>{% else %}{{ '+' if r.points > 0 else '−' }}{{ r.points|abs|price }}{% endif -%}
+          </td>
+          <td class="num whitespace-nowrap py-2 text-right {{ 'text-rise' if r.running > 0 else 'text-fall' if r.running < 0 else 'text-ink-soft' }}">{{ '+' if r.running > 0 else '−' if r.running < 0 else '' }}{{ r.running|abs|price }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -73,5 +84,5 @@
     {% if highs %}highs {% for f in highs %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal highs{% endif %};
     {% if lows %}lows {% for f in lows %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal lows{% endif %}.
   </p>
-  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Times are the candle in which it happened. Gaps through a level are left out, as they are in live alerts. Nothing was saved or sent.</p>
+  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Points are entry to target when the target is reached first and entry to SL when the SL goes; entry is the fractal level for “taken” and the candle's close for “swept” and “break failed”. No costs or slippage are included. Times are the candle in which it happened. Gaps through a level are left out, as they are in live alerts. Nothing was saved or sent.</p>
 </div>
