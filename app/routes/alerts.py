@@ -88,18 +88,20 @@ def _view(alerts: list[dict], username: str, broker_ok: bool, now) -> list[dict]
 def _fractal_view(a: dict, price: float | None) -> dict:
     """What the list shows for a fractal alert: its unmitigated levels as of the last scan."""
     found = scanner.fractal_levels.get(a["id"])
-    highs, lows = (found or {}).get("highs", []), (found or {}).get("lows", [])  # highs rising, lows falling
     sides = a.get("sides", "both")
+    watched = [f for f in (found or {}).get("resistance", []) + (found or {}).get("support", [])
+               if sides in ("both", f.side)]
+    over = [f for f in watched if f.role == "resistance"]   # nearest first: rising
+    under = [f for f in watched if f.role == "support"]     # nearest first: falling
     return {
         "tf": fractals.TIMEFRAMES[a["timeframe"]][0], "scanned": found is not None,
         "trigger": fractals.label(scanner.trigger_timeframe(a)), "min_candles": scanner.min_between(a),
         "last": (a.get("last_hit") or {}).get("text", "").removeprefix(
             f"{a['symbol']} {fractals.label(a['timeframe']).lower()} fractal "),
         "sides": fractals.SIDES[sides], "triggers": [fractals.TRIGGERS[t] for t in a.get("triggers", [])],
-        "above": next((f for f in highs if price is None or f.level > price), None) if sides != "low" else None,
-        "below": next((f for f in lows if price is None or f.level < price), None) if sides != "high" else None,
-        "count": len(highs) * (sides != "low") + len(lows) * (sides != "high"),
-        "all": [f for f in highs if sides != "low"] + [f for f in lows if sides != "high"],
+        "above": next((f for f in over if price is None or f.level > price), None),
+        "below": next((f for f in under if price is None or f.level < price), None),
+        "count": len(watched), "all": watched,
     }
 
 
@@ -491,7 +493,8 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
         if h.candle.start >= shown[0].start:
             r["n"] = len(signals)
             signals.append({"time": chart_time(h.candle), "signal": h.signal, "level": h.fractal.level,
-                            "side": h.fractal.side, "target": h.target.level if h.target else None,
+                            "side": h.fractal.side + (f", now {h.fractal.role}" if h.fractal.flipped else ""),
+                            "target": h.target.level if h.target else None,
                             "stop": r["outcome"].stop,
                             "label": f"{scanner.FRACTAL_OUTCOME[h.trigger].capitalize()} {h.fractal.level:g}"})
     results = [r["outcome"].result for r in rows]
@@ -513,8 +516,8 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
         "tally": {"target": results.count("target"), "stop": results.count("stop"),
                   "open": results.count("open") + results.count("none"),
                   "late": sum(1 for r in rows if r["outcome"].reached_after_stop)},
-        "highs": sorted((f for f in unmitigated if f.side == "high"), key=lambda f: f.level),
-        "lows": sorted((f for f in unmitigated if f.side == "low"), key=lambda f: f.level, reverse=True),
+        "resistance": sorted((f for f in unmitigated if f.role == "resistance"), key=lambda f: f.level),
+        "support": sorted((f for f in unmitigated if f.role == "support"), key=lambda f: f.level, reverse=True),
         "chart": {"daily": daily, "signals": signals,
                   "candles": [{"time": chart_time(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close}
                               for c in shown]},
@@ -655,7 +658,7 @@ def webhook_test(alert_id: str, user: dict = Depends(guard), webhooks: str = For
     sample = {**a, **fields}
     if scanner.is_fractal(a):
         known = scanner.fractal_levels.get(a["id"], {})
-        f = (known.get("highs") or known.get("lows") or [fractals.Fractal("high", 0.0, now_ist())])[0]
+        f = (known.get("resistance") or known.get("support") or [fractals.Fractal("high", 0.0, now_ist())])[0]
         sample_hit = fractals.Hit(f, "touch", Candle(now_ist(), f.level, f.level, f.level, f.level), -1, f.level)
         message = note.strip()[:140] or f"Potential {sample_hit.signal}"
         text = f"Test: {scanner.fractal_text(sample, sample_hit)[0]} Nothing was hit."

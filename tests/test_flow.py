@@ -596,7 +596,8 @@ def test_email_address_is_confirmed_with_a_code_before_it_gets_alerts(client, mo
 
     # The old address gets nothing until it is confirmed, and the page says so.
     assert notify.send("boss", ["email"], "s", "b") == {"email": "No recipient details saved"}
-    assert "Not confirmed, nothing is sent" in client.get("/notifications").text
+    page = client.get("/notifications").text
+    assert "Not confirmed" in page and "Nothing is sent to an address until it is confirmed" in page
 
     # One address at a time, and a real one.
     assert "one address at a time" in post(email="a@example.com, b@example.com").headers["HX-Trigger"]
@@ -945,7 +946,7 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
     scanner._fractal_history.clear()
 
 
-def test_fractal_gap_is_silent_and_sides_are_respected(monkeypatch):
+def test_fractal_gap_flips_the_level_and_sides_are_respected(monkeypatch):
     from datetime import timedelta
     scanner._fractal_history.clear()
     friday = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
@@ -966,7 +967,7 @@ def test_fractal_gap_is_silent_and_sides_are_respected(monkeypatch):
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
     monkeypatch.setattr(notify, "sender_ready", lambda ch: True)
     sent = []
-    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append(s))
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
     store.put("brokers", "gita", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
     store.put("contacts", "gita", {"telegram_chat_id": "1", "telegram_bot_token": "x"})
     base = {"user": "gita", "kind": "fractal", "min_candles": 0, "symbol": "INFY", "token": 7, "timeframe": "30m", "levels": [], "fired": [],
@@ -975,22 +976,27 @@ def test_fractal_gap_is_silent_and_sides_are_respected(monkeypatch):
     store.put("alerts", "g1", {**base, "id": "g1", "sides": "both"})
     store.put("alerts", "g2", {**base, "id": "g2", "sides": "high"})
 
-    # Monday opens above the fractal high: it is retired without a message.
+    # Monday opens above the fractal high: no message, and the high is now support under price.
     minutes.append(Candle(monday, 111, 112, 110.5, 111.5))
     scanner.run_scan(monday.replace(minute=16, second=5))
-    assert sent == [] and scanner.fractal_levels["g1"]["highs"] == []
-    assert [f.level for f in scanner.fractal_levels["g1"]["lows"]] == [100]
+    assert sent == [] and scanner.fractal_levels["g1"]["resistance"] == []
+    assert [(f.side, f.level, f.flipped) for f in scanner.fractal_levels["g1"]["support"]] == [("high", 110, True), ("low", 100, False)]
 
-    # Price then falls through the fractal low: the both-sides alert reports it, the highs-only one doesn't.
+    # Price then falls through both. The old high is met from above, so it is a potential buy like the low;
+    # the highs-only alert reports the flipped high but not the low.
     minutes.append(Candle(monday.replace(minute=17), 104, 104, 99.5, 100.2))
     scanner.run_scan(monday.replace(minute=17, second=40))
-    assert sent == ["🔔 Potential buy: INFY 30 min fractal low 100 taken"]
-    assert store.get("alerts", "g2").get("fired") == []
+    assert [s for s, _ in sent] == ["🔔 Potential buy: INFY 30 min fractal high 110 taken as support",
+                                    "🔔 Potential buy: INFY 30 min fractal low 100 taken",
+                                    "🔔 Potential buy: INFY 30 min fractal high 110 taken as support"]
+    assert "traded below the 30 min fractal high of 110 (now support after a gap)." in sent[0][1]
+    assert "Target: none, there is no unmitigated fractal above price to aim at." in sent[0][1]
+    assert len(store.get("alerts", "g2")["fired"]) == 1 and store.get("alerts", "g2")["fired"][0].endswith(":flipped:touch")
 
     # A fractal alert armed after the move doesn't report it.
     store.put("alerts", "g3", {**base, "id": "g3", "sides": "both", "armed_at": monday.replace(minute=18).isoformat()})
     scanner.run_scan(monday.replace(minute=18, second=40))
-    assert len(sent) == 1
+    assert len(sent) == 3
     for aid in ("g1", "g2", "g3"):
         store.delete("alerts", aid)
     scanner._fractal_history.clear()
@@ -1213,6 +1219,6 @@ def test_fractal_taken_too_soon_after_forming_is_ignored(client, monkeypatch):
         minutes[:] = [Candle(monday, 106, 107, 105, 106.5), Candle(monday.replace(minute=16), 106.5, 110.6, 106, 110.2)]
         scanner.run_scan(monday.replace(minute=17, second=5))
         assert len(sent) == wanted, n
-        assert scanner.fractal_levels[a["id"]]["highs"] == []                   # taken either way, so no longer watched
+        assert scanner.fractal_levels[a["id"]]["resistance"] == []                   # taken either way, so no longer watched
         store.delete("alerts", a["id"])
     scanner._fractal_history.clear()

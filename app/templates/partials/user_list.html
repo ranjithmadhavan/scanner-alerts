@@ -5,14 +5,14 @@
     <li class="{{ 'arrive' if u.username == fresh }}">
     {% if u.role == 'superadmin' %}
       <div class="flex items-center gap-4 px-6 py-4">
-        <span class="grid h-10 w-10 place-items-center rounded-full bg-marigold-50 font-display font-bold text-marigold-dark">{{ (u.name or u.username)[:1]|upper }}</span>
-        <div class="flex-1"><p class="font-semibold">{{ u.name }}</p><p class="text-sm text-ink-soft">{{ u.username }}</p></div>
-        <span class="rounded-full bg-marigold-50 px-3 py-1 text-xs font-semibold text-marigold-dark">Super admin, full access</span>
+        <span class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-marigold-50 font-display font-bold text-marigold-dark">{{ (u.name or u.username)[:1]|upper }}</span>
+        <div class="min-w-0 flex-1"><p class="truncate font-semibold">{{ u.name }}</p><p class="text-sm text-ink-soft">{{ u.username }}</p></div>
+        <span class="shrink-0 whitespace-nowrap rounded-full bg-marigold-50 px-3 py-1 text-xs font-semibold text-marigold-dark"><span class="hidden sm:inline">Super admin, full access</span><span class="sm:hidden">Full access</span></span>
       </div>
     {% else %}
       <details class="group">
         <summary class="flex cursor-pointer items-center gap-4 px-6 py-4 transition hover:bg-canvas/60">
-          <span class="grid h-10 w-10 place-items-center rounded-full bg-peacock-50 font-display font-bold text-peacock">{{ (u.name or u.username)[:1]|upper }}</span>
+          <span class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-peacock-50 font-display font-bold text-peacock">{{ (u.name or u.username)[:1]|upper }}</span>
           <div class="min-w-0 flex-1">
             <p class="font-semibold">{{ u.name }} {% if not u.active %}<span class="ml-1 rounded-full bg-canvas px-2 py-0.5 text-xs font-medium text-ink-soft">Can't sign in</span>{% endif %}</p>
             <p class="text-sm text-ink-soft">{{ u.username }}</p>

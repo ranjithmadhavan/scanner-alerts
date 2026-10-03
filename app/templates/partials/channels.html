@@ -70,23 +70,24 @@
   {% if emails or email_unverified %}
   <ul class="space-y-2 rounded-2xl bg-canvas p-4 text-[15px]">
     {% for address in emails %}
-    <li class="flex items-center gap-3">
-      <span class="min-w-0 flex-1 break-all font-semibold">{{ address }}</span>
-      <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-rise-50 px-2 py-0.5 text-xs font-medium text-rise">{{ icon('check', 'h-3 w-3') }} Confirmed</span>
-      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" title="Stop sending to this address" aria-label="Remove {{ address }}"
+    <li class="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span class="min-w-0 basis-full truncate font-semibold sm:basis-0 sm:flex-1" title="{{ address }}">{{ address }}</span>
+      <span class="mr-auto inline-flex shrink-0 items-center gap-1 rounded-full bg-rise-50 px-2 py-0.5 text-xs font-medium text-rise sm:mr-0">{{ icon('check', 'h-3 w-3') }} Confirmed</span>
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" title="Stop sending to this address" aria-label="Remove {{ address }}"
               hx-post="/notifications/email/drop" hx-vals='{{ {"address": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML" hx-confirm="Stop sending alerts to {{ address }}?">{{ icon('trash', 'h-4 w-4') }}</button>
     </li>
     {% endfor %}
     {% for address in email_unverified %}
     <li class="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span class="min-w-0 flex-1 break-all font-semibold text-ink-soft">{{ address }}</span>
-      <span class="shrink-0 rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Not confirmed, nothing is sent</span>
+      <span class="min-w-0 basis-full truncate font-semibold text-ink-soft sm:basis-0 sm:flex-1" title="{{ address }}">{{ address }}</span>
+      <span class="mr-auto shrink-0 rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark sm:mr-0" title="Nothing is sent to this address until it is confirmed">Not confirmed</span>
       <button type="button" class="btn-outline htmx-busy shrink-0 px-3 py-1 text-sm" hx-post="/notifications/email" hx-vals='{{ {"email": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">Send code</button>
-      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" title="Remove this address" aria-label="Remove {{ address }}"
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" title="Remove this address" aria-label="Remove {{ address }}"
               hx-post="/notifications/email/drop" hx-vals='{{ {"address": address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">{{ icon('trash', 'h-4 w-4') }}</button>
     </li>
     {% endfor %}
   </ul>
+  {% if email_unverified %}<p class="mt-2 px-1 text-[13px] text-marigold-dark">Nothing is sent to an address until it is confirmed.</p>{% endif %}
   {% endif %}
 
   {% if emails and ch.server_ready %}
@@ -103,8 +104,8 @@
     <p class="text-[15px]">We emailed a 6-digit code to <strong class="break-all font-semibold">{{ email_pending.address }}</strong>.</p>
     <p class="mt-0.5 text-sm text-ink-soft">Enter it here to confirm the address. The code works until {{ email_pending.expires|ist('%-I:%M %p') }}. Check spam if you don't see it.</p>
     <div class="mt-3 flex flex-wrap items-center gap-2">
-      <input id="em-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" aria-label="6-digit code"
-             class="field num w-32 bg-white text-center text-lg font-semibold tracking-[0.3em]">
+      <input id="em-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6 digits" aria-label="6-digit code"
+             class="field num w-32 bg-white text-center text-lg font-semibold tracking-[0.3em] placeholder:text-sm placeholder:font-normal placeholder:tracking-normal">
       <button name="action" value="confirm" class="btn-primary htmx-busy px-4 py-2 text-sm">Confirm</button>
       <button type="button" class="btn-quiet htmx-busy px-3 py-2 text-sm" hx-post="/notifications/email" hx-vals='{{ {"email": email_pending.address}|tojson }}' hx-target="#channels" hx-swap="outerHTML">Send again</button>
       <button type="button" class="btn-quiet px-3 py-2 text-sm" hx-post="/notifications/email/cancel" hx-target="#channels" hx-swap="outerHTML">Cancel</button>
@@ -135,6 +136,7 @@
         {% elif not ch.configured %}<span class="rounded-full bg-marigold-50 px-2.5 py-1 text-xs font-medium text-marigold-dark">Needs setting up</span>
         {% elif not ch.ready %}<span class="rounded-full bg-marigold-50 px-2.5 py-1 text-xs font-medium text-marigold-dark">Almost there</span>
         {% elif ch.last_test and ch.last_test.ok %}<span class="rounded-full bg-rise-50 px-2.5 py-1 text-xs font-medium text-rise">Tested</span>
+        {% elif ch.last_test %}<span class="rounded-full bg-fall-50 px-2.5 py-1 text-xs font-medium text-fall">Last test failed</span>
         {% elif ch.ready %}<span class="rounded-full bg-peacock-50 px-2.5 py-1 text-xs font-medium text-peacock">Saved, not tested</span>
         {% endif %}
       </div>

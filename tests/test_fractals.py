@@ -54,11 +54,37 @@ def test_fractal_low_mirrors_it_and_targets_the_fractal_high():
     assert keys(hits) == [("low", "touch"), ("low", "fail")]
 
 
-def test_gap_through_a_level_mitigates_it_silently():
-    hits, active = walk(series(*SETUP, (112, 114, 111, 113)))         # opens above the fractal high
-    assert hits == [] and [f.side for f in active] == ["low"]
-    hits, active = walk(series(*SETUP, (98, 99, 96, 97)))             # opens below the fractal low
-    assert hits == [] and [f.side for f in active] == ["high"]
+def test_gap_through_a_fractal_flips_its_role_instead_of_reporting():
+    # Opens above the fractal high: nothing is reported, and the high is now support underneath price.
+    gap_up = series(*SETUP, (112, 114, 111, 113))
+    hits, active = walk(gap_up)
+    assert hits == [] and [(f.side, f.role, f.flipped) for f in active] == [("high", "support", True), ("low", "support", False)]
+    # Price comes back down to it, dips under and closes back above: a potential buy off the old high.
+    hits, active = walk(gap_up + series(*SETUP, (0,) * 4, (113, 113.5, 109.5, 111))[4:])
+    assert keys(hits) == [("high", "touch"), ("high", "reject")]
+    assert hits[1].signal == "buy" and hits[1].fractal.flipped and hits[1].key.endswith(":flipped:reject")
+    assert [(f.side, f.level) for f in active] == [("low", 100), ("high", 114)]   # the old high is spent; the gap candle left a new one
+
+    # Opens below the fractal low: it becomes resistance overhead. A sweep of it from below is a potential sell,
+    # aimed at the nearest support underneath (none here).
+    gap_down = series(*SETUP, (98, 99, 96, 97))
+    hits, active = walk(gap_down)
+    assert hits == [] and [(f.side, f.role) for f in active] == [("high", "resistance"), ("low", "resistance")]
+    hits, _ = walk(gap_down + series(*SETUP, (0,) * 4, (97, 100.6, 96.5, 99.5))[4:])
+    assert keys(hits) == [("low", "touch"), ("low", "reject")]
+    assert hits[1].signal == "sell" and hits[1].target is None
+    # Closing above it and then back below is a failed break, also a potential sell.
+    hits, _ = walk(gap_down + series(*SETUP, (0,) * 4, (97, 101, 96.5, 100.5), (100.5, 100.8, 98, 98.5))[4:])
+    assert keys(hits) == [("low", "touch"), ("low", "fail")] and hits[1].signal == "sell"
+
+    # Without a gap nothing changes: coming down onto the low from above is still a potential buy.
+    hits, _ = walk(series(*SETUP, (104, 105, 99, 101)))
+    assert hits[1].signal == "buy" and not hits[1].fractal.flipped
+
+    # A second gap, back the other way, flips it back.
+    _, active = walk(gap_down + series(*SETUP, (0,) * 4, (102, 103, 101.5, 102.5))[4:])
+    assert [(f.level, f.role, f.flipped) for f in active] == [
+        (110, "resistance", False), (100, "support", False), (96, "support", False)]   # 96: a new low left by the gap candle
 
 
 def test_third_candle_touching_the_level_is_not_a_hit():
@@ -68,9 +94,11 @@ def test_third_candle_touching_the_level_is_not_a_hit():
 
 def test_targets_and_backtest_outcome():
     lows = [Fractal("low", 95, T0), Fractal("low", 100, T0), Fractal("high", 120, T0), Fractal("high", 130, T0)]
-    assert target_for("high", 110, lows).level == 100                 # nearest fractal low below price
-    assert target_for("low", 110, lows).level == 120                  # nearest fractal high above price
-    assert target_for("high", 90, lows) is None
+    assert target_for("sell", 110, lows).level == 100                 # nearest support below price
+    assert target_for("buy", 110, lows).level == 120                  # nearest resistance above price
+    assert target_for("sell", 90, lows) is None
+    gapped_low = Fractal("low", 105, T0, flipped=True)                # a low that price gapped below: resistance now
+    assert target_for("buy", 101, lows + [gapped_low]) is gapped_low and target_for("sell", 110, [gapped_low]) is None
     candles = series(*SETUP, (105, 111, 104, 109), (109, 109, 103, 104), (104, 105, 99.5, 101))
     hits, _ = walk(candles)
     won = outcome(hits[1], candles)                                    # the sweep at 111, target 100

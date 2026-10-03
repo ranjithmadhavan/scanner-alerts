@@ -10,11 +10,15 @@ trades beyond it. That candle decides what is reported:
 * reject — the candle that took the level closed back on the near side (a sweep);
 * fail   — it closed beyond the level, and the very next candle closed back (a failed break).
 
-A candle that *opens* beyond the level (a gap) mitigates it silently: nothing is reported.
-The same goes for a fractal taken too soon: an alert can ask for a minimum number of candles
+A fractal high starts out as resistance (taking it reads as a potential sell) and a fractal
+low as support (a potential buy). A candle that *opens* beyond the level, a gap, reports
+nothing but flips the level's role: a fractal low that price has gapped below is now overhead
+and acts as resistance, so price coming back up to it is a potential sell; a fractal high
+gapped above becomes support. The target of a signal is the nearest unmitigated level playing
+the opposite role on the far side of price.
+
+A fractal taken too soon is dropped silently: an alert can ask for a minimum number of candles
 (of the fractal's own timeframe) between the fractal and the candle that takes it.
-Taking a fractal high reads as a potential sell, a fractal low as a potential buy, and the
-target is the nearest unmitigated fractal on the other side of price.
 
 The candles that decide a sweep or a failed break don't have to be the ones the fractal was
 found on: fractals on 30-minute candles can be judged on 5-minute closes (the "trigger candle").
@@ -26,7 +30,7 @@ Everything here is pure: it works on lists of completed candles, oldest first.
 
 from bisect import bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from app.kite import TIMEFRAMES as CANDLES
@@ -77,16 +81,25 @@ class Fractal:
     level: float
     at: datetime  # start of the middle candle
     index: int = field(default=-1, compare=False)  # position of the middle candle among the candles it was found on
+    flipped: bool = False  # price gapped through it, so it now plays the opposite role
 
     @property
     def key(self) -> str:
-        return f"{self.side}:{self.at.isoformat()}"
+        return f"{self.side}:{self.at.isoformat()}" + (":flipped" if self.flipped else "")
+
+    @property
+    def role(self) -> str:
+        """"resistance": price is under it and taking it means trading above. "support": the mirror."""
+        return "resistance" if (self.side == "high") != self.flipped else "support"
+
+    def flip(self) -> "Fractal":
+        return replace(self, flipped=not self.flipped)
 
     def traded_beyond(self, c: Candle) -> bool:
-        return c.high > self.level if self.side == "high" else c.low < self.level
+        return c.high > self.level if self.role == "resistance" else c.low < self.level
 
     def is_beyond(self, price: float) -> bool:
-        return price > self.level if self.side == "high" else price < self.level
+        return price > self.level if self.role == "resistance" else price < self.level
 
 
 @dataclass
@@ -104,16 +117,16 @@ class Hit:
 
     @property
     def signal(self) -> str:
-        return "sell" if self.fractal.side == "high" else "buy"
+        return "sell" if self.fractal.role == "resistance" else "buy"
 
 
-def target_for(side: str, price: float, unmitigated: list[Fractal]) -> Fractal | None:
-    """Where a trade off a `side` fractal would be aiming: the nearest unmitigated fractal low below
-    price after a fractal high is taken (sell), the nearest fractal high above after a low (buy)."""
-    if side == "high":
-        below = [f for f in unmitigated if f.side == "low" and f.level < price]
+def target_for(signal: str, price: float, unmitigated: list[Fractal]) -> Fractal | None:
+    """Where a trade would be aiming: the nearest unmitigated support below price for a sell,
+    the nearest unmitigated resistance above price for a buy."""
+    if signal == "sell":
+        below = [f for f in unmitigated if f.role == "support" and f.level < price]
         return max(below, key=lambda f: f.level, default=None)
-    above = [f for f in unmitigated if f.side == "high" and f.level > price]
+    above = [f for f in unmitigated if f.role == "resistance" and f.level > price]
     return min(above, key=lambda f: f.level, default=None)
 
 
@@ -160,10 +173,10 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes:
         new = [Hit(f, "fail", c, j, c.close) for f in broke if not f.is_beyond(c.close)]
         broke, still = [], []
         for f in active:
+            if f.is_beyond(c.open):
+                f = f.flip()  # gapped through: nothing to report, but the level now plays the other role
             if not f.traded_beyond(c):
                 still.append(f)
-            elif f.is_beyond(c.open):
-                pass  # gapped through: mitigated without a word
             elif min_between and closes is not None and candles_between(f, c.start, closes) < min_between:
                 pass  # taken too soon after it formed to count
             else:
@@ -174,7 +187,7 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes:
                     new.append(Hit(f, "reject", c, j, c.close))
         active = still
         for hit in new:
-            hit.target = target_for(hit.fractal.side, hit.price, active)
+            hit.target = target_for(hit.signal, hit.price, active)
         hits.extend(new)
     bring_in(None)
     return hits, active

@@ -57,7 +57,7 @@
         <tr {% if r.n is not none %}data-bt-signal="{{ r.n }}" tabindex="0" title="Show on the chart" class="cursor-pointer transition hover:bg-canvas/70 focus-visible:bg-canvas/70 focus-visible:ring-inset"{% endif %}>
           <td class="num whitespace-nowrap py-2 pr-3">{{ r.when|ist('%-d %b' if daily else '%-d %b, %-I:%M %p') }}</td>
           <td class="py-2 pr-3"><span class="whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold {{ 'bg-fall-50 text-fall' if r.hit.signal == 'sell' else 'bg-rise-50 text-rise' }}">Potential {{ r.hit.signal }}</span></td>
-          <td class="num whitespace-nowrap py-2 pr-3">{{ r.hit.fractal.side|capitalize }} ₹{{ r.hit.fractal.level|price }}<span class="block text-xs text-ink-soft">formed {{ r.hit.fractal.at|ist('%-d %b' if fractal_daily else '%-d %b, %-I:%M %p') }}</span></td>
+          <td class="num whitespace-nowrap py-2 pr-3">{{ r.hit.fractal.side|capitalize }} ₹{{ r.hit.fractal.level|price }}{% if r.hit.fractal.flipped %} <span class="rounded-full bg-canvas px-1.5 py-px text-[11px] font-medium text-ink-soft" title="Price gapped through this fractal earlier, so it was met from the other side">as {{ r.hit.fractal.role }}</span>{% endif %}<span class="block text-xs text-ink-soft">formed {{ r.hit.fractal.at|ist('%-d %b' if fractal_daily else '%-d %b, %-I:%M %p') }}</span></td>
           <td class="whitespace-nowrap py-2 pr-3">{{ {'touch': 'Taken', 'reject': 'Swept, closed back', 'fail': 'Break failed'}[r.hit.trigger] }}{% if r.hit.trigger != 'touch' %}<span class="block text-xs text-ink-soft">on the {{ trigger_label|lower }} close</span>{% endif %}</td>
           <td class="num py-2 pr-3 text-right">₹{{ r.hit.price|price }}</td>
           <td class="num py-2 pr-3 text-right">{% if r.hit.target %}₹{{ r.hit.target.level|price }}{% else %}<span class="text-ink-soft">none</span>{% endif %}</td>
@@ -86,8 +86,8 @@
 
   <p class="mt-4 text-sm text-ink-soft">
     <span class="font-medium text-ink">Unmitigated now:</span>
-    {% if highs %}highs {% for f in highs %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal highs{% endif %};
-    {% if lows %}lows {% for f in lows %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no fractal lows{% endif %}.
+    {% if resistance %}resistance {% for f in resistance %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no resistance overhead{% endif %};
+    {% if support %}support {% for f in support %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no support underneath{% endif %}.
   </p>
-  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Points are entry to target when the target is reached first and entry to SL when the SL goes; entry is the fractal level for “taken” and the candle's close for “swept” and “break failed”. No costs or slippage are included. Times are the candle in which it happened. Gaps through a level are left out, as they are in live alerts. Nothing was saved or sent.</p>
+  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Points are entry to target when the target is reached first and entry to SL when the SL goes; entry is the fractal level for “taken” and the candle's close for “swept” and “break failed”. No costs or slippage are included. Times are the candle in which it happened. A gap through a fractal gives no signal; the fractal flips between support and resistance, as it does in live alerts. Nothing was saved or sent.</p>
 </div>

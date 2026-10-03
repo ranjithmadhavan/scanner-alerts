@@ -13,10 +13,13 @@
   <ul class="mt-4 divide-y divide-line rounded-2xl border border-line">
     {% for h in upcoming %}
     <li class="flex items-center gap-3 px-4 py-2 text-[15px]">
-      <span class="num w-28 shrink-0 font-semibold">{{ h.day.strftime('%a %-d %b') }}</span>
-      <span class="min-w-0 flex-1 truncate text-ink-soft">{{ h.name }}{% if h.day.year != today.year %} ({{ h.day.year }}){% endif %}</span>
+      {# On a phone the name sits under its date, so neither is cut short. #}
+      <span class="min-w-0 flex-1 sm:flex sm:items-center sm:gap-3">
+        <span class="num block font-semibold sm:w-28 sm:shrink-0">{{ h.day.strftime('%a %-d %b') }}</span>
+        <span class="block text-sm text-ink-soft sm:min-w-0 sm:flex-1 sm:truncate sm:text-[15px]">{{ h.name }}{% if h.day.year != today.year %} ({{ h.day.year }}){% endif %}</span>
+      </span>
       {% if h.day == today %}<span class="shrink-0 rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Today</span>{% endif %}
-      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft/70 transition hover:bg-fall-50 hover:text-fall" aria-label="Remove {{ h.name }}" title="Scan on this day after all"
+      <button type="button" class="shrink-0 rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove {{ h.name }}" title="Scan on this day after all"
               hx-post="/admin/market/holidays/remove" hx-vals='{{ {"day": h.date}|tojson }}' hx-target="#holidays" hx-swap="outerHTML">{{ icon('close', 'h-4 w-4') }}</button>
     </li>
     {% endfor %}

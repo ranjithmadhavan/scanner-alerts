@@ -169,7 +169,7 @@ last_prices: dict[tuple[str, str], tuple[float, datetime]] = {}  # (user, alert_
 last_checked_at: dict[str, datetime] = {}  # alert id -> when the scanner last evaluated it
 last_run: dict = {}  # {"at": datetime, "alerts": int} for the most recent scan inside market hours
 _last_checked: dict[str, datetime] = {}  # alert id -> last candle boundary evaluated
-fractal_levels: dict[str, dict] = {}  # fractal alert id -> {"highs": [Fractal], "lows": [Fractal]} still unmitigated
+fractal_levels: dict[str, dict] = {}  # fractal alert id -> {"resistance": [Fractal], "support": [Fractal]} still unmitigated
 _fractal_history: dict[tuple, tuple[tuple, list[Candle]]] = {}  # (user, token, tf, what) -> (fetched for, candles)
 _scan_lock = threading.Lock()
 
@@ -330,7 +330,9 @@ def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
     """(what happened, when the fractal formed, the target) in words, for messages and backtests."""
     f, tf = hit.fractal, alert["timeframe"]
     name = f"{fractals.TIMEFRAMES[tf][0].lower()} fractal {f.side} of {f.level:g}"
-    beyond, back = ("above", "below") if f.side == "high" else ("below", "above")
+    if f.flipped:  # price gapped through it earlier, so it is being met from the other side
+        name += f" (now {f.role} after a gap)"
+    beyond, back = ("above", "below") if f.role == "resistance" else ("below", "above")
     candle = f"{fractals.label(trigger_timeframe(alert)).lower()} candle"  # the candle size the close is judged on
     what = {
         "touch": f"{alert['symbol']} traded {beyond} the {name}.",
@@ -339,9 +341,9 @@ def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
                  f"then the next one closed back {back} it at {hit.price:g}."),
     }[hit.trigger]
     formed = "Fractal formed " + f.at.astimezone(IST).strftime("%d %b" if tf == "1d" else "%d %b, %-I:%M %p")
-    other = "low" if f.side == "high" else "high"
-    target = (f"Target: {hit.target.level:g}, the nearest unmitigated fractal {other}" if hit.target
-              else f"Target: none, there is no unmitigated fractal {other} {back} price")
+    target = (f"Target: {hit.target.level:g}, the nearest unmitigated fractal {hit.target.side}"
+              f"{' (now ' + hit.target.role + ')' if hit.target.flipped else ''}" if hit.target
+              else f"Target: none, there is no unmitigated fractal {back} price to aim at")
     return what, formed, target
 
 
@@ -358,6 +360,8 @@ def fractal_webhook_body(alert: dict, hit: fractals.Hit, message: str, text: str
         "message": message,
         "text": text,
         "side": f.side,
+        "role": f.role,
+        "flipped": f.flipped,
         "trigger": hit.trigger,
         "signal": hit.signal,
         "level": f.level,
@@ -380,7 +384,7 @@ def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) ->
     signal = custom or f"Potential {hit.signal}"
     f = hit.fractal
     short = f"{alert['symbol']} {fractals.TIMEFRAMES[alert['timeframe']][0].lower()} fractal {f.side} {f.level:g}"
-    summary = f"{short} {FRACTAL_OUTCOME[hit.trigger]}"
+    summary = f"{short} {FRACTAL_OUTCOME[hit.trigger]}" + (f" as {f.role}" if f.flipped else "")
     subject = f"🔔 {signal if len(signal) <= 60 else signal[:59] + '…'}: {summary}"
     body = (
         f"{signal}{chr(10) if custom else '. '}{what}\n"
@@ -431,7 +435,7 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
         end = candle_end(hit.candle, trigger_tf, s)
         if (hit.index >= first and end.date() == now.date() and end > armed_at
                 and fractal_wanted(alert, hit) and hit.key not in fired):
-            traded = hit.candle.high if hit.fractal.side == "high" else hit.candle.low
+            traded = hit.candle.high if hit.signal == "sell" else hit.candle.low
             to_fire.append((hit, traded if hit.trigger == "touch" else hit.price))
             fired.add(hit.key)
 
@@ -439,24 +443,26 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
     done_today = [c for c in stream[first:] if c.start.date() == now.date()]
     forming_from = candle_end(done_today[-1], trigger_tf, s) if done_today and trigger_tf != "1d" else s.open_at(now)
     forming = [m for m in minutes if m.start >= forming_from]
-    touched, touches = [], []
+    touched, touches, live = [], [], []
     for f in unmitigated:
+        if forming and f.is_beyond(forming[0].open):
+            f = f.flip()  # the forming candle opened beyond it: a gap, so it now plays the other role
+        live.append(f)
         first_beyond = next((m for m in forming if f.traded_beyond(m)), None)
         if not first_beyond:
             continue
         touched.append(f)
-        gap = first_beyond.start <= s.open_at(now) and f.is_beyond(first_beyond.open)  # the session opened beyond the level
         too_soon = fractals.candles_between(f, first_beyond.start, closes) < min_between(alert)
         hit = fractals.Hit(f, "touch", first_beyond, -1, f.level)
-        if (not gap and not too_soon and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
+        if (not too_soon and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
                 and fractal_wanted(alert, hit) and hit.key not in fired):
-            touches.append((hit, first_beyond.high if f.side == "high" else first_beyond.low))
-    remaining = [f for f in unmitigated if f not in touched]
+            touches.append((hit, first_beyond.high if hit.signal == "sell" else first_beyond.low))
+    remaining = [f for f in live if f not in touched]
     for hit, _ in touches:
-        hit.target = fractals.target_for(hit.fractal.side, hit.price, remaining)
+        hit.target = fractals.target_for(hit.signal, hit.price, remaining)
     fractal_levels[alert["id"]] = {
-        "highs": sorted((f for f in remaining if f.side == "high"), key=lambda f: f.level),
-        "lows": sorted((f for f in remaining if f.side == "low"), key=lambda f: f.level, reverse=True),
+        "resistance": sorted((f for f in remaining if f.role == "resistance"), key=lambda f: f.level),
+        "support": sorted((f for f in remaining if f.role == "support"), key=lambda f: f.level, reverse=True),
     }
     last_checked_at[alert["id"]] = now
     for hit, price in to_fire + touches:

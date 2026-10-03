@@ -23,8 +23,8 @@
       <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
       {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft">levels appear after the first scan</span>
       {% else %}
-        {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal high, formed {{ a.fractal.above.at|ist }}">High <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}
-        {% if a.fractal.below %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest unmitigated fractal low, formed {{ a.fractal.below.at|ist }}">Low <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span>{% endif %}
+        {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest resistance: an unmitigated fractal {{ a.fractal.above.side }}{{ ' that price gapped below' if a.fractal.above.flipped }}, formed {{ a.fractal.above.at|ist }}. Potential sell if taken.">{{ a.fractal.above.side|capitalize }}{{ ', flipped' if a.fractal.above.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}
+        {% if a.fractal.below %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest support: an unmitigated fractal {{ a.fractal.below.side }}{{ ' that price gapped above' if a.fractal.below.flipped }}, formed {{ a.fractal.below.at|ist }}. Potential buy if taken.">{{ a.fractal.below.side|capitalize }}{{ ', flipped' if a.fractal.below.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span>{% endif %}
         <span class="text-[13px] text-ink-soft">{{ a.fractal.count }} unmitigated</span>
       {% endif %}
       {% if a.note %}<span class="text-[13px] text-ink-soft" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
@@ -65,9 +65,9 @@
 {% macro price_bar(a) -%}
   {% if a.fractal and a.price is not none %}
     <p class="num text-sm"><strong class="price-now font-semibold">₹{{ a.price|price }}</strong>
-      {% if a.fractal.above %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }} below the high</span>{% endif %}
+      {% if a.fractal.above %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }} below resistance</span>{% endif %}
       {%- if a.fractal.above and a.fractal.below %}<span class="text-ink-soft">,</span>{% endif %}
-      {% if a.fractal.below %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }} above the low</span>{% endif %}
+      {% if a.fractal.below %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }} above support</span>{% endif %}
     </p>
   {% elif a.rail %}
     <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">

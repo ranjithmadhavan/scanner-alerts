@@ -5,7 +5,7 @@
   <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-white {{ {'connected': 'text-rise', 'stale': 'text-marigold-dark'}.get(st, 'text-fall' if st in ('expired', 'error') else 'text-ink-soft') }}">
     {{ icon('check' if st == 'connected' else 'link') }}
   </span>
-  <div class="min-w-0 flex-1">
+  <div class="min-w-[11rem] flex-1">
     <p class="font-display text-lg font-bold">
       {%- if st == 'connected' %}Connected{% if broker.kite_name %} as {{ broker.kite_name }}{% endif %}
       {%- elif st == 'stale' %}Probably logged out
