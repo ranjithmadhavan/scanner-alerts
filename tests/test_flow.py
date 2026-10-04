@@ -1023,13 +1023,13 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
     page = r.text
     assert "Backtest ready: 4 signals" in r.headers["HX-Trigger"]
     assert "INFY: 4 signals" in page and "2 reached target" in page and "0 SL gone" in page and "2 still open" in page
-    assert "Potential sell" in page and "Potential buy" in page and "Swept, closed back" in page
+    assert "Potential sell" in page and "Potential buy" in page and ">Swept<" in page
     assert "₹100.00" in page and "Target reached 25 Sep" in page         # both sell signals fell to the fractal low
-    assert "₹111.00" in page and "Open: neither target nor SL yet" in page   # the buys aim at the new high left by the sweep
-    assert ">SL<" in page and "₹99.50" in page                             # each row shows its stop
+    assert "₹111.00" in page and ">Open<" in page   # the buys aim at the new high left by the sweep
+    assert "Target / SL" in page and "SL ₹99.50" in page                   # each row shows its stop
     # Sells: taken at 110 and swept at 109, both to the target of 100. The two buys are still open.
     assert "+19.00" in page and "−0.00" in page and "Points over 2 closed trades" in page
-    assert "+10.00" in page and "+9.00" in page and "Running net" in page
+    assert "+10.00" in page and "+9.00" in page and "Points / net" in page and "net +19.00" in page
 
     # Same morning, but price pushes above the sweep's high before falling: SL gone, target reached later.
     candles[4:] = [Candle(day + timedelta(minutes=120), 109, 111.6, 108, 110), Candle(day + timedelta(minutes=150), 110, 110, 99.5, 101)]
@@ -1040,6 +1040,12 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
     assert "+0.00" in r.text and "−2.00" in r.text and "Points over 1 closed trade," in r.text     # sold 109, stopped at 111
     candles[4:] = [Candle(day + timedelta(minutes=120), 109, 109, 103, 104), Candle(day + timedelta(minutes=150), 104, 105, 99.5, 101)]
     assert store.list("alerts", user="boss") == []                                  # nothing saved
+
+    # The 10:45 candle swept 110; the 11:15 candle closed back below it too, so the sweep held.
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "min_candles": "0", "fractal_timeframe": "30m",
+                                              "sides": "high", "triggers": ["confirm"]})
+    assert "INFY: 1 signal" in r.text and "Sweep held" in r.text and "25 Sep, 11:45 AM" in r.text
+    assert 'name="triggers" value="confirm"' in client.get("/alerts").text and "Sweep holds" in client.get("/alerts").text
 
     r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "min_candles": "0", "sides": "low", "triggers": ["touch"]})
     assert "INFY: 1 signal" in r.text
@@ -1130,7 +1136,7 @@ def test_fractal_backtest_with_trigger_candle_and_chart(client, monkeypatch):
                                               "confirm_timeframe": "5m", "sides": "both", "triggers": ["touch", "reject", "fail"]})
     page = r.text
     assert "Fractals on 30 min candles" in page and "judged on 5 min closes" in page
-    assert "INFY: 2 signals" in page and "on the 5 min close" in page and 'data-bt-signal="1"' in page
+    assert "INFY: 2 signals" in page and "Judged on 5 min closes" in page and 'data-bt-signal="1"' in page
     assert "25 Sep, 10:55 AM" in page                                   # the 5-minute candle's close, not 11:15
     chart = jsonlib.loads(re.search(r'<script type="application/json" id="bt-data">(.*?)</script>', page, re.S).group(1))
     assert len(chart["candles"]) == len(fives) and not chart["daily"]

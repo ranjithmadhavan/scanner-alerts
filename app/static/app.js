@@ -262,7 +262,7 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
     lines.push(series.createPriceLine({ price: signal.stop, color: "#C2475A", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "SL" }));
     const at = position.get(String(signal.time));
     chart.timeScale().setVisibleLogicalRange({ from: at - 60, to: at + 40 });
-    document.querySelectorAll("[data-bt-signal]").forEach((row) => row.classList.toggle("bg-marigold-50", Number(row.dataset.btSignal) === n));
+    document.querySelectorAll("[data-bt-signal]").forEach((row) => row.toggleAttribute("data-selected", Number(row.dataset.btSignal) === n));
   }
 
   async function build(root) {

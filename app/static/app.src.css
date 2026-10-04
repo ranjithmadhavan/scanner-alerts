@@ -84,6 +84,16 @@ html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"] { backgroun
 /* Channel chips show a tick only when selected. */
 .tick { display: none; }
 input:checked + span .tick { display: inline; }
+/* Fractal backtest table: rows carry a solid background so the sticky When column covers what scrolls
+   under it; the header keeps its rule while it sticks (borders on sticky cells don't travel). */
+.bt-row { background: #fff; }
+.bt-row[data-bt-signal] { cursor: pointer; }
+.bt-row:hover, .bt-row:focus-visible { background: #F8F5F0; outline: none; }
+.bt-row[data-selected] { background: #FDF4E3; }
+.bt-row > td { border-top: 1px solid #ECE6DC; }
+.bt-table thead th { box-shadow: inset 0 -1px 0 #ECE6DC; }
+.bt-table td:first-child, .bt-table th:first-child { box-shadow: 1px 0 0 #ECE6DC; }
+.bt-table thead th:first-child { box-shadow: inset 0 -1px 0 #ECE6DC, 1px 0 0 #ECE6DC; }
 /* A dialog over the page (the alert editor): the page behind it stays put. */
 body:has(#alert-editor > *) { overflow: hidden; }
 details > summary { list-style: none; }

@@ -258,7 +258,7 @@ def webhook_body(alert: dict, hit: dict, message: str, text: str, price: float, 
 
 # ---- fractal alerts ---------------------------------------------------------------
 
-FRACTAL_OUTCOME = {"touch": "taken", "reject": "swept", "fail": "break failed"}
+FRACTAL_OUTCOME = {"touch": "taken", "reject": "swept", "confirm": "sweep held", "fail": "break failed"}
 
 
 def is_fractal(alert: dict) -> bool:
@@ -337,6 +337,8 @@ def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
     what = {
         "touch": f"{alert['symbol']} traded {beyond} the {name}.",
         "reject": f"{alert['symbol']} swept the {name} and the {candle} closed back {back} it at {hit.price:g}.",
+        "confirm": (f"{alert['symbol']} swept the {name} and the {candle} closed back {back} it; "
+                    f"the next one closed {back} it too, at {hit.price:g}."),
         "fail": (f"{alert['symbol']} closed a {candle} {beyond} the {name}, "
                  f"then the next one closed back {back} it at {hit.price:g}."),
     }[hit.trigger]

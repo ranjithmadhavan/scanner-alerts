@@ -169,7 +169,7 @@ def test_sweep_can_be_judged_on_smaller_candles_than_the_fractal():
 
     # A 5-minute candle wicks above 110 and closes back: swept on the 5-minute close, not half an hour later.
     hits, active = replay(found, [five(90, 105, 109, 104, 108), five(95, 108, 110.6, 107.5, 109.4), five(100, 109.4, 109.8, 108, 108.5)])
-    assert keys(hits) == [("high", "touch"), ("high", "reject")]
+    assert keys(hits) == [("high", "touch"), ("high", "reject"), ("high", "confirm")]   # the next 5 min close holds too
     assert hits[1].candle.start == T0 + timedelta(minutes=95) and hits[1].price == 109.4
     assert [f.side for f in active] == ["low"]
 
@@ -213,3 +213,21 @@ def test_minimum_candles_between_fractal_and_the_candle_that_takes_it():
     five = [Candle(T0 + timedelta(minutes=155), 106, 111, 105, 109)]
     assert keys(replay(found, five, closes, 3)[0]) == [("high", "touch"), ("high", "reject")]
     assert replay(found, five, closes, 4)[0] == []
+
+
+def test_a_sweep_that_holds_needs_the_next_candle_to_close_back_too():
+    sweep = (105, 111, 104, 109)                                       # wicks above 110, closes back below
+    held = series(*SETUP, sweep, (109, 110.5, 107, 108))               # next candle pokes above but closes below too
+    hits, _ = walk(held)
+    assert keys(hits) == [("high", "touch"), ("high", "reject"), ("high", "confirm")]
+    confirm = hits[2]
+    assert confirm.candle.start == held[4].start and confirm.price == 108 and confirm.signal == "sell"
+    assert confirm.target.level == 100 and confirm.key.endswith(":confirm")
+    assert outcome(confirm, held).stop == 111                          # the stop covers both candles
+    # The next candle closing above the level means the sweep didn't hold.
+    assert keys(walk(series(*SETUP, sweep, (109, 112, 108.5, 111)))[0]) == [("high", "touch"), ("high", "reject")]
+    # A failed break is never also a held sweep: its first candle closed beyond the level.
+    assert keys(walk(series(*SETUP, (105, 112, 104, 111), (111, 111.5, 108, 109)))[0]) == [("high", "touch"), ("high", "fail")]
+    # Mirrored on a fractal low: a potential buy.
+    hits, _ = walk(series(*SETUP, (104, 105, 99, 101), (101, 102, 99.6, 100.5)))
+    assert keys(hits) == [("low", "touch"), ("low", "reject"), ("low", "confirm")] and hits[2].signal == "buy"

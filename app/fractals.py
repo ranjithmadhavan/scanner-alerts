@@ -7,8 +7,10 @@ It exists once the third candle has closed and stays *unmitigated* until a later
 trades beyond it. That candle decides what is reported:
 
 * touch  — price traded beyond the level;
-* reject — the candle that took the level closed back on the near side (a sweep);
-* fail   — it closed beyond the level, and the very next candle closed back (a failed break).
+* reject  — the candle that took the level closed back on the near side (a sweep);
+* confirm — a sweep, and the very next candle also closes on the near side (a sweep that holds:
+            neither candle closes beyond the level);
+* fail    — it closed beyond the level, and the very next candle closed back (a failed break).
 
 A fractal high starts out as resistance (taking it reads as a potential sell) and a fractal
 low as support (a potential buy). A candle that *opens* beyond the level, a gap, reports
@@ -50,6 +52,7 @@ DEFAULT_TIMEFRAME = "30m"
 TRIGGERS = {
     "touch": "Price trades through it",
     "reject": "Swept, candle closes back",
+    "confirm": "Swept, and the next candle also closes back",
     "fail": "Closes beyond, next candle closes back",
 }
 SIDES = {"both": "Highs and lows", "high": "Fractal highs only", "low": "Fractal lows only"}
@@ -158,6 +161,7 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes:
     hits: list[Hit] = []
     active: list[Fractal] = []
     broke: list[Fractal] = []  # closed beyond on the previous candle; this candle decides if the break fails
+    swept: list[Fractal] = []  # swept by the previous candle; this candle decides if the sweep holds
     pending = 0
 
     def bring_in(upto: datetime | None) -> None:
@@ -171,7 +175,8 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes:
     for j, c in enumerate(candles):
         bring_in(c.start)
         new = [Hit(f, "fail", c, j, c.close) for f in broke if not f.is_beyond(c.close)]
-        broke, still = [], []
+        new += [Hit(f, "confirm", c, j, c.close) for f in swept if not f.is_beyond(c.close)]
+        broke, swept, still = [], [], []
         for f in active:
             if f.is_beyond(c.open):
                 f = f.flip()  # gapped through: nothing to report, but the level now plays the other role
@@ -185,6 +190,7 @@ def replay(found: list[tuple[datetime, Fractal]], candles: list[Candle], closes:
                     broke.append(f)
                 else:
                     new.append(Hit(f, "reject", c, j, c.close))
+                    swept.append(f)
         active = still
         for hit in new:
             hit.target = target_for(hit.signal, hit.price, active)
@@ -225,11 +231,13 @@ class Outcome:
 
 def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
     """Follow a hit through the candles after it. The stop is the high (for a sell) or low (for a buy)
-    of the candle that took the fractal, including the candle before it for a failed break. Whichever
+    of the candle that took the fractal, including the candle before it for a failed break or a sweep
+    that held. Whichever
     of stop and target is traded first decides the result; if one candle trades both, the stop counts,
     because candles don't say which came first. The search for the target carries on past a stop."""
     sell = hit.signal == "sell"
-    made = [hit.candle] + ([candles[hit.index - 1]] if hit.trigger == "fail" and hit.index > 0 else [])
+    two_candles = hit.trigger in ("fail", "confirm") and hit.index > 0
+    made = [hit.candle] + ([candles[hit.index - 1]] if two_candles else [])
     stop = max(c.high for c in made) if sell else min(c.low for c in made)
     target = hit.target.level if hit.target else None
     stopped = reached = None
