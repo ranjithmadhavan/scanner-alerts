@@ -11,7 +11,7 @@
           {%- if key == 'touch' %}Any trade goes beyond the level
           {%- elif key == 'reject' %}A candle trades beyond it but closes back
           {%- elif key == 'confirm' %}A candle sweeps it and closes back, and the next one closes back too
-          {%- else %}A candle closes beyond it, the next one closes back{% endif -%}
+          {%- else %}A candle closes beyond it, the next two close back{% endif -%}
         </span>
       </span>
     </label>

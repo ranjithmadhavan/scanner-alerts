@@ -340,7 +340,7 @@ def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
         "confirm": (f"{alert['symbol']} swept the {name} and the {candle} closed back {back} it; "
                     f"the next one closed {back} it too, at {hit.price:g}."),
         "fail": (f"{alert['symbol']} closed a {candle} {beyond} the {name}, "
-                 f"then the next one closed back {back} it at {hit.price:g}."),
+                 f"then the next two closed back {back} it, the second at {hit.price:g}."),
     }[hit.trigger]
     formed = "Fractal formed " + f.at.astimezone(IST).strftime("%d %b" if tf == "1d" else "%d %b, %-I:%M %p")
     target = (f"Target: {hit.target.level:g}, the nearest unmitigated fractal {hit.target.side}"

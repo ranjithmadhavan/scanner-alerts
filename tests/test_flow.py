@@ -870,9 +870,9 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
             return history + state["today"]
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
 
-    # The form starts with "Is swept" and "Break fails" ticked, not "Is taken".
+    # The form starts with "Sweep holds" and "Break fails" ticked, not "Is taken" or "Is swept".
     form = client.get("/alerts").text
-    for trigger, ticked in (("touch", False), ("reject", True), ("fail", True)):
+    for trigger, ticked in (("touch", False), ("reject", False), ("confirm", True), ("fail", True)):
         assert (f'name="triggers" value="{trigger}" class="peer sr-only" checked' in form) is ticked, trigger
 
     # Created from the New alert form in Fractals mode: no price level needed.
@@ -1103,12 +1103,18 @@ def test_fractal_sweep_judged_on_a_shorter_trigger_candle(client, monkeypatch):
     scanner.run_scan(monday.replace(minute=21, second=15))
     assert len(sent) == 1
 
-    # The fractal low: one 5-minute candle closes below 100, the next closes back above. A failed break.
+    # The fractal low: one 5-minute candle closes below 100, the next two close back above. A failed break,
+    # reported at the third close and not before.
     state["5m"] += [Candle(monday.replace(minute=20), 109, 109, 99.2, 99.6), Candle(monday.replace(minute=25), 99.6, 101.5, 99.4, 101)]
     state["1m"] += [Candle(monday.replace(minute=m), 100, 101.5, 99.2, 101) for m in range(20, 30)]
     scanner.run_scan(monday.replace(minute=30, second=15))
+    assert len(sent) == 1
+    state["5m"] += [Candle(monday.replace(minute=30), 101, 101.6, 100.4, 101.3)]
+    state["1m"] += [Candle(monday.replace(minute=m), 101, 101.6, 100.4, 101.3) for m in range(30, 35)]
+    scanner.run_scan(monday.replace(minute=35, second=15))
     assert len(sent) == 2 and sent[1][0] == "🔔 Potential buy: INFY 30 min fractal low 100 break failed"
-    assert "closed a 5 min candle below the 30 min fractal low of 100, then the next one closed back above it at 101." in sent[1][1]
+    assert ("closed a 5 min candle below the 30 min fractal low of 100, then the next two closed back above it, "
+            "the second at 101.3.") in sent[1][1]
     store.delete("alerts", a["id"])
     scanner._fractal_history.clear()
 

@@ -38,9 +38,15 @@ def test_touch_and_reject_when_the_candle_closes_back():
     assert [f.side for f in active] == ["low"]                        # the high is mitigated
 
 
-def test_close_beyond_then_next_candle_closes_back_is_a_failed_break():
-    hits, _ = walk(series(*SETUP, (105, 112, 104, 111), (111, 113, 108, 109)))
-    assert keys(hits) == [("high", "touch"), ("high", "fail")] and hits[1].price == 109
+def test_close_beyond_then_two_closes_back_is_a_failed_break():
+    broke = (105, 112, 104, 111)                                        # closes above 110
+    hits, _ = walk(series(*SETUP, broke, (111, 113, 108, 109), (109, 110.5, 107, 108)))
+    assert keys(hits) == [("high", "touch"), ("high", "fail")] and hits[1].price == 108
+    assert hits[1].candle.start == T0 + timedelta(minutes=150)          # decided at the third candle's close
+    # One close back isn't enough...
+    assert keys(walk(series(*SETUP, broke, (111, 113, 108, 109)))[0]) == [("high", "touch")]
+    # ...and nor is closing back, then above again.
+    assert keys(walk(series(*SETUP, broke, (111, 113, 108, 109), (109, 112, 108.5, 110.5)))[0]) == [("high", "touch")]
     # If the next candle also closes beyond, it was a real break: nothing more is reported.
     hits, _ = walk(series(*SETUP, (105, 112, 104, 111), (111, 115, 110.5, 114)))
     assert keys(hits) == [("high", "touch")]
@@ -50,7 +56,7 @@ def test_fractal_low_mirrors_it_and_targets_the_fractal_high():
     hits, _ = walk(series(*SETUP, (104, 105, 99, 101)))
     assert keys(hits) == [("low", "touch"), ("low", "reject")]
     assert hits[0].signal == "buy" and hits[0].target.level == 110
-    hits, _ = walk(series(*SETUP, (104, 105, 98, 99), (99, 102, 98.5, 101)))
+    hits, _ = walk(series(*SETUP, (104, 105, 98, 99), (99, 102, 98.5, 101), (101, 101.8, 99.5, 101.2)))
     assert keys(hits) == [("low", "touch"), ("low", "fail")]
 
 
@@ -74,7 +80,7 @@ def test_gap_through_a_fractal_flips_its_role_instead_of_reporting():
     assert keys(hits) == [("low", "touch"), ("low", "reject")]
     assert hits[1].signal == "sell" and hits[1].target is None
     # Closing above it and then back below is a failed break, also a potential sell.
-    hits, _ = walk(gap_down + series(*SETUP, (0,) * 4, (97, 101, 96.5, 100.5), (100.5, 100.8, 98, 98.5))[4:])
+    hits, _ = walk(gap_down + series(*SETUP, (0,) * 4, (97, 101, 96.5, 100.5), (100.5, 100.8, 98, 98.5), (98.5, 99.5, 97, 98))[4:])
     assert keys(hits) == [("low", "touch"), ("low", "fail")] and hits[1].signal == "sell"
 
     # Without a gap nothing changes: coming down onto the low from above is still a potential buy.
@@ -126,11 +132,11 @@ def test_stop_loss_is_the_extreme_made_while_taking_the_fractal():
     candles = series(*SETUP, sweep, (109, 111, 99.5, 100))
     assert outcome(walk(candles)[0][1], candles).result == "target"
 
-    # A failed break's stop covers both of its candles; a buy mirrors everything on the lows.
+    # A failed break's stop covers all three of its candles; a buy mirrors everything on the lows.
     candles = series(*SETUP, (105, 112, 104, 111), (111, 111.5, 108, 109), (109, 111.8, 108, 110), (110, 112.5, 109, 112))
     failed = [h for h in walk(candles)[0] if h.trigger == "fail"][0]
     result = outcome(failed, candles)
-    assert result.stop == 112 and result.stopped.start == candles[6].start
+    assert failed.candle.start == candles[5].start and result.stop == 112 and result.stopped.start == candles[6].start
     candles = series(*SETUP, (104, 105, 99, 101), (101, 102, 98.5, 100))
     buy = outcome(walk(candles)[0][1], candles)
     assert (buy.stop, buy.result) == (99, "stop")
@@ -173,9 +179,9 @@ def test_sweep_can_be_judged_on_smaller_candles_than_the_fractal():
     assert hits[1].candle.start == T0 + timedelta(minutes=95) and hits[1].price == 109.4
     assert [f.side for f in active] == ["low"]
 
-    # Closes above on one 5-minute candle, back below on the next: a failed break at the second close.
-    hits, _ = replay(found, [five(90, 108, 111, 107.5, 110.5), five(95, 110.5, 110.9, 109, 109.2)])
-    assert keys(hits) == [("high", "touch"), ("high", "fail")] and hits[1].candle.start == T0 + timedelta(minutes=95)
+    # Closes above on one 5-minute candle, back below on the next two: a failed break at the third close.
+    hits, _ = replay(found, [five(90, 108, 111, 107.5, 110.5), five(95, 110.5, 110.9, 109, 109.2), five(100, 109.2, 109.9, 108, 108.4)])
+    assert keys(hits) == [("high", "touch"), ("high", "fail")] and hits[1].candle.start == T0 + timedelta(minutes=100)
 
     # Candles from before the fractal existed can't take it.
     hits, active = replay(found, [five(60, 105, 112, 104, 111)])
@@ -227,7 +233,7 @@ def test_a_sweep_that_holds_needs_the_next_candle_to_close_back_too():
     # The next candle closing above the level means the sweep didn't hold.
     assert keys(walk(series(*SETUP, sweep, (109, 112, 108.5, 111)))[0]) == [("high", "touch"), ("high", "reject")]
     # A failed break is never also a held sweep: its first candle closed beyond the level.
-    assert keys(walk(series(*SETUP, (105, 112, 104, 111), (111, 111.5, 108, 109)))[0]) == [("high", "touch"), ("high", "fail")]
+    assert keys(walk(series(*SETUP, (105, 112, 104, 111), (111, 111.5, 108, 109), (109, 109.5, 107, 108)))[0]) == [("high", "touch"), ("high", "fail")]
     # Mirrored on a fractal low: a potential buy.
     hits, _ = walk(series(*SETUP, (104, 105, 99, 101), (101, 102, 99.6, 100.5)))
     assert keys(hits) == [("low", "touch"), ("low", "reject"), ("low", "confirm")] and hits[2].signal == "buy"
