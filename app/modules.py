@@ -23,5 +23,6 @@ MODULES: dict[str, Module] = {
         Module("broker", "Broker", "/broker", "Connect a Zerodha Kite account for live prices", "link"),
         Module("notifications", "Notifications", "/notifications", "Choose where alerts are delivered", "send"),
         Module("oi", "Nifty OI", "/oi", "Nifty option open interest through the day, and what it says", "chart"),
+        Module("bias", "Fractal bias", "/bias", "Nifty 50 fractal sweeps through the day, and which way they lean", "compass"),
     ]
 }

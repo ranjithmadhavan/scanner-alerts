@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app import brokers, notify, oi
+from app import bias, brokers, notify, oi
 from app.kite import KiteAuthError, KiteError
 from app.market import IST, is_market_open, load_settings as market_settings, now_ist
 from app.security import require
@@ -23,6 +23,8 @@ def page(request: Request, user: dict = Depends(guard), day: str = "", at: str =
     ctx = {
         "days": days, "day": day, "snaps": snaps, "chosen": chosen,
         "reading": oi.analyse(chosen, snaps[0]) if chosen else None,
+        # The fractal bias at the same moment (latest today if nothing is chosen), for those who can see it.
+        "bias_now": bias.sentiment(user["username"], datetime.fromisoformat(chosen["at"]) if chosen else now_ist()),
         "series": oi.series(snaps), "settings": oi.load_settings(),
         "intervals": oi.INTERVALS, "strike_choices": oi.STRIKE_CHOICES,
         "broker_ok": brokers.load(user["username"]).get("status") == "connected",
@@ -35,7 +37,8 @@ def page(request: Request, user: dict = Depends(guard), day: str = "", at: str =
 
 
 def _telegram_ctx(user: dict) -> dict:
-    return {"tg_on": oi.wants_telegram(user["username"]),
+    return {"tg_on": oi.wants_telegram(user["username"]), "tg_url": "/oi/telegram",
+            "tg_text": "The reading at the open, then a message each time it changes, say from Neutral to Mildly bullish.",
             "tg_ready": notify.recipient_ready("telegram", notify.load_contacts(user["username"]))}
 
 
@@ -45,7 +48,7 @@ def telegram(request: Request, user: dict = Depends(guard), on: str = Form("")):
     if on and not ctx["tg_ready"]:
         return fail("Set up Telegram on the Notifications page first.")
     oi.set_telegram(user["username"], bool(on))
-    response = render(request, "partials/oi_telegram.html", _telegram_ctx(user))
+    response = render(request, "partials/telegram_switch.html", _telegram_ctx(user))
     return toast(response, "OI updates will come on Telegram" if on else "OI updates on Telegram are off")
 
 

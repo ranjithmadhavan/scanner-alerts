@@ -7,7 +7,8 @@ eat into Kite's ~3 requests/second limit.
 
 import threading
 import time
-from datetime import timedelta
+from bisect import bisect_right
+from datetime import datetime, timedelta
 
 from app import brokers
 from app.kite import TIMEFRAMES, Candle, Instrument
@@ -79,6 +80,19 @@ def _latest_session(client, token: int, timeframe: str) -> list[Candle]:
         return []
     last_day = candles[-1].start.astimezone(IST).date()
     return [c for c in candles if c.start.astimezone(IST).date() == last_day]
+
+
+def pin(chart: dict, at: datetime):
+    """The time of the chart candle that `at` falls in, or None when it is outside the chart."""
+    times = [c["time"] for c in chart["candles"]]
+    if not times:
+        return None
+    at = at.astimezone(IST)
+    t = at.date().isoformat() if chart["daily"] else int(at.timestamp()) + IST_OFFSET
+    # After the last candle (the chart is a little behind) there is no candle to sit on yet.
+    newest = times[-1] if chart["daily"] else times[-1] + (times[-1] - times[-2] if len(times) > 1 else 300)
+    i = bisect_right(times, t) - 1
+    return times[i] if 0 <= i and t <= newest else None
 
 
 def chart(username: str, inst: Instrument, range_key: str, interval: str = "") -> dict:

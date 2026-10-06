@@ -1,0 +1,38 @@
+{% from "partials/icons.html" import icon %}
+{# Chart side panel, opened by any [data-chart] button. chart_source is where candles come from (/alerts/chart unless a page says otherwise). #}
+<div id="chart-drawer" class="fixed inset-0 z-50" data-source="{{ chart_source|default('/alerts/chart') }}"{{ ' data-named-lines' if chart_named_lines }} hidden>
+  <div data-close class="drawer-scrim absolute inset-0 bg-ink/25 backdrop-blur-[2px]"></div>
+  <aside class="drawer-panel absolute inset-y-0 right-0 flex w-full max-w-[780px] flex-col bg-white shadow-2xl sm:rounded-l-[28px]"
+         role="dialog" aria-modal="true" aria-labelledby="chart-title">
+    <header class="flex items-start gap-4 border-b border-line px-6 pb-4 pt-6 sm:px-7">
+      <div class="min-w-0 flex-1">
+        <h2 id="chart-title" class="text-2xl font-bold"></h2>
+        <p id="chart-name" class="truncate text-sm text-ink-soft"></p>
+      </div>
+      <button type="button" data-close class="rounded-full p-2 text-ink-soft hover:bg-canvas hover:text-ink" aria-label="Close chart">{{ icon('close') }}</button>
+    </header>
+    <div class="flex flex-wrap items-center justify-between gap-3 px-6 pt-4 sm:px-7">
+      <div class="inline-flex rounded-full bg-canvas p-1" role="tablist" aria-label="Chart range">
+        {% for r in ['1D', '5D', '1M', '6M', '1Y'] %}
+        <button type="button" role="tab" data-range="{{ r }}" class="rounded-full px-3.5 py-1.5 text-sm font-semibold text-ink-soft transition aria-selected:bg-white aria-selected:text-ink aria-selected:shadow-sm">{{ r }}</button>
+        {% endfor %}
+      </div>
+      {# Candle size. "Auto" follows the range; opened from an alert it starts on that alert's own candle. #}
+      <label class="inline-flex items-center gap-2 text-sm text-ink-soft">Candles
+        <select id="chart-interval" class="field w-auto py-1.5 pr-8 text-sm" aria-label="Candle size">
+          <option value="">Auto</option>
+          {% for tf in ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '1d'] %}<option value="{{ tf }}">{{ {'1h': '1 hour', '1d': 'Daily'}.get(tf, tf|replace('m', ' min')) }}</option>{% endfor %}
+        </select>
+      </label>
+      <p id="chart-level" class="flex min-w-0 items-center gap-2 text-sm text-ink-soft" hidden>
+        <span class="inline-block h-0 w-5 border-t-2 border-dashed border-marigold"></span><span></span>
+      </p>
+    </div>
+    <div class="relative min-h-[340px] flex-1 px-3 pb-5 pt-3 sm:px-4">
+      <div id="chart" class="h-full w-full"></div>
+      <p id="chart-msg" class="absolute inset-0 grid place-items-center px-8 text-center text-[15px] text-ink-soft"></p>
+    </div>
+    {# What happened here lately, and what is next. Filled in by app.js from the chart data. #}
+    <div id="chart-hits" class="max-h-[34%] overflow-y-auto border-t border-line px-6 py-3.5 text-sm sm:px-7" hidden></div>
+  </aside>
+</div>

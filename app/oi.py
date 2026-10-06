@@ -178,7 +178,8 @@ def message(snap: dict, reading: dict, was: str | None) -> tuple[str, str]:
 
 
 def announce(snap: dict) -> dict | None:
-    """Telegram the reading to everyone who asked for it: the day's first one, then only when the label changes."""
+    """Telegram the reading to everyone who asked for it: the day's first one, then only when the label changes.
+    Each message also carries the fractal bias at that moment, for those who can see it."""
     snaps = day_snapshots(snap["date"])
     if not snaps or snap["id"] not in {s["id"] for s in snaps}:
         return None
@@ -187,9 +188,12 @@ def announce(snap: dict) -> dict | None:
     was = day.get("announced")
     if reading["label"] == was:
         return None
-    store.update("oi_days", snap["date"], {"announced": reading["label"]})
+    store.update("oi_days", snap["date"], {"date": snap["date"], "announced": reading["label"]})
     subject, body = message(snap, reading, was)
-    results = {u: notify.send(u, ["telegram"], subject, body).get("telegram") for u in _subscribers()}
+    from app import bias  # bias imports this module
+    at = datetime.fromisoformat(snap["at"])
+    results = {u: notify.send(u, ["telegram"], subject, bias.add_line(body, bias.sentiment_line(bias.sentiment(u, at)))).get("telegram")
+               for u in _subscribers()}
     log.info("OI %s announced %s: %s", snap["id"], reading["label"], results)
     return results
 
@@ -274,7 +278,8 @@ def sentiment(username: str, now: datetime) -> dict | None:
     r = analyse(snaps[-1], snaps[0])
     return {"label": r["label"], "pcr": round(r["pcr"], 2) if r["pcr"] is not None else None,
             "support": r["support"], "resistance": r["resistance"], "spot": r["spot"],
-            "as_of": datetime.strptime(snaps[-1]["id"][11:16], "%H:%M").strftime("%-I:%M %p"), "at": snaps[-1]["at"]}
+            "as_of": datetime.strptime(snaps[-1]["id"][11:16], "%H:%M").strftime("%-I:%M %p"), "at": snaps[-1]["at"],
+            "tone": r["tone"], "spot_move": r["spot_move"], "day": snaps[-1]["date"], "slot": snaps[-1]["id"]}
 
 
 def sentiment_line(reading: dict | None) -> str:

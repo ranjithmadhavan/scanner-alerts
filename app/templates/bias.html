@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Fractal bias{% endblock %}
+{% block width %}max-w-6xl{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-end justify-between gap-4">
+  <div class="min-w-0">
+    <h1 class="text-4xl font-bold">Fractal bias</h1>
+    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Fractal sweeps across the Nifty 50, counted from the open every 15 minutes: which lows and highs were taken, which of those trades are holding, and which were stopped out. Pick any saved moment to see how the market was leaning then.</p>
+  </div>
+  <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="/bias/capture" hx-swap="none"
+          title="Count now with your Kite session (takes about 20 seconds)">{{ icon('refresh', 'h-4 w-4') }} Count now</button>
+</div>
+
+{% if oi_now %}
+<a href="/oi?day={{ oi_now.day }}&at={{ oi_now.slot }}" class="panel mt-6 flex flex-wrap items-center gap-x-5 gap-y-1 px-5 py-3.5 text-[15px] transition hover:border-peacock/40" title="Open this moment on the Nifty OI tab">
+  <span class="text-sm text-ink-soft">Nifty OI at {{ oi_now.as_of }}</span>
+  <strong class="font-display text-lg font-bold {{ 'text-rise' if oi_now.tone == 'up' else 'text-fall' if oi_now.tone == 'down' else 'text-ink' }}">{{ oi_now.label }}</strong>
+  <span class="num text-ink-soft">{% if oi_now.pcr is not none %}PCR <span class="font-semibold text-ink">{{ '%.2f'|format(oi_now.pcr) }}</span>{% endif %}
+    {% if oi_now.support is not none %}· support <span class="font-semibold text-ink">{{ '{:,.0f}'.format(oi_now.support) }}</span> · resistance <span class="font-semibold text-ink">{{ '{:,.0f}'.format(oi_now.resistance) }}</span>{% endif %}
+    · Nifty <span class="font-semibold text-ink">{{ oi_now.spot|price }}</span>
+    <span class="{{ 'text-rise' if oi_now.spot_move > 0 else 'text-fall' if oi_now.spot_move < 0 else '' }}">{{ '+' if oi_now.spot_move > 0 }}{{ '%.2f'|format(oi_now.spot_move) }}</span></span>
+  <span class="ml-auto text-sm font-semibold text-peacock">Nifty OI →</span>
+</a>
+{% endif %}
+
+{% if not broker_ok %}
+<a href="/broker" class="mt-6 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-3.5 text-[15px] transition hover:border-marigold/60">
+  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-4 w-4') }}</span>
+  <span><strong class="font-semibold">Count now needs your Kite session.</strong> <span class="text-ink-soft">Scheduled counts use any connected account that can see this page.</span></span>
+</a>
+{% endif %}
+
+{% if not chosen %}
+  <div class="mt-8 rounded-3xl border border-dashed border-line px-6 py-14 text-center">
+    <p class="font-display text-xl font-bold">No counts yet</p>
+    <p class="mx-auto mt-2 max-w-md text-ink-soft">The first one is taken when the first 15-minute candle closes, at 9:30, as long as a Kite account is connected.</p>
+  </div>
+{% else %}
+  {% set r = reading %}
+  <div class="mt-8 flex flex-wrap items-center gap-3">
+    <form method="get" action="/bias" class="flex items-center gap-2">
+      <label for="bias-day" class="text-sm text-ink-soft">Day</label>
+      <select id="bias-day" name="day" class="field w-auto py-2 pr-9 text-sm" onchange="this.form.submit()">
+        {% for d in days %}<option value="{{ d.date }}" {{ 'selected' if d.date == day }}>{{ d.date }} · {{ d.count }} count{{ 's' if d.count != 1 }}</option>{% endfor %}
+      </select>
+    </form>
+    <span class="text-sm text-ink-soft"><strong class="num font-semibold text-ink">{{ r.stocks }}</strong> of the Nifty 50 with signals</span>
+  </div>
+  <nav class="no-scrollbar mt-3 flex gap-1 overflow-x-auto rounded-full bg-white p-1 ring-1 ring-line" aria-label="Count time">
+    {% for sid, label in times %}
+    <a href="/bias?day={{ day }}&at={{ sid }}" class="num shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if sid == chosen.id else 'text-ink-soft hover:text-ink' }}"
+       {% if sid == chosen.id %}aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  <section class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+    <div class="panel p-6">
+      <p class="text-sm text-ink-soft">{{ chosen.date }} · up to the {{ chosen.id[11:16] }} candle</p>
+      <p class="mt-2 font-display text-3xl font-bold {{ 'text-rise' if r.tone == 'up' else 'text-fall' if r.tone == 'down' else 'text-ink' }}">{{ r.label }}</p>
+      <ul class="mt-3 space-y-1.5 text-[15px] leading-relaxed text-ink-soft">
+        {% for line in r.reasons %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+      <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-line pt-4 text-sm">
+        <div><dt class="text-ink-soft">Buys holding</dt><dd class="num font-semibold text-rise">{{ r.count.buy_held + r.count.buy_target }}</dd></div>
+        <div><dt class="text-ink-soft">Buys stopped out</dt><dd class="num font-semibold text-fall">{{ r.count.buy_stopped }}</dd></div>
+        <div><dt class="text-ink-soft">Sells holding</dt><dd class="num font-semibold text-fall">{{ r.count.sell_held + r.count.sell_target }}</dd></div>
+        <div><dt class="text-ink-soft">Sells stopped out</dt><dd class="num font-semibold text-rise">{{ r.count.sell_stopped }}</dd></div>
+      </dl>
+    </div>
+    <div class="panel p-3">
+      <p class="px-3 pt-2 text-sm text-ink-soft"><span class="font-medium text-ink">The day so far:</span> signals leaning bullish (green) and bearish (red), counted from the open. Click a point to see that moment.</p>
+      <div id="bias-chart" class="h-[300px] w-full"></div>
+      <script type="application/json" id="bias-data">{{ {'points': series, 'chosen': chosen.id, 'day': day}|tojson }}</script>
+    </div>
+  </section>
+
+  <section class="panel mt-4 overflow-hidden">
+    {% if chosen.signals %}
+    <div class="no-scrollbar max-h-[560px] overflow-auto">
+      <table class="w-full min-w-[760px] text-sm">
+        <thead class="sticky top-0 z-10 bg-white text-[13px] text-ink-soft">
+          <tr class="border-b border-line">
+            <th class="py-2.5 pl-6 pr-3 text-left font-medium">Time</th>
+            <th class="py-2.5 pr-3 text-left font-medium">Stock</th>
+            <th class="py-2.5 pr-3 text-left font-medium">Signal</th>
+            <th class="py-2.5 pr-3 text-right font-medium">Fractal</th>
+            <th class="py-2.5 pr-3 text-right font-medium">Price</th>
+            <th class="py-2.5 pr-3 text-right font-medium">Stop</th>
+            <th class="py-2.5 pr-6 text-left font-medium">Since</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line/70 whitespace-nowrap">
+          {% for g in chosen.signals|reverse %}
+          {% set new = has_before and g.key not in seen_before %}
+          {% set turned = has_before and g.key in seen_before and seen_before[g.key] != g.status %}
+          <tr class="num {{ 'bg-marigold-50/60' if new or turned }}">
+            <td class="py-2 pl-6 pr-3">{{ g.at|ist('%-I:%M') }}</td>
+            {% set lines = [{'price': g.level, 'title': 'Fractal ' ~ g.side}, {'price': g.stop, 'title': 'Stop'}] + ([{'price': g.target, 'title': 'Target'}] if g.target is not none else []) %}
+            <td class="py-2 pr-3 font-semibold"><button type="button" class="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 -mx-1.5 transition hover:bg-canvas hover:text-peacock"
+                data-chart="{{ g.symbol }}" data-interval="15m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}">{{ g.symbol }} <span class="text-ink-soft">{{ icon('chart', 'h-3.5 w-3.5') }}</span></button>{% if new %} <span class="ml-1 rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark ring-1 ring-marigold/30">new</span>{% endif %}</td>
+            <td class="py-2 pr-3"><span class="font-semibold {{ 'text-rise' if g.signal == 'buy' else 'text-fall' }}">Potential {{ g.signal }}</span>
+              <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span></td>
+            <td class="py-2 pr-3 text-right">{{ g.level|price }} <span class="text-[12px] text-ink-soft">{{ g.side }}</span></td>
+            <td class="py-2 pr-3 text-right">{{ g.price|price }}</td>
+            <td class="py-2 pr-3 text-right text-ink-soft">{{ g.stop|price }}</td>
+            <td class="py-2 pr-6">
+              {% if g.status == 'stopped' %}<span class="font-semibold text-fall">Stopped out</span> <span class="text-ink-soft">{{ g.until|ist('%-I:%M') }}</span>
+              {% elif g.status == 'target' %}<span class="font-semibold text-rise">At target</span> <span class="text-ink-soft">{{ g.target|price }}</span>
+              {% else %}<span class="font-semibold">Holding</span>{% endif %}
+              {% if turned %}<span class="ml-1 text-[11px] font-semibold text-marigold-dark">changed</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="px-6 py-10 text-center text-ink-soft">No fractal was swept on any Nifty 50 stock by this time.</p>
+    {% endif %}
+  </section>
+  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on 15-minute closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count.
+    {% if chosen.missing or chosen.failed %}Not counted: {{ (chosen.missing + chosen.failed)|join(', ') }}.{% endif %}</p>
+{% endif %}
+
+{% include "partials/chart_drawer.html" %}
+
+{% include "partials/telegram_switch.html" %}
+
+{% if is_admin %}
+<form class="panel mt-4 flex flex-wrap items-end gap-x-6 gap-y-4 p-6" hx-post="/bias/settings">
+  <fieldset>
+    <legend class="label">Count these signals</legend>
+    <div class="flex flex-wrap gap-x-5 gap-y-2">
+      {% for key, name, hint in trigger_choices %}
+      <label class="flex items-center gap-2 text-[15px]" title="{{ hint }}">
+        <input type="checkbox" name="triggers" value="{{ key }}" class="h-4 w-4 rounded accent-peacock" {{ 'checked' if key in settings.triggers }}> {{ name }}
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  <div><label class="label" for="bias-min">Candles between fractal and sweep</label>
+    <select id="bias-min" name="min_candles" class="field w-auto pr-9">{% for n in min_choices %}<option value="{{ n }}" {{ 'selected' if n == settings.min_candles }}>{{ n if n else 'Any' }}</option>{% endfor %}</select></div>
+  <button class="btn-primary htmx-busy">Save</button>
+  <p class="w-full text-[13px] text-ink-soft">Applies from the next count. Only you, the super admin, see this.</p>
+</form>
+{% endif %}
+{% endblock %}

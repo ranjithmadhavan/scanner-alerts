@@ -36,6 +36,8 @@ CACHE_TTL_SECONDS = float(_env("CACHE_TTL_SECONDS", "300"))
 SCANNER_ENABLED = _env("SCANNER_ENABLED", "1") == "1"
 # Nifty OI snapshots ride on the scanner's tick; set OI_CAPTURE=0 to stop taking them.
 OI_CAPTURE = _env("OI_CAPTURE", "1") == "1"
+# Fractal bias snapshots of the Nifty 50, every 15 minutes; BIAS_CAPTURE=0 stops them.
+BIAS_CAPTURE = _env("BIAS_CAPTURE", "1") == "1"
 
 # Keep-alive: ping our own public URL so Render's free tier doesn't put the app to sleep.
 # Render sets RENDER_EXTERNAL_URL automatically.

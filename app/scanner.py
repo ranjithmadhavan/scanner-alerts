@@ -31,7 +31,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import brokers, config, fractals, notify, oi, webhooks
+from app import bias, brokers, config, fractals, notify, oi, webhooks
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError
 from app.market import CLOSE_GRACE, IST, MarketSettings, in_scan_window, is_trading_day, load_settings, now_ist
 from app.store import new_id, store
@@ -739,7 +739,7 @@ def session_restored(username: str) -> None:
 # ---- scheduler + keep-alive ----------------------------------------------------
 
 # One worker thread runs every scan, whatever the number of alerts (max_instances=1 below).
-scheduler = BackgroundScheduler(timezone=IST, executors={"default": ThreadPoolExecutor(max_workers=1)})
+scheduler = BackgroundScheduler(timezone=IST, executors={"default": ThreadPoolExecutor(max_workers=2)})
 _stop = threading.Event()
 
 
@@ -748,9 +748,22 @@ def _add_scan_job(interval: int) -> None:
                       max_instances=1, coalesce=True, replace_existing=True)
 
 
+def _run_bias() -> None:
+    try:
+        bias.capture_if_due(now_ist())
+    except Exception:
+        log.exception("fractal bias snapshot failed")
+
+
+def _add_bias_job() -> None:
+    # Its own job: the Nifty 50's candles take ~20 s to fetch, which alert scans shouldn't wait on.
+    scheduler.add_job(_run_bias, IntervalTrigger(seconds=60), id="bias", max_instances=1, coalesce=True, replace_existing=True)
+
+
 def start() -> None:
     interval = load_settings().scan_interval
     _add_scan_job(interval)
+    _add_bias_job()
     scheduler.start()
     threading.Thread(target=_keep_alive, name="keep-alive", daemon=True).start()
     log.info("scanner started, every %ss during market hours (IST)", interval)
@@ -777,6 +790,8 @@ def _keep_alive() -> None:
             if not scheduler.get_job("scan"):
                 log.warning("scan job was missing, adding it back")
                 _add_scan_job(load_settings().scan_interval)
+            if not scheduler.get_job("bias"):
+                _add_bias_job()
         except Exception:
             log.exception("scheduler watchdog failed")
         if config.KEEP_ALIVE_URL:

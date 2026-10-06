@@ -373,6 +373,32 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
   }).catch(() => {});
 })();
 
+// ---- Fractal bias: bullish vs bearish signals through the day ----------------------
+(() => {
+  const source = document.getElementById("bias-data");
+  const box = document.getElementById("bias-chart");
+  if (!source || !box) return;
+  const data = JSON.parse(source.textContent);
+  if (!data.points.length) return;
+  loadChartLib().then(() => {
+    const chart = window.LightweightCharts.createChart(box, chartLook(window.LightweightCharts));
+    chart.applyOptions({ localization: { priceFormatter: (v) => v.toFixed(0) }, timeScale: { timeVisible: true, secondsVisible: false } });
+    const line = (color, title) => chart.addLineSeries({ color, lineWidth: 2, title, priceFormat: { type: "custom", minMove: 1, formatter: (v) => v.toFixed(0) } });
+    const bull = line("#2E8B57", "Bullish");
+    const bear = line("#C2475A", "Bearish");
+    bull.setData(data.points.map((p) => ({ time: p.time, value: p.bull })));
+    bear.setData(data.points.map((p) => ({ time: p.time, value: p.bear })));
+    const chosen = data.points.find((p) => p.slot === data.chosen);
+    if (chosen) bull.setMarkers([{ time: chosen.time, position: "aboveBar", shape: "circle", color: "#E9A23B", text: chosen.label }]);
+    chart.timeScale().fitContent();
+    chart.subscribeClick((e) => {
+      if (e.time === undefined) return;
+      const p = data.points.reduce((best, q) => Math.abs(q.time - e.time) < Math.abs(best.time - e.time) ? q : best);
+      location.href = `/bias?day=${encodeURIComponent(data.day)}&at=${encodeURIComponent(p.slot)}`;
+    });
+  }).catch(() => {});
+})();
+
 // ---- Chart side panel ---------------------------------------------------------
 const StockChart = (() => {
   const drawer = document.getElementById("chart-drawer");
@@ -427,7 +453,9 @@ const StockChart = (() => {
     levelLines = [];
     levelNote.hidden = !levels.length;
     if (!levels.length) { chart?.priceScale("right").applyOptions({ autoScale: true }); return; }
-    levelNote.lastElementChild.textContent = levels.length > 3 ? `${levels.length} levels on watch`
+    // data-named-lines: the lines are a signal's own (fractal, stop, target), not levels the user set.
+    levelNote.lastElementChild.textContent = "namedLines" in drawer.dataset ? levels.map((l) => `${l.title} ${rupees(l.price)}`).join(" · ")
+      : levels.length > 3 ? `${levels.length} levels on watch`
       : (levels.length > 1 ? "Your levels " : "Your level ") + levels.map((l) => rupees(l.price)).join(", ");
     if (series) {
       levelLines = levels.map((l) => series.createPriceLine({
@@ -449,7 +477,7 @@ const StockChart = (() => {
         `<span class="rounded-full px-1.5 text-xs font-semibold ${h.signal === "sell" ? "bg-fall-50 text-fall" : "bg-rise-50 text-rise"}">Potential ${h.signal}</span>` +
         `<span class="min-w-0">${esc(h.summary)} <span class="num text-ink-soft">at ${rupees(h.price)}</span></span></li>`).join("") + "</ul>");
     } else if (state.levels.length) {
-      parts.push(`<p class="text-ink-soft">Nothing has fired here in this range.</p>`);
+      parts.push(`<p class="text-ink-soft">${"namedLines" in drawer.dataset ? "No signal on this stock in this range." : "Nothing has fired here in this range."}</p>`);
     }
     if (state.levels.length && state.last !== null) {
       const { above, below } = nearest(state.levels, state.last);
@@ -467,7 +495,8 @@ const StockChart = (() => {
     msg.textContent = "Loading " + state.symbol + "…";
     try {
       await loadLib();
-      const r = await fetch(`/alerts/chart?symbol=${encodeURIComponent(state.symbol)}&range=${state.range}&interval=${state.interval}`);
+      const source = drawer.dataset.source || "/alerts/chart";
+      const r = await fetch(`${source}${source.includes("?") ? "&" : "?"}symbol=${encodeURIComponent(state.symbol)}&range=${state.range}&interval=${state.interval}`);
       const data = await r.json();
       if (mine !== request) return; // a newer request superseded this one
       if (!r.ok) throw new Error(data.error || "Couldn't load the chart.");

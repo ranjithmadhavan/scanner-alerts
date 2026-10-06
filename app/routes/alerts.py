@@ -1,5 +1,4 @@
 import json
-from bisect import bisect_right
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -432,25 +431,18 @@ def _event_signal(e: dict) -> str:
 def _chart_hits(username: str, inst, chart: dict, limit: int = 8) -> list[dict]:
     """The most recent alert hits on this instrument that fall inside the chart, each pinned to the
     candle it happened in, oldest first (the order the chart wants them)."""
-    candles = chart["candles"]
-    if not candles:
+    if not chart["candles"]:
         return []
-    times = [c["time"] for c in candles]
-    # A hit after the last candle (the chart is a little behind) has no candle to sit on yet.
-    newest = times[-1] if chart["daily"] else times[-1] + (times[-1] - times[-2] if len(times) > 1 else 300)
     mine = [e for e in store.list("events", user=username)
             if e.get("key") == inst.key or (not e.get("key") and e.get("symbol") == inst.symbol)]
     out = []
     for e in sorted(mine, key=lambda e: e["at"], reverse=True):
         at = datetime.fromisoformat(e["at"]).astimezone(prices.IST)
-        t = at.date().isoformat() if chart["daily"] else int(at.timestamp()) + prices.IST_OFFSET
-        if t > newest:
-            continue
-        i = bisect_right(times, t) - 1
-        if i < 0:
-            break  # older than the chart, and so is everything after it
+        t = prices.pin(chart, at)
+        if t is None:
+            continue  # after the last candle, or older than the chart
         level = e.get("level")
-        out.append({"time": times[i], "price": e["price"], "signal": _event_signal(e),
+        out.append({"time": t, "price": e["price"], "signal": _event_signal(e),
                     "label": f"{level if level is not None else e['price']:,.2f}".rstrip("0").rstrip("."),
                     "summary": e.get("summary", ""), "at": at.strftime("%a %-d %b, %-I:%M %p")})
         if len(out) == limit:

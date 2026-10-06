@@ -12,6 +12,17 @@
           title="Take a snapshot now with your Kite session">{{ icon('refresh', 'h-4 w-4') }} Capture now</button>
 </div>
 
+{% if bias_now %}
+{% set c = bias_now.count %}
+<a href="/bias?day={{ bias_now.day }}&at={{ bias_now.slot }}" class="panel mt-6 flex flex-wrap items-center gap-x-5 gap-y-1 px-5 py-3.5 text-[15px] transition hover:border-peacock/40" title="Open this moment on the Fractal bias tab">
+  <span class="text-sm text-ink-soft">Fractal bias at {{ bias_now.as_of }}</span>
+  <strong class="font-display text-lg font-bold {{ 'text-rise' if bias_now.tone == 'up' else 'text-fall' if bias_now.tone == 'down' else 'text-ink' }}">{{ bias_now.label }}</strong>
+  <span class="num text-ink-soft"><span class="font-semibold text-rise">{{ bias_now.bull }}</span> leaning bullish · <span class="font-semibold text-fall">{{ bias_now.bear }}</span> bearish
+    · buys {{ c.buy_held + c.buy_target }} holding, {{ c.buy_stopped }} stopped · sells {{ c.sell_held + c.sell_target }} holding, {{ c.sell_stopped }} stopped</span>
+  <span class="ml-auto text-sm font-semibold text-peacock">Fractal bias →</span>
+</a>
+{% endif %}
+
 {% if not broker_ok %}
 <a href="/broker" class="mt-6 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-3.5 text-[15px] transition hover:border-marigold/60">
   <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-4 w-4') }}</span>
@@ -97,7 +108,7 @@
   <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: option sellers defend the strikes they write, so put OI growing faster than call OI means support is being built under price (bullish), and call OI growing faster means a ceiling (bearish). The reading is the balance of the two changes since the open, across the strikes shown. Changes are against the first snapshot of the day; strikes that came into view later have no change. OI is in lakhs of units.</p>
 {% endif %}
 
-{% include "partials/oi_telegram.html" %}
+{% include "partials/telegram_switch.html" %}
 
 {% if is_admin %}
 <form class="panel mt-4 flex flex-wrap items-end gap-4 p-6" hx-post="/oi/settings">
