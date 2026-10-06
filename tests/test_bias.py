@@ -222,7 +222,7 @@ def test_a_signals_chart(kite, monkeypatch):
     with TestClient(app) as c:
         c.post("/login", data={"username": "meera", "password": "meera-pass-1"})
         page = c.get("/bias?day=2026-10-05&at=2026-10-05T10:15").text
-        assert 'data-source="/bias/chart?snap=2026-10-05T10:15"' in page and 'data-chart="ADANIENT" data-interval="15m"' in page
+        assert 'data-source="/bias/chart?snap=2026-10-05T10:15"' in page and 'data-chart="ADANIENT" data-interval="5m"' in page
         data = c.get("/bias/chart?snap=2026-10-05T10:15&symbol=ADANIENT&range=5D&interval=15m").json()
         assert asked[-1] == ("ADANIENT", "5D", "15m") and len(data["hits"]) == 2
         h = data["hits"][0]

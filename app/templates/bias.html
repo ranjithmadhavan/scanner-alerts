@@ -106,7 +106,7 @@
             <td class="py-2 pl-6 pr-3">{{ g.at|ist('%-I:%M') }}</td>
             {% set lines = [{'price': g.level, 'title': 'Fractal ' ~ g.side}, {'price': g.stop, 'title': 'Stop'}] + ([{'price': g.target, 'title': 'Target'}] if g.target is not none else []) %}
             <td class="py-2 pr-3 font-semibold"><button type="button" class="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 -mx-1.5 transition hover:bg-canvas hover:text-peacock"
-                data-chart="{{ g.symbol }}" data-interval="15m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}">{{ g.symbol }} <span class="text-ink-soft">{{ icon('chart', 'h-3.5 w-3.5') }}</span></button>{% if new %} <span class="ml-1 rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark ring-1 ring-marigold/30">new</span>{% endif %}</td>
+                data-chart="{{ g.symbol }}" data-interval="5m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}">{{ g.symbol }} <span class="text-ink-soft">{{ icon('chart', 'h-3.5 w-3.5') }}</span></button>{% if new %} <span class="ml-1 rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark ring-1 ring-marigold/30">new</span>{% endif %}</td>
             <td class="py-2 pr-3"><span class="font-semibold {{ 'text-rise' if g.signal == 'buy' else 'text-fall' }}">Potential {{ g.signal }}</span>
               <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span></td>
             <td class="py-2 pr-3 text-right">{{ g.level|price }} <span class="text-[12px] text-ink-soft">{{ g.side }}</span></td>
@@ -135,7 +135,7 @@
         <span class="min-w-0 flex-1 truncate font-semibold">{{ g.symbol }}</span>
         {% if new %}<span class="rounded-full bg-white px-1.5 text-[11px] font-semibold text-marigold-dark ring-1 ring-marigold/30">new</span>{% endif %}
         <span class="num text-sm text-ink-soft">{{ g.at|ist('%-I:%M') }}</span>
-        <button type="button" data-chart="{{ g.symbol }}" data-interval="15m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}" aria-label="Chart {{ g.symbol }}"
+        <button type="button" data-chart="{{ g.symbol }}" data-interval="5m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}" aria-label="Chart {{ g.symbol }}"
                 class="rounded-full p-1.5 text-ink-soft transition hover:bg-white hover:text-peacock">{{ icon('chart', 'h-4 w-4') }}</button>
       </header>
       <div class="px-4 pb-4 pt-3">
