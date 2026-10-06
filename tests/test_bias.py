@@ -228,3 +228,6 @@ def test_a_signals_chart(kite, monkeypatch):
         assert h["time"] == data["candles"][1]["time"]                              # the 9:30 candle that held the sweep
         assert h["signal"] == "buy" and "Sweep holds of the 30 min fractal low" in h["summary"] and "stopped out 10:15 AM" in h["summary"]
         assert c.get("/bias/chart?snap=x&symbol=NOPE").status_code == 404
+        bias.capture(kite, at(MON, 10, 0) + timedelta(seconds=30), "2026-10-05T10:00")         # still holding then
+        held = c.get("/bias/chart?snap=2026-10-05T10:00&symbol=ADANIENT&range=5D&interval=15m").json()["hits"]
+        assert [h["summary"].rsplit(", ", 1)[1] for h in held] == ["holding", "holding"]

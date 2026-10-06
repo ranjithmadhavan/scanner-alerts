@@ -4,7 +4,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from datetime import datetime, timedelta
 
 from app import bias, brokers, fractals, notify, oi, prices
-from app.kite import instruments
 from app.kite import KiteAuthError, KiteError
 from app.market import is_market_open, load_settings as market_settings, now_ist
 from app.security import require
@@ -56,7 +55,10 @@ def page(request: Request, user: dict = Depends(guard), day: str = "", at: str =
 @router.get("/chart")
 def chart_data(symbol: str, snap: str = "", range: str = "5D", interval: str = "", user: dict = Depends(guard)):
     """A Nifty 50 stock's candles, with the day's fractal signals on it as of the count `snap`."""
-    inst = instruments().get(symbol)
+    try:
+        inst = bias.instruments().get(symbol)
+    except KiteError as e:
+        return JSONResponse({"error": f"Kite: {e}"}, status_code=502)
     if not inst:
         return JSONResponse({"error": f"{symbol} isn't a symbol we know."}, status_code=404)
     try:
@@ -70,7 +72,8 @@ def chart_data(symbol: str, snap: str = "", range: str = "5D", interval: str = "
         t = prices.pin(data, datetime.fromisoformat(g["at"]) - timedelta(minutes=1)) if g["symbol"] == symbol else None
         if t is None:
             continue
-        since = {"stopped": f"stopped out {_hm(g['until'])}", "target": f"at target {g['target']:,.2f}"}.get(g["status"], "holding")
+        since = (f"stopped out {_hm(g['until'])}" if g["status"] == "stopped" else
+                 f"at target {g['target']:,.2f}" if g["status"] == "target" else "holding")
         hits.append({"time": t, "price": g["price"], "signal": g["signal"], "label": f"{g['level']:,.2f}",
                      "summary": f"{bias.TRIGGER_NAMES[g['trigger']]} of the 30 min fractal {g['side']} {g['level']:,.2f}, {since}",
                      "at": datetime.fromisoformat(g["at"]).strftime("%a %-d %b, %-I:%M %p")})

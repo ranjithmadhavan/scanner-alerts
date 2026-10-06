@@ -1,7 +1,7 @@
 {% from "partials/icons.html" import icon %}
 {# Chart side panel, opened by any [data-chart] button. chart_source is where candles come from (/alerts/chart unless a page says otherwise). #}
 <div id="chart-drawer" class="fixed inset-0 z-50" data-source="{{ chart_source|default('/alerts/chart') }}"{{ ' data-named-lines' if chart_named_lines }} hidden>
-  <div data-close class="drawer-scrim absolute inset-0 bg-ink/25 backdrop-blur-[2px]"></div>
+  <div data-close class="drawer-scrim absolute inset-0 bg-ink/30"></div>
   <aside class="drawer-panel absolute inset-y-0 right-0 flex w-full max-w-[780px] flex-col bg-white shadow-2xl sm:rounded-l-[28px]"
          role="dialog" aria-modal="true" aria-labelledby="chart-title">
     <header class="flex items-start gap-4 border-b border-line px-6 pb-4 pt-6 sm:px-7">

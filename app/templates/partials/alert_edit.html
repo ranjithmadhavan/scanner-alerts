@@ -1,7 +1,7 @@
 {% from "partials/icons.html" import icon %}
 {# Edit an alert: change or remove levels, add more, re-arm ones that fired. Opened over the page from the alert list. #}
 <div class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain p-4" role="dialog" aria-modal="true" aria-labelledby="edit-title">
-  <div class="scrim-in fixed inset-0 bg-ink/25 backdrop-blur-[2px]" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
+  <div class="scrim-in fixed inset-0 bg-ink/30" onclick="document.getElementById('alert-editor').innerHTML=''"></div>
   <form class="level-form panel dialog-in relative my-auto w-full max-w-xl p-6 shadow-2xl sm:p-7"
         hx-post="/alerts/{{ a.id }}/edit" hx-target="#alert-list" hx-swap="outerHTML"
         hx-on::after-request="if (event.detail.elt === this && event.detail.successful && event.detail.xhr.getResponseHeader('HX-Reswap') !== 'none') document.getElementById('alert-editor').innerHTML='';">

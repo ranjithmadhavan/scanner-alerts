@@ -410,7 +410,7 @@ const StockChart = (() => {
   let chart, series, levelLines = [], lastFocus, request = 0;
   // levels: [{price, title}]. Only the ones nearest price stretch the axis, so twenty fractal levels
   // don't flatten the candles; the rest are drawn when they come into view.
-  const state = { symbol: "", range: "5D", interval: "", levels: [], framed: [], last: null };
+  const state = { symbol: "", range: "5D", interval: "", levels: [], framed: [], last: null, landed: Promise.resolve() };
   const intervalPick = document.getElementById("chart-interval");
   const rupees = chartRupees;
   const loadLib = loadChartLib;
@@ -497,7 +497,8 @@ const StockChart = (() => {
       await loadLib();
       const source = drawer.dataset.source || "/alerts/chart";
       const r = await fetch(`${source}${source.includes("?") ? "&" : "?"}symbol=${encodeURIComponent(state.symbol)}&range=${state.range}&interval=${state.interval}`);
-      const data = await r.json();
+      const data = await r.json().catch(() => ({ error: `The server couldn't draw this chart (HTTP ${r.status}). Try again in a moment.` }));
+      await state.landed;
       if (mine !== request) return; // a newer request superseded this one
       if (!r.ok) throw new Error(data.error || "Couldn't load the chart.");
       if (!chart) build();
@@ -530,18 +531,23 @@ const StockChart = (() => {
     document.getElementById("chart-name").textContent = "";
     hitsBox.hidden = true;
     if (series) { series.setData([]); series.setMarkers([]); }
+    clearTimeout(hideTimer);
     drawer.hidden = false;
-    requestAnimationFrame(() => drawer.classList.add("open"));
-    document.body.style.overflow = "hidden";
-    drawer.querySelector("[data-close].rounded-full")?.focus();
+    void drawer.offsetWidth; // start from the closed position, so the panel slides rather than appears
+    drawer.classList.add("open");
+    document.documentElement.classList.add("drawer-lock");
+    // Drawing the chart while the panel is still moving makes the slide stutter: let it land first.
+    state.landed = new Promise((done) => setTimeout(done, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 380));
+    drawer.querySelector("[data-close].rounded-full")?.focus({ preventScroll: true });
     load();
   }
 
+  let hideTimer;
   function close() {
     drawer.classList.remove("open");
-    document.body.style.overflow = "";
-    setTimeout(() => { drawer.hidden = true; }, 300);
-    lastFocus?.focus();
+    document.documentElement.classList.remove("drawer-lock");
+    hideTimer = setTimeout(() => { drawer.hidden = true; }, 260);
+    lastFocus?.focus({ preventScroll: true });
   }
 
   drawer.addEventListener("click", (e) => {
