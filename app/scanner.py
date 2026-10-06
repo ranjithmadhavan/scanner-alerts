@@ -221,6 +221,7 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
     if len(levels) > 1:
         waiting = [describe(v).removeprefix(alert["symbol"] + " ") for _, v in open_views(alert)]
         body += f"\nStill watching: {', '.join(waiting)}" if waiting else "\nThat was the last level on this alert."
+    body += _with_sentiment(alert, now)
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
     if alert.get("webhooks"):
         results["webhook"] = webhooks.send(alert["webhooks"], webhook_body(alert, hit, signal, what, price, candle, now))
@@ -231,6 +232,19 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
     })
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
     return alert
+
+
+def _sentiment(alert: dict, now: datetime) -> dict | None:
+    try:
+        return oi.sentiment(alert["user"], now)
+    except Exception:  # an alert must go out even if the OI reading can't be had
+        log.exception("OI sentiment for %s failed", alert.get("id"))
+        return None
+
+
+def _with_sentiment(alert: dict, now: datetime) -> str:
+    line = oi.sentiment_line(_sentiment(alert, now))
+    return f"\n{line}" if line else ""
 
 
 def webhook_body(alert: dict, hit: dict, message: str, text: str, price: float, candle: Candle | None,
@@ -253,6 +267,7 @@ def webhook_body(alert: dict, hit: dict, message: str, text: str, price: float, 
         "candle": candle.start.isoformat() if candle else None,
         "time": now.isoformat(),
         "still_watching": [{"condition": v["condition"], "level": v["level"]} for _, v in open_views(alert)],
+        "nifty_oi": _sentiment(alert, now),
         "payload": json.loads(alert["webhook_payload"]) if alert.get("webhook_payload") else None,
     }
 
@@ -373,6 +388,7 @@ def fractal_webhook_body(alert: dict, hit: fractals.Hit, message: str, text: str
         "trigger_timeframe": trigger_timeframe(alert),
         "min_candles": min_between(alert),
         "fractal_time": f.at.isoformat(),
+        "nifty_oi": _sentiment(alert, now),
         "target": hit.target.level if hit.target else None,
         "candle": hit.candle.start.isoformat(),
         "time": now.isoformat(),
@@ -395,7 +411,7 @@ def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) ->
         f"Price: {price:g} (candle {hit.candle.start.astimezone(IST):%-I:%M %p})\n"
         f"{formed}.\n"
         f"Time: {now:%d %b, %-I:%M %p} IST"
-    )
+    ) + _with_sentiment(alert, now)
     changes = {"fired": (alert.get("fired", []) + [hit.key])[-300:],
                "last_hit": {"at": now.isoformat(), "text": summary, "price": price, "signal": hit.signal}}
     store.update("alerts", alert["id"], changes)

@@ -21,9 +21,9 @@ stands in.
 import logging
 from datetime import date, datetime, timedelta
 
-from app import brokers, config
+from app import brokers, config, notify
 from app.kite import Instrument, KiteError, instruments
-from app.market import IST, MarketSettings, in_scan_window
+from app.market import IST, MarketSettings, in_scan_window, load_settings as market_settings
 from app.store import store
 
 log = logging.getLogger("oi")
@@ -97,7 +97,7 @@ def capture(client, now: datetime, slot_id: str | None = None) -> dict:
     store.put("oi_snapshots", snap["id"], snap)
     day = store.get("oi_days", snap["date"]) or {}
     slots = sorted(set(day.get("slots", [])) | {snap["id"]})
-    store.put("oi_days", snap["date"], {"date": snap["date"], "expiry": expiry, "count": len(slots), "slots": slots,
+    store.update("oi_days", snap["date"], {"date": snap["date"], "expiry": expiry, "count": len(slots), "slots": slots,
                                         "first_at": day.get("first_at") or snap["at"], "last_at": snap["at"]})
     return snap
 
@@ -138,13 +138,69 @@ def capture_if_due(now: datetime, s: MarketSettings) -> dict | None:
         return None
     _done.add(slot_id)
     log.info("OI captured %s (%d strikes)", slot_id, len(snap["rows"]))
+    announce(snap)
     return snap
+
+
+# ---- Telegram: the reading at the open, then whenever it changes ----------------------
+
+def wants_telegram(username: str) -> bool:
+    return bool((store.get("oi_alerts", username) or {}).get("telegram"))
+
+
+def set_telegram(username: str, on: bool) -> None:
+    store.put("oi_alerts", username, {"telegram": on})
+
+
+def _subscribers() -> list[str]:
+    return [u["username"] for u in store.list("users")
+            if u.get("active", True) and (u.get("role") == "superadmin" or "oi" in u.get("modules", []))
+            and wants_telegram(u["username"])]
+
+
+def message(snap: dict, reading: dict, was: str | None) -> tuple[str, str]:
+    at = datetime.strptime(snap["id"][11:16], "%H:%M").strftime("%-I:%M %p")  # the slot, e.g. 9:15 AM
+    r = reading
+    subject = (f"📊 Nifty OI turned {r['label']} (was {was}) · {at}" if was else f"📊 Nifty OI at {at}: {r['label']}")
+
+    def signed(n: float) -> str:
+        return ("+" if n > 0 else "") + lakhs(n)
+    lines = [
+        f"Nifty {r['spot']:,.2f} ({'+' if r['spot_move'] > 0 else ''}{r['spot_move']:,.2f} since the open)",
+        f"Call OI {signed(r['ce_chg'])} · Put OI {signed(r['pe_chg'])} since the open",
+        "PCR " + (f"{r['pcr']:.2f}" if r["pcr"] is not None else "–")
+        + (f" · Support {r['support']:,.0f} · Resistance {r['resistance']:,.0f}" if r["support"] is not None else ""),
+        r["reasons"][0],
+        f"Expiry {snap['expiry']}",
+        f"{config.BASE_URL}/oi?day={snap['date']}&at={snap['id']}",
+    ]
+    return subject, "\n".join(lines)
+
+
+def announce(snap: dict) -> dict | None:
+    """Telegram the reading to everyone who asked for it: the day's first one, then only when the label changes."""
+    snaps = day_snapshots(snap["date"])
+    if not snaps or snap["id"] not in {s["id"] for s in snaps}:
+        return None
+    reading = analyse(snap, snaps[0])
+    day = store.get("oi_days", snap["date"]) or {}
+    was = day.get("announced")
+    if reading["label"] == was:
+        return None
+    store.update("oi_days", snap["date"], {"announced": reading["label"]})
+    subject, body = message(snap, reading, was)
+    results = {u: notify.send(u, ["telegram"], subject, body).get("telegram") for u in _subscribers()}
+    log.info("OI %s announced %s: %s", snap["id"], reading["label"], results)
+    return results
 
 
 # ---- reading it --------------------------------------------------------------------
 
 def day_snapshots(day: str) -> list[dict]:
-    return sorted(store.list("oi_snapshots", date=day), key=lambda s: s["at"])
+    """The day's snapshots from the open on. One taken before the open only repeats yesterday's close,
+    so it would make a poor starting point for the day's changes."""
+    opens = f"{day}T{market_settings().open:%H:%M}"
+    return sorted((s for s in store.list("oi_snapshots", date=day) if s["id"] >= opens), key=lambda s: s["at"])
 
 
 def analyse(snap: dict, first: dict) -> dict:
@@ -203,6 +259,34 @@ def series(snaps: list[dict]) -> list[dict]:
         out.append({"time": int(at.timestamp()) + 19800, "slot": snap["id"], "ce": round(a["ce_chg"] / LAKH, 2),
                     "pe": round(a["pe_chg"] / LAKH, 2), "spot": snap["spot"], "label": a["label"]})
     return out
+
+
+def sentiment(username: str, now: datetime) -> dict | None:
+    """The latest reading today, for other alerts to carry. None before the first snapshot, or if the
+    user can't see the Nifty OI tab."""
+    user = store.get("users", username) or {}
+    if not (user.get("role") == "superadmin" or "oi" in user.get("modules", [])):
+        return None
+    now = now.astimezone(IST)
+    snaps = [s for s in day_snapshots(now.date().isoformat()) if datetime.fromisoformat(s["at"]) <= now]
+    if not snaps:
+        return None
+    r = analyse(snaps[-1], snaps[0])
+    return {"label": r["label"], "pcr": round(r["pcr"], 2) if r["pcr"] is not None else None,
+            "support": r["support"], "resistance": r["resistance"], "spot": r["spot"],
+            "as_of": datetime.strptime(snaps[-1]["id"][11:16], "%H:%M").strftime("%-I:%M %p"), "at": snaps[-1]["at"]}
+
+
+def sentiment_line(reading: dict | None) -> str:
+    """One line for an alert message: 'Nifty OI: Mildly bullish · PCR 1.12 · support 24,400, resistance 24,700 (10:45 AM)'."""
+    if not reading:
+        return ""
+    parts = [f"Nifty OI: {reading['label']}"]
+    if reading["pcr"] is not None:
+        parts.append(f"PCR {reading['pcr']:.2f}")
+    if reading["support"] is not None:
+        parts.append(f"support {reading['support']:,.0f}, resistance {reading['resistance']:,.0f}")
+    return " · ".join(parts) + f" ({reading['as_of']})"
 
 
 def lakhs(n: float) -> str:

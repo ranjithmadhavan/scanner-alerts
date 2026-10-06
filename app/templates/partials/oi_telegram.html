@@ -1,0 +1,20 @@
+{% from "partials/icons.html" import icon %}
+<section id="oi-telegram" class="panel mt-8 flex flex-wrap items-center justify-between gap-4 p-6">
+  <div class="flex min-w-0 items-start gap-4">
+    <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock-50 text-peacock">{{ icon('send', 'h-4 w-4') }}</span>
+    <div class="min-w-0">
+      <p class="font-semibold">Sentiment on Telegram</p>
+      <p class="mt-0.5 max-w-xl text-[15px] text-ink-soft">The reading at the open, then a message each time it changes, say from Neutral to Mildly bullish.</p>
+    </div>
+  </div>
+  {% if tg_ready or tg_on %}
+  <form hx-post="/oi/telegram" hx-trigger="change" hx-target="#oi-telegram" hx-swap="outerHTML">
+    <label class="flex cursor-pointer items-center gap-2.5 text-[15px] font-semibold">
+      <input type="checkbox" name="on" value="1" class="h-5 w-5 rounded accent-peacock" {{ 'checked' if tg_on }}>
+      Send to Telegram
+    </label>
+  </form>
+  {% else %}
+  <a href="/notifications" class="btn-outline shrink-0">Set up Telegram first</a>
+  {% endif %}
+</section>

@@ -87,7 +87,11 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 - a chart of the day: call and put OI change since the open, with Nifty; click a point to open that moment;
 - the strike table for that moment, with the change since the open.
 
-**Capture now** takes a snapshot outside the schedule with your own Kite session. `OI_CAPTURE=0` stops scheduled snapshots. The logic is in `app/oi.py`.
+**Capture now** takes a snapshot outside the schedule with your own Kite session, while the market is open (before the open OI is still yesterday's, so such a snapshot would spoil the day's starting point). With a Kite web session (enctoken), quotes come off Kite's live websocket, since `/oms/quote` refuses web sessions. `OI_CAPTURE=0` stops scheduled snapshots. The logic is in `app/oi.py`.
+
+**Sentiment on Telegram.** Tick *Send to Telegram* on the Nifty OI tab (Telegram must be set up on the Notifications page) to get the reading at the open, then a message each time it changes, e.g. Neutral to Mildly bullish. Each message has Nifty and its move, call and put OI change, PCR, support and resistance, and a link to that moment on the tab.
+
+Every other alert (price levels and fractals) also ends with the latest reading, e.g. `Nifty OI: Mildly bullish · PCR 1.12 · support 24,400, resistance 24,700 (10:45 AM)`, and webhooks get it as `nifty_oi`. This is only for people who can see the Nifty OI tab, and only once the day's first snapshot is in.
 
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
 

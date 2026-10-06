@@ -118,9 +118,13 @@ def test_the_page(kite, monkeypatch):
     monkeypatch.setattr(config, "SUPERADMIN_USERNAME", "boss")
     monkeypatch.setattr(config, "SUPERADMIN_PASSWORD", "boss-pass-123")
     from app.main import app
+    import app.routes.oi as oi_routes
+    monkeypatch.setattr(oi_routes, "now_ist", lambda: MON.replace(hour=8, minute=40))
     with TestClient(app) as c:
         c.post("/login", data={"username": "omkar", "password": "omkar-pass-1"})
         assert "No snapshots yet" in c.get("/oi").text
+        assert "market is closed" in c.post("/oi/capture").headers["HX-Trigger"]      # before the open OI is yesterday's
+        monkeypatch.setattr(oi_routes, "now_ist", lambda: MON.replace(hour=10, minute=2))
         r = c.post("/oi/capture")
         assert r.headers["HX-Redirect"].startswith("/oi?day=") and "Snapshot taken" in r.headers["HX-Trigger"]
         page = c.get("/oi").text
@@ -205,3 +209,69 @@ def test_web_session_quotes_come_off_the_live_feed(monkeypatch):
     assert got == {oi.SPOT_KEY: {"last_price": 24512.0}, "NFO:NIFTY26O0624500CE": {"last_price": 100.5, "oi": 4_200_000}}
     assert "enctoken=ab%2Fc%2Bd%3D%3D" in urls[0] and "user_id=ZG1234" in urls[0]
     assert sent[1] == {"a": "mode", "v": ["full", [256265, opt.token]]}
+
+
+def test_sentiment_goes_to_telegram_at_the_open_and_when_it_changes(kite, monkeypatch):
+    store.update("settings", "oi", {"strikes": 2})
+    sent = []
+    monkeypatch.setattr(oi.notify, "send", lambda user, channels, subject, body: sent.append((user, channels, subject, body)) or {"telegram": "sent"})
+    oi.set_telegram("omkar", True)
+    try:
+        assert oi.capture_if_due(MON.replace(hour=9, minute=16), S)
+        assert [(u, ch, subj) for u, ch, subj, _ in sent] == [("omkar", ["telegram"], "📊 Nifty OI at 9:15 AM: Neutral")]
+        body = sent[0][3]
+        assert "Nifty 24,512.00" in body and "PCR 1.00" in body and "/oi?day=2026-10-05&at=2026-10-05T09:15" in body
+        oi.capture_if_due(MON.replace(hour=9, minute=31), S)
+        assert len(sent) == 1                                                 # still Neutral: nothing new to say
+        for k in (24400, 24450, 24500):
+            kite.oi[f"NIFTY26O06{k}PE"] = 400_000                             # puts written hard
+        oi.capture_if_due(MON.replace(hour=9, minute=46), S)
+        assert sent[-1][2] == "📊 Nifty OI turned Bullish (was Neutral) · 9:45 AM"
+        oi.set_telegram("omkar", False)
+        kite.oi.clear()
+        oi.capture_if_due(MON.replace(hour=10, minute=1), S)
+        assert len(sent) == 2                                                 # opted out
+    finally:
+        store.delete("oi_alerts", "omkar")
+
+
+def test_a_snapshot_before_the_open_is_not_the_days_baseline(kite):
+    oi.capture(kite, MON.replace(hour=8, minute=40))
+    oi.capture(kite, MON.replace(hour=9, minute=16), "2026-10-05T09:15")
+    assert [s["id"] for s in oi.day_snapshots("2026-10-05")] == ["2026-10-05T09:15"]
+
+
+def test_telegram_switch_needs_telegram_set_up(kite, monkeypatch):
+    monkeypatch.setattr(config, "SUPERADMIN_USERNAME", "boss")
+    monkeypatch.setattr(config, "SUPERADMIN_PASSWORD", "boss-pass-123")
+    from app.main import app
+    with TestClient(app) as c:
+        c.post("/login", data={"username": "omkar", "password": "omkar-pass-1"})
+        assert "Set up Telegram first" in c.get("/oi").text
+        assert "Notifications page" in c.post("/oi/telegram", data={"on": "1"}).headers["HX-Trigger"]
+        store.put("contacts", "omkar", {"telegram_bot_token": "x", "telegram_chat_id": "42"})
+        try:
+            r = c.post("/oi/telegram", data={"on": "1"})
+            assert "checked" in r.text and oi.wants_telegram("omkar")
+            assert "checked" not in c.post("/oi/telegram", data={}).text and not oi.wants_telegram("omkar")
+        finally:
+            store.delete("contacts", "omkar")
+            store.delete("oi_alerts", "omkar")
+
+
+def test_other_alerts_carry_the_latest_reading(kite):
+    from app import scanner
+    store.update("settings", "oi", {"strikes": 2})
+    oi.capture(kite, MON.replace(hour=9, minute=16), "2026-10-05T09:15")
+    for k in (24400, 24450, 24500):
+        kite.oi[f"NIFTY26O06{k}PE"] = 400_000
+    oi.capture(kite, MON.replace(hour=9, minute=31), "2026-10-05T09:30")
+    assert scanner._with_sentiment({"user": "omkar"}, MON.replace(hour=9, minute=20)) == \
+        "\nNifty OI: Neutral · PCR 1.00 · support 24,400, resistance 24,400 (9:15 AM)"     # the reading as it stood then
+    line = scanner._with_sentiment({"user": "omkar"}, MON.replace(hour=10))
+    assert line.startswith("\nNifty OI: Bullish · PCR 2.80") and line.endswith("(9:30 AM)")
+    assert scanner._sentiment({"user": "omkar"}, MON.replace(hour=10))["label"] == "Bullish"   # webhooks get it as data
+    assert scanner._with_sentiment({"user": "omkar"}, MON.replace(day=6, hour=10)) == ""       # nothing yet that day
+    store.put("users", "nisha", {"username": "nisha", "role": "user", "active": True, "modules": ["scanner"]})
+    assert scanner._with_sentiment({"user": "nisha"}, MON.replace(hour=10)) == ""              # no Nifty OI permission
+    store.delete("users", "nisha")
