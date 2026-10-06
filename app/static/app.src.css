@@ -85,14 +85,36 @@ html.drawer-lock { overflow: hidden; }
 /* Moving between pages (times, days, tabs): a short cross-fade instead of a blank flash; the sidebar stays put. */
 @view-transition { navigation: auto; }
 .sidebar-panel { view-transition-name: sidebar; }
+/* Sidebar menu. The selected item's light block is one element (.nav-pill) that slides to the item
+   clicked straight away (app.js), and is matched across the page change, so it glides rather than jumps. */
+.nav-link { position: relative; display: block; border-radius: 1rem; padding: .625rem .75rem;
+  font-size: 15px; font-weight: 500; color: rgb(255 255 255 / .7); transition: color .15s ease-out, background-color .2s ease-out; }
+.nav-text { position: relative; z-index: 1; display: flex; align-items: center; gap: .75rem; }
+/* The selected label rides above the block while pages change (the block is lifted into its own layer
+   for the change, which would otherwise cover it), and turns dark as the block arrives under it, not before. */
+.nav-link[aria-current] .nav-text { view-transition-name: nav-current; }
+.nav-link[aria-current], .nav-link[aria-current] .nav-icon { transition: color .2s ease-out .14s; }
+.nav-link:hover { background-color: rgb(255 255 255 / .06); color: #fff; }
+.nav-icon { color: rgb(255 255 255 / .5); transition: color .25s ease-out; }
+.nav-link:hover .nav-icon { color: theme('colors.marigold.DEFAULT'); }
+.nav-link[aria-current] { color: theme('colors.ink.DEFAULT'); background-color: transparent; }
+.nav-link[aria-current] .nav-icon { color: theme('colors.marigold.dark'); }
+.nav-pill { position: absolute; inset: 0; z-index: 0; border-radius: 1rem; background: theme('colors.canvas');
+  view-transition-name: nav-pill; will-change: transform; }
 #chart-msg:empty { display: none; }
 .quote-in { animation: arrive .35s cubic-bezier(.2,.8,.2,1) both; }
 /* Alerts layout: list rows or cards, chosen per browser (localStorage) via <html data-alert-layout>. */
 .layout-cards { display: none; }
 html[data-alert-layout="cards"] .layout-list { display: none; }
 html[data-alert-layout="cards"] .layout-cards { display: grid; }
-html:not([data-alert-layout="cards"]) .layout-btn[data-layout-set="list"],
-html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"] { background: #16373A; color: #fff; }
+html:not([data-alert-layout="cards"]) .layout-btn[data-layout-set="list"]:not([data-layout-for]),
+html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"]:not([data-layout-for]) { background: #16373A; color: #fff; }
+/* Fractal bias signals: the same choice, kept separately (<html data-bias-layout>). */
+.bias-cards { display: none; }
+html[data-bias-layout="cards"] .bias-list { display: none; }
+html[data-bias-layout="cards"] .bias-cards { display: grid; }
+html:not([data-bias-layout="cards"]) .layout-btn[data-layout-for="bias"][data-layout-set="list"],
+html[data-bias-layout="cards"] .layout-btn[data-layout-for="bias"][data-layout-set="cards"] { background: #16373A; color: #fff; }
 /* Rows that scroll sideways (the filter tabs on a phone) without a scrollbar track under them. */
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }

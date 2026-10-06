@@ -9,8 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css?v={{ v }}">
-  {# Apply the saved alerts layout before first paint so the page never flickers between layouts. #}
-  <script>try { document.documentElement.dataset.alertLayout = localStorage.getItem("alertLayout") === "cards" ? "cards" : "list"; } catch (e) { document.documentElement.dataset.alertLayout = "list"; }</script>
+  {# Apply the saved list/cards layouts (alerts, fractal bias) before first paint so pages never flicker between them. #}
+  <script>for (const k of ["alert", "bias"]) { try { document.documentElement.dataset[k + "Layout"] = localStorage.getItem(k + "Layout") === "cards" ? "cards" : "list"; } catch (e) { document.documentElement.dataset[k + "Layout"] = "list"; } }</script>
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
   <script src="/static/app.js?v={{ v }}" defer></script>
 </head>
@@ -29,16 +29,16 @@
     <nav class="mt-10 space-y-1" aria-label="Main">
       {% for m in nav %}
         {% set here = path.startswith(m.path) %}
-        <a href="{{ m.path }}" {{ 'aria-current="page"' if here }} class="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[15px] font-medium transition {{ 'bg-canvas text-ink' if here else 'text-white/70 hover:bg-white/[.06] hover:text-white' }}">
-          <span class="{{ 'text-marigold-dark' if here else 'text-white/50 group-hover:text-marigold' }}">{{ icon(m.icon) }}</span>{{ m.label }}
+        <a href="{{ m.path }}" {{ 'aria-current="page"' if here }} class="nav-link">
+          {% if here %}<span class="nav-pill" aria-hidden="true"></span>{% endif %}<span class="nav-text"><span class="nav-icon">{{ icon(m.icon) }}</span><span>{{ m.label }}</span></span>
         </a>
       {% endfor %}
       {% if user.role == 'superadmin' %}
         <p class="px-3 pb-1 pt-7 text-sm font-medium text-white/40">Admin</p>
         {% for href, label, ic in [('/admin/users', 'People & access', 'users'), ('/admin/market', 'Market hours', 'clock')] %}
           {% set here = path.startswith(href) %}
-          <a href="{{ href }}" {{ 'aria-current="page"' if here }} class="group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-[15px] font-medium transition {{ 'bg-canvas text-ink' if here else 'text-white/70 hover:bg-white/[.06] hover:text-white' }}">
-            <span class="{{ 'text-marigold-dark' if here else 'text-white/50 group-hover:text-marigold' }}">{{ icon(ic) }}</span>{{ label }}
+          <a href="{{ href }}" {{ 'aria-current="page"' if here }} class="nav-link">
+            {% if here %}<span class="nav-pill" aria-hidden="true"></span>{% endif %}<span class="nav-text"><span class="nav-icon">{{ icon(ic) }}</span><span>{{ label }}</span></span>
           </a>
         {% endfor %}
       {% endif %}

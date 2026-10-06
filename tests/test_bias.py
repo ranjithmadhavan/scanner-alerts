@@ -144,6 +144,7 @@ def test_the_page(kite, monkeypatch):
         page = c.get("/bias?day=2026-10-05&at=2026-10-05T10:16").text
         assert "Bearish" in page and "Stopped out" in page and "changed" in page and 'id="bias-data"' in page
         assert "Not counted: NOTLISTED" in page and "Count these signals" not in page
+        assert 'data-layout-for="bias"' in page and page.count('class="bias-cards') == 1 and page.count("<article") == 40   # cards as well as the list
         assert "Only the super admin" in c.post("/bias/settings", data={"triggers": ["fail"], "min_candles": "3"}).headers["HX-Trigger"]
         assert "Notifications page" in c.post("/bias/telegram", data={"on": "1"}).headers["HX-Trigger"]
         c.post("/logout")

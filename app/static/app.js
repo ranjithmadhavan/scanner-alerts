@@ -645,21 +645,40 @@ const StockChart = (() => {
   });
 })();
 
-// ---- Alerts layout: list or cards, remembered in this browser only -----------------
+// ---- List or cards (alerts, fractal bias), remembered per page in this browser only -----------------
 (() => {
-  const KEY = "alertLayout";
   const root = document.documentElement;
+  const key = (btn) => (btn.dataset.layoutFor || "alert") + "Layout"; // <html data-alert-layout>, data-bias-layout
   function syncButtons() {
     document.querySelectorAll("[data-layout-set]").forEach((b) =>
-      b.setAttribute("aria-pressed", b.dataset.layoutSet === root.dataset.alertLayout ? "true" : "false"));
+      b.setAttribute("aria-pressed", b.dataset.layoutSet === root.dataset[key(b)] ? "true" : "false"));
   }
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-layout-set]");
     if (!btn) return;
-    root.dataset.alertLayout = btn.dataset.layoutSet;
-    try { localStorage.setItem(KEY, btn.dataset.layoutSet); } catch {}
+    root.dataset[key(btn)] = btn.dataset.layoutSet;
+    try { localStorage.setItem(key(btn), btn.dataset.layoutSet); } catch {}
     syncButtons();
   });
   syncButtons();
   document.addEventListener("htmx:afterSwap", syncButtons); // the toolbar is re-rendered on every refresh
 })();
+
+// ---- Sidebar: the selected block slides to the item clicked ----------------------------
+// Pages are full loads, so without this the block would only jump once the next page arrives.
+// Moving it on click (FLIP: re-parent it, then animate from where it was) makes the menu answer at
+// once; the page change then matches it to the new page's block (view-transition-name: nav-pill).
+document.addEventListener("click", (e) => {
+  const link = e.target.closest(".nav-link");
+  if (!link || link.hasAttribute("aria-current") || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const pill = document.querySelector(".nav-pill");
+  if (!pill) return;
+  const from = pill.getBoundingClientRect();
+  pill.parentElement.removeAttribute("aria-current");
+  link.setAttribute("aria-current", "page");
+  link.prepend(pill);
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const to = pill.getBoundingClientRect();
+  pill.animate([{ transform: `translate(${from.left - to.left}px, ${from.top - to.top}px)` }, { transform: "none" }],
+    { duration: 320, easing: "cubic-bezier(.16,1,.3,1)" });
+});

@@ -1,7 +1,7 @@
 """Template rendering helpers shared by all routers."""
 
 import json
-import time
+import os
 from datetime import datetime
 
 from fastapi import Request
@@ -13,7 +13,13 @@ from app.market import IST, load_settings, now_ist, status_text
 from app.security import allowed_modules
 
 templates = Jinja2Templates(directory="app/templates")
-STATIC_VERSION = str(int(time.time()))  # busts browser caches on each deploy
+STATIC_FILES = ("app/static/app.css", "app/static/app.js")
+
+
+def static_version() -> str:
+    """Busts browser caches whenever the stylesheet or script changes, not only when the server restarts
+    (a CSS-only edit doesn't restart it, and the browser would keep the old file)."""
+    return str(int(max(os.stat(f).st_mtime for f in STATIC_FILES)))
 
 
 def _ist(value: str | datetime | None, fmt: str = "%d %b, %-I:%M %p") -> str:
@@ -55,7 +61,7 @@ def render(request: Request, name: str, ctx: dict | None = None, status_code: in
     is_open, market_text = status_text(load_settings(), now_ist())
     base = {
         "app_name": config.APP_NAME,
-        "v": STATIC_VERSION,
+        "v": static_version(),
         "user": user,
         "nav": allowed_modules(user) if user else [],
         "market_open": is_open,
