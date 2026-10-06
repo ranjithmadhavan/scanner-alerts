@@ -34,6 +34,8 @@ CACHE_TTL_SECONDS = float(_env("CACHE_TTL_SECONDS", "300"))
 
 # Scanner runs in-process; disable on extra instances or in tests.
 SCANNER_ENABLED = _env("SCANNER_ENABLED", "1") == "1"
+# Nifty OI snapshots ride on the scanner's tick; set OI_CAPTURE=0 to stop taking them.
+OI_CAPTURE = _env("OI_CAPTURE", "1") == "1"
 
 # Keep-alive: ping our own public URL so Render's free tier doesn't put the app to sleep.
 # Render sets RENDER_EXTERNAL_URL automatically.

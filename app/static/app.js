@@ -341,6 +341,38 @@ const candleLook = { upColor: "#2E8B57", downColor: "#C2475A", borderVisible: fa
   document.addEventListener("htmx:afterSwap", (e) => { if (e.detail.target.id === "sim-result") build(e.detail.target); });
 })();
 
+// ---- Nifty OI: the day's change in call and put OI, with the index ----------------------------
+(() => {
+  const source = document.getElementById("oi-data");
+  const box = document.getElementById("oi-chart");
+  if (!source || !box) return;
+  const data = JSON.parse(source.textContent);
+  if (!data.points.length) return;
+  loadChartLib().then(() => {
+    const L = window.LightweightCharts;
+    const chart = L.createChart(box, chartLook(L));
+    chart.applyOptions({ localization: { priceFormatter: (v) => v.toFixed(1) }, leftPriceScale: { visible: true, borderColor: "#ECE6DC" },
+      timeScale: { timeVisible: true, secondsVisible: false } });
+    const line = (color, scale, title) => chart.addLineSeries({ color, lineWidth: 2, priceScaleId: scale, title,
+      priceFormat: scale === "right" ? { type: "custom", formatter: (v) => v.toLocaleString("en-IN", { maximumFractionDigits: 0 }) } : { type: "custom", formatter: (v) => v.toFixed(1) + "L" } });
+    const calls = line("#C2475A", "left", "Calls");
+    const puts = line("#2E8B57", "left", "Puts");
+    const spot = line("#16373A", "right", "Nifty");
+    calls.setData(data.points.map((p) => ({ time: p.time, value: p.ce })));
+    puts.setData(data.points.map((p) => ({ time: p.time, value: p.pe })));
+    spot.setData(data.points.map((p) => ({ time: p.time, value: p.spot })));
+    const chosen = data.points.find((p) => p.slot === data.chosen);
+    if (chosen) spot.setMarkers([{ time: chosen.time, position: "aboveBar", shape: "circle", color: "#E9A23B", text: chosen.label }]);
+    chart.timeScale().fitContent();
+    // Clicking a moment on the chart opens that snapshot.
+    chart.subscribeClick((e) => {
+      if (e.time === undefined) return;
+      const p = data.points.reduce((best, q) => Math.abs(q.time - e.time) < Math.abs(best.time - e.time) ? q : best);
+      location.href = `/oi?day=${encodeURIComponent(data.day)}&at=${encodeURIComponent(p.slot)}`;
+    });
+  }).catch(() => {});
+})();
+
 // ---- Chart side panel ---------------------------------------------------------
 const StockChart = (() => {
   const drawer = document.getElementById("chart-drawer");

@@ -31,7 +31,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import brokers, config, fractals, notify, webhooks
+from app import brokers, config, fractals, notify, oi, webhooks
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError
 from app.market import CLOSE_GRACE, IST, MarketSettings, in_scan_window, is_trading_day, load_settings, now_ist
 from app.store import new_id, store
@@ -707,6 +707,10 @@ def run_scan(now: datetime | None = None) -> None:
             except Exception:
                 log.exception("scan failed for %s", username)
         last_run.update(at=now, alerts=sum(len(a) for a in by_user.values()))
+        try:
+            oi.capture_if_due(now, s)  # Nifty OI snapshots ride on the same tick
+        except Exception:
+            log.exception("OI capture failed")
     finally:
         _scan_lock.release()
 

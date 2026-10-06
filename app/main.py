@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import config, kite, scanner
 from app.store import db_stats, store
-from app.routes import account, admin, alerts, auth, broker, notifications
+from app.routes import account, admin, alerts, auth, broker, notifications, oi
 from app.security import Forbidden, LoginRequired, seed_superadmin
 from app.web import is_htmx, render
 
@@ -81,7 +81,7 @@ async def timing(request: Request, call_next):
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-for r in (auth, alerts, broker, notifications, admin, account):
+for r in (auth, alerts, broker, notifications, oi, admin, account):
     app.include_router(r.router)
 
 

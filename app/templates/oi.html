@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Nifty OI{% endblock %}
+{% block width %}max-w-6xl{% endblock %}
+{% block content %}
+{% macro signed(n) -%}{{ '+' if n > 0 else '−' if n < 0 else '' }}{{ lakhs(n|abs) }}{%- endmacro %}
+<div class="flex flex-wrap items-end justify-between gap-4">
+  <div class="min-w-0">
+    <h1 class="text-4xl font-bold">Nifty OI</h1>
+    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Open interest on the nearest Nifty expiry, {{ settings.strikes }} strikes either side of the money, captured at the open and every {{ settings.interval }} minutes. Pick any saved moment to see what the market was saying then.</p>
+  </div>
+  <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="/oi/capture" hx-swap="none"
+          title="Take a snapshot now with your Kite session">{{ icon('refresh', 'h-4 w-4') }} Capture now</button>
+</div>
+
+{% if not broker_ok %}
+<a href="/broker" class="mt-6 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-3.5 text-[15px] transition hover:border-marigold/60">
+  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-4 w-4') }}</span>
+  <span><strong class="font-semibold">Capture now needs your Kite session.</strong> <span class="text-ink-soft">Scheduled snapshots use any connected account that can see this page.</span></span>
+</a>
+{% endif %}
+
+{% if not chosen %}
+  <div class="mt-8 rounded-3xl border border-dashed border-line px-6 py-14 text-center">
+    <p class="font-display text-xl font-bold">No snapshots yet</p>
+    <p class="mx-auto mt-2 max-w-md text-ink-soft">The first one is taken at the next market open, as long as a Kite account is connected. You can also take one now.</p>
+  </div>
+{% else %}
+  {% set r = reading %}
+  {# Which day and which moment #}
+  <div class="mt-8 flex flex-wrap items-center gap-3">
+    <form method="get" action="/oi" class="flex items-center gap-2">
+      <label for="oi-day" class="text-sm text-ink-soft">Day</label>
+      <select id="oi-day" name="day" class="field w-auto py-2 pr-9 text-sm" onchange="this.form.submit()">
+        {% for d in days %}<option value="{{ d.date }}" {{ 'selected' if d.date == day }}>{{ d.date }} · {{ d.count }} snapshot{{ 's' if d.count != 1 }}</option>{% endfor %}
+      </select>
+    </form>
+    <span class="text-sm text-ink-soft">Expiry <strong class="num font-semibold text-ink">{{ chosen.expiry }}</strong></span>
+  </div>
+  <nav class="no-scrollbar mt-3 flex gap-1 overflow-x-auto rounded-full bg-white p-1 ring-1 ring-line" aria-label="Snapshot time">
+    {% for sid, label in times %}
+    <a href="/oi?day={{ day }}&at={{ sid }}" class="num shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if sid == chosen.id else 'text-ink-soft hover:text-ink' }}"
+       {% if sid == chosen.id %}aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  {# The reading at that moment #}
+  <section class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+    <div class="panel p-6">
+      <p class="text-sm text-ink-soft">{{ chosen.at|ist('%a %-d %b, %-I:%M %p') }} · Nifty <strong class="num font-semibold text-ink">{{ r.spot|price }}</strong>
+        <span class="num {{ 'text-rise' if r.spot_move > 0 else 'text-fall' if r.spot_move < 0 else '' }}">{{ '+' if r.spot_move > 0 }}{{ '%.2f'|format(r.spot_move) }}</span> since the open</p>
+      <p class="mt-2 font-display text-3xl font-bold {{ 'text-rise' if r.tone == 'up' else 'text-fall' if r.tone == 'down' else 'text-ink' }}">{{ r.label }}</p>
+      <ul class="mt-3 space-y-1.5 text-[15px] leading-relaxed text-ink-soft">
+        {% for line in r.reasons %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+      <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-line pt-4 text-sm">
+        <div><dt class="text-ink-soft">Call OI change</dt><dd class="num font-semibold text-fall">{{ signed(r.ce_chg) }}</dd></div>
+        <div><dt class="text-ink-soft">Put OI change</dt><dd class="num font-semibold text-rise">{{ signed(r.pe_chg) }}</dd></div>
+        <div><dt class="text-ink-soft">PCR</dt><dd class="num font-semibold">{{ '%.2f'|format(r.pcr) if r.pcr is not none else '–' }}</dd></div>
+        <div><dt class="text-ink-soft">Support · resistance</dt><dd class="num font-semibold">{{ '{:,.0f}'.format(r.support) if r.support is not none else '–' }} · {{ '{:,.0f}'.format(r.resistance) if r.resistance is not none else '–' }}</dd></div>
+      </dl>
+    </div>
+    <div class="panel p-3">
+      <p class="px-3 pt-2 text-sm text-ink-soft"><span class="font-medium text-ink">The day so far:</span> change in call OI (red) and put OI (green) since the open, in lakhs, with Nifty (dark). Click a point to see that moment.</p>
+      <div id="oi-chart" class="h-[300px] w-full"></div>
+      <script type="application/json" id="oi-data">{{ {'points': series, 'chosen': chosen.id, 'day': day}|tojson }}</script>
+    </div>
+  </section>
+
+  {# Strike by strike #}
+  <section class="panel mt-4 overflow-hidden">
+    <div class="no-scrollbar overflow-x-auto">
+      <table class="w-full min-w-[720px] text-sm">
+        <thead class="text-[13px] text-ink-soft">
+          <tr class="border-b border-line">
+            <th class="py-2.5 pl-6 pr-3 text-right font-medium">Call OI</th><th class="py-2.5 pr-3 text-right font-medium">Change</th><th class="py-2.5 pr-3 text-right font-medium">Call LTP</th>
+            <th class="bg-canvas px-3 py-2.5 text-center font-semibold text-ink">Strike</th>
+            <th class="py-2.5 pl-3 text-left font-medium">Put LTP</th><th class="py-2.5 pl-3 text-left font-medium">Change</th><th class="py-2.5 pl-3 pr-6 text-left font-medium">Put OI</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line/70">
+          {% for row in r.rows %}
+          {% set atm = row.strike == r.atm %}
+          <tr class="num {{ 'bg-marigold-50/70 font-semibold' if atm }}">
+            <td class="py-2 pl-6 pr-3 text-right">{{ lakhs(row.ce_oi) }}{% if row.strike == r.resistance %} <span class="ml-1 rounded-full bg-fall-50 px-1.5 text-[11px] font-semibold text-fall">resistance</span>{% endif %}</td>
+            <td class="py-2 pr-3 text-right {{ 'text-fall' if row.ce_chg and row.ce_chg > 0 else 'text-ink-soft' }}">{{ signed(row.ce_chg) if row.ce_chg is not none else '–' }}</td>
+            <td class="py-2 pr-3 text-right text-ink-soft">{{ row.ce_ltp|price if row.ce_ltp is not none else '–' }}</td>
+            <td class="bg-canvas px-3 py-2 text-center font-semibold">{{ '{:,.0f}'.format(row.strike) }}{% if atm %} <span class="text-[11px] font-medium text-marigold-dark">ATM</span>{% endif %}</td>
+            <td class="py-2 pl-3 text-left text-ink-soft">{{ row.pe_ltp|price if row.pe_ltp is not none else '–' }}</td>
+            <td class="py-2 pl-3 text-left {{ 'text-rise' if row.pe_chg and row.pe_chg > 0 else 'text-ink-soft' }}">{{ signed(row.pe_chg) if row.pe_chg is not none else '–' }}</td>
+            <td class="py-2 pl-3 pr-6 text-left">{{ lakhs(row.pe_oi) }}{% if row.strike == r.support %} <span class="ml-1 rounded-full bg-rise-50 px-1.5 text-[11px] font-semibold text-rise">support</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: option sellers defend the strikes they write, so put OI growing faster than call OI means support is being built under price (bullish), and call OI growing faster means a ceiling (bearish). The reading is the balance of the two changes since the open, across the strikes shown. Changes are against the first snapshot of the day; strikes that came into view later have no change. OI is in lakhs of units.</p>
+{% endif %}
+
+{% if is_admin %}
+<form class="panel mt-8 flex flex-wrap items-end gap-4 p-6" hx-post="/oi/settings">
+  <div><label class="label" for="oi-interval">Capture every</label>
+    <select id="oi-interval" name="interval" class="field w-auto pr-9">{% for n in intervals %}<option value="{{ n }}" {{ 'selected' if n == settings.interval }}>{{ n }} minutes</option>{% endfor %}</select></div>
+  <div><label class="label" for="oi-strikes">Strikes either side of the money</label>
+    <select id="oi-strikes" name="strikes" class="field w-auto pr-9">{% for n in strike_choices %}<option value="{{ n }}" {{ 'selected' if n == settings.strikes }}>{{ n }}</option>{% endfor %}</select></div>
+  <button class="btn-primary htmx-busy">Save</button>
+  <p class="w-full text-[13px] text-ink-soft">Applies from the next snapshot. Only you, the super admin, see this.</p>
+</form>
+{% endif %}
+{% endblock %}

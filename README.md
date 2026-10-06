@@ -81,6 +81,14 @@ npx tailwindcss@3 -i app/static/app.src.css -o app/static/app.css --minify
 
 `message` is the alert's own message, or *Potential sell* / *Potential buy*. `payload` is the alert's own JSON, passed through untouched (`null` if none). Any 2xx reply counts as delivered; the result is shown under *Recently sent* on the Notifications page. URLs must be public http(s) addresses, redirects aren't followed, and each request times out after 8 seconds (`app/webhooks.py`). **Send a test request** in the edit panel posts a sample with `"test": true`. Simulations never call webhooks.
 
+**Nifty OI.** A separate tab (grant *Nifty OI* in People & access). At the open and then every 15 minutes (30 is a setting), the scanner's tick takes one Kite quote request for the nearest-expiry Nifty options, 10 strikes either side of the at-the-money strike (also a setting), plus the index, and saves the snapshot (`oi_snapshots`, with a summary per day in `oi_days`). Any account that can see the tab and has Kite connected is used; the data is the same for everyone. The tab lets you pick any saved day and time and shows:
+
+- the reading at that moment: the change in put OI against call OI since the day's first snapshot (put writing faster means support being built under price, bullish; call writing faster means a ceiling, bearish), PCR, and the strikes with the most put OI (support) and call OI (resistance);
+- a chart of the day: call and put OI change since the open, with Nifty; click a point to open that moment;
+- the strike table for that moment, with the change since the open.
+
+**Capture now** takes a snapshot outside the schedule with your own Kite session. `OI_CAPTURE=0` stops scheduled snapshots. The logic is in `app/oi.py`.
+
 **Channels per alert.** Each alert has its own set of channels. New alerts start with every channel you've set up, and you can switch channels on or off for each alert from the list.
 
 **When scanning happens.** Only on trading days, from the open until two minutes after the close (so the day's last candle can be checked once it has finished). Trading days are Monday to Friday minus the market holidays listed on the Market hours page. That list starts with NSE's 2026 holidays; the super admin can add or remove days, or pull NSE's current list with **Update from NSE**. Outside those times the scheduler still ticks but returns straight away: no Kite calls, no alerts, no login notices.
