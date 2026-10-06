@@ -1,0 +1,43 @@
+{% from "partials/icons.html" import icon %}
+{# Fractal bias notifications for the person looking: what (bias changes, new signals) and where (Telegram, webhooks). #}
+<form id="bias-notify" class="panel mt-8 p-6" hx-post="/bias/notify" hx-target="this" hx-swap="outerHTML">
+  <div class="flex items-start gap-4">
+    <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock-50 text-peacock">{{ icon('send', 'h-4 w-4') }}</span>
+    <div class="min-w-0">
+      <p class="font-semibold">Notifications</p>
+      <p class="mt-0.5 max-w-2xl text-[15px] text-ink-soft">Counts run every 5 minutes; the bias is looked at every 15 (9:30, 9:45, …) so it doesn't flicker. Just for you.</p>
+    </div>
+  </div>
+
+  <div class="mt-5 grid gap-6 lg:grid-cols-2">
+    <fieldset>
+      <legend class="label">Tell me about</legend>
+      <div class="space-y-2.5">
+        <label class="flex items-start gap-2.5 text-[15px]"><input type="checkbox" name="changes" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if np.changes }}>
+          <span><span class="font-semibold">Bias changes</span> <span class="block text-sm text-ink-soft">The first reading of the day, then each change of label, say Neutral to Mildly bearish.</span></span></label>
+        <label class="flex items-start gap-2.5 text-[15px]"><input type="checkbox" name="signals" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if np.signals }}>
+          <span><span class="font-semibold">Every new signal</span> <span class="block text-sm text-ink-soft">At each 5-minute check, the potential buys and sells that just formed, with level, price, stop and target.</span></span></label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend class="label">Send to</legend>
+      {% if tg_ready %}
+      <label class="flex items-center gap-2.5 text-[15px] font-semibold"><input type="checkbox" name="telegram" value="1" class="h-4 w-4 rounded accent-peacock" {{ 'checked' if np.telegram }}> Telegram</label>
+      {% else %}
+      <p class="text-[15px] text-ink-soft">Telegram · <a href="/notifications" class="font-semibold text-peacock hover:underline">set it up first</a></p>
+      {% endif %}
+      <label class="label mt-4" for="bias-hooks">Webhook URLs <span class="font-normal text-ink-soft">(optional, one per line)</span></label>
+      <textarea id="bias-hooks" name="webhooks" rows="2" class="field font-mono text-sm" placeholder="https://example.com/hook">{{ np_hooks }}</textarea>
+      <details class="mt-2" {{ 'open' if np_payload }}>
+        <summary class="cursor-pointer text-sm font-semibold text-peacock">Extra JSON for webhooks</summary>
+        <textarea name="webhook_payload" rows="3" class="field mt-2 font-mono text-sm" placeholder='{"strategy": "fractal-bias"}'>{{ np_payload }}</textarea>
+        <p class="mt-1 text-[13px] text-ink-soft">Sent as <code>payload</code>. Each request is JSON with <code>event</code> (<code>fractal_bias_signals</code> or <code>fractal_bias_change</code>), <code>signals</code> or <code>label</code>/<code>was</code>, the current <code>bias</code>, and a <code>link</code>.</p>
+      </details>
+    </fieldset>
+  </div>
+
+  <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+    <button class="btn-primary htmx-busy">Save</button>
+    <button type="button" class="btn-outline htmx-busy" hx-post="/bias/notify/test" hx-include="#bias-notify" hx-swap="none">Send a test to the webhooks</button>
+  </div>
+</form>

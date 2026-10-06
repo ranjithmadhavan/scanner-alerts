@@ -12,6 +12,7 @@ from app.security import hash_password
 from app.store import store
 
 S = MarketSettings(time(9, 15), time(15, 30), 60)
+CFG15 = {**bias.DEFAULTS, "trigger_tf": "15m"}  # the candles below are 15-minute ones
 FRI, MON = date(2026, 10, 2), date(2026, 10, 5)
 
 
@@ -44,10 +45,19 @@ def test_15_minute_candles_pair_into_half_hours():
     assert [(c.start.strftime("%H:%M"), c.low) for c in halves] == [("09:15", 100), ("09:45", 100), ("10:15", 100)]
     assert bias.to_30m([Candle(at(FRI, 9, 15), 1, 5, 1, 2), Candle(at(FRI, 9, 30), 2, 7, 0.5, 6)], S)[0] == \
         Candle(at(FRI, 9, 15), 1, 7, 0.5, 6)
+    fives = [Candle(at(FRI, 9, 15) + timedelta(minutes=5 * k), 10 + k, 11 + k, 9 + k, 10.5 + k) for k in range(7)]
+    assert bias.to_30m(fives, S) == [Candle(at(FRI, 9, 15), 10, 16, 9, 15.5), Candle(at(FRI, 9, 45), 16, 17, 15, 16.5)]
+
+
+def test_counts_every_5_minutes_and_the_bias_is_looked_at_every_15():
+    assert bias.slot(at(MON, 9, 20), S) is None and bias.slot(at(MON, 9, 21), S) == "2026-10-05T09:20"
+    assert bias.slot(at(MON, 11, 3), S) == "2026-10-05T11:00" and bias.slot(at(MON, 15, 31), S) == "2026-10-05T15:30"
+    assert [bias.bias_mark(f"2026-10-05T{t}", S) for t in ("09:20", "09:30", "09:35", "09:45", "15:25", "15:30")] == \
+        [False, True, False, True, False, True]
 
 
 def test_a_buy_holds_then_is_stopped_out():
-    cfg = bias.DEFAULTS
+    cfg = CFG15
     candles = friday() + monday()
     held = bias.signals("INFY", candles, MON, S, cfg, at(MON, 10, 0) + timedelta(seconds=30))
     assert sorted((g["signal"], g["trigger"], g["level"], g["status"]) for g in held) == \
@@ -69,7 +79,7 @@ def test_reading_weighs_held_against_stopped():
     assert "4 potential buys from fractal lows: 4 holding, 0 stopped out." in r["reasons"]
     # Reaching the target first makes it a win, whatever happens after.
     won = monday()[:2] + [Candle(at(MON, 9, 45), 103, 105, 101, 103)] + monday()[3:]
-    assert {g["status"] for g in bias.signals("INFY", friday() + won, MON, S, bias.DEFAULTS, at(MON, 10, 31))} == {"target"}
+    assert {g["status"] for g in bias.signals("INFY", friday() + won, MON, S, CFG15, at(MON, 10, 31))} == {"target"}
     assert bias.read([sig("buy", "stopped")] * 3 + [sig("sell", "target")] * 2)["label"] == "Bearish"
 
 
@@ -81,7 +91,7 @@ class FakeKite:
         return {}
 
     def candles_range(self, token, tf, start, end):
-        assert tf == "15m"
+        assert tf == "15m"  # set in the fixture, to match these candles
         self.calls += 1
         return friday() + monday()
 
@@ -96,8 +106,9 @@ def kite(monkeypatch):
     for coll in ("bias_snapshots", "bias_days"):
         for d in store.list(coll):
             store.delete(coll, d.get("id") or d["date"])
-    store.delete("settings", "bias")
+    store.put("settings", "bias", {"trigger_tf": "15m"})
     bias._done.clear()
+    bias._past.clear()
     fake = FakeKite()
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: fake)
     store.put("users", "meera", {"username": "meera", "name": "Meera", "role": "user", "active": True, "modules": ["bias"],
@@ -109,21 +120,45 @@ def kite(monkeypatch):
     store.delete("bias_alerts", "meera")
 
 
-def test_counts_every_15_minutes_and_telegrams_changes(kite, monkeypatch):
-    sent = []
+def test_new_signals_every_check_and_bias_changes_at_the_quarter_hours(kite, monkeypatch):
+    sent, hooks = [], []
     monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append((user, subject, body)) or {"telegram": "sent"})
-    bias.set_telegram("meera", True)
-    assert bias.capture_if_due(at(MON, 9, 25)) is None                                  # first candle not closed yet
+    monkeypatch.setattr(bias.webhooks, "send", lambda urls, body: hooks.append((urls, body)) or "sent")
+    bias.save_prefs("meera", {"changes": True, "signals": True, "telegram": True, "webhooks": ["https://hook.example/x"],
+                              "webhook_payload": '{"desk":"A"}'})
+    assert bias.capture_if_due(at(MON, 9, 15)) is None                                  # no candle closed yet
     snap = bias.capture_if_due(at(MON, 10, 0) + timedelta(seconds=30))
-    assert snap["id"] == "2026-10-05T10:00" and snap["missing"] == ["NOTLISTED"] and kite.calls == 20
+    assert snap["id"] == "2026-10-05T10:00" and snap["missing"] == ["NOTLISTED"]
+    assert kite.calls == 40                                                              # earlier days once, then today
     assert (snap["label"], snap["bull"], snap["bear"]) == ("Bullish", 40, 0)
-    assert sent[-1][1] == "🧭 Fractal bias at 10:00 AM: Bullish" and "40 potential buys" in sent[-1][2]
-    assert bias.capture_if_due(at(MON, 10, 5)) is None                                   # once per slot
+    assert [x[1] for x in sent] == ["🧭 40 new fractal signals · 10:00 AM", "🧭 Fractal bias at 10:00 AM: Bullish"]
+    assert sent[0][2].startswith("ADANIENT potential buy: sweep holds of the 30 min fractal low") and "stop 94.00, target 105.00" in sent[0][2]
+    assert [b["event"] for _, b in hooks] == ["fractal_bias_signals", "fractal_bias_change"]
+    assert len(hooks[0][1]["signals"]) == 40 and hooks[0][1]["payload"] == {"desk": "A"} and hooks[1][1]["label"] == "Bullish"
+    assert bias.capture_if_due(at(MON, 10, 2)) is None                                   # once per 5-minute slot
+    snap = bias.capture_if_due(at(MON, 10, 5) + timedelta(seconds=30))
+    assert snap["id"] == "2026-10-05T10:05" and kite.calls == 60 and len(sent) == 2      # today only; nothing new to say
+    snap = bias.capture_if_due(at(MON, 10, 10) + timedelta(seconds=30))
     snap = bias.capture_if_due(at(MON, 10, 15) + timedelta(seconds=30))
     assert (snap["label"], snap["bear"]) == ("Bearish", 40)                               # the buys were stopped out
-    assert sent[-1][1] == "🧭 Fractal bias turned Bearish (was Bullish) · 10:15 AM"
-    assert [s["id"] for s in bias.day_snapshots("2026-10-05")] == ["2026-10-05T10:00", "2026-10-05T10:15"]
-    assert [p["bear"] for p in bias.series(bias.day_snapshots("2026-10-05"))] == [0, 40]
+    assert sent[-1][1] == "🧭 Fractal bias turned Bearish (was Bullish) · 10:15 AM" and hooks[-1][1]["was"] == "Bullish"
+    day = store.get("bias_days", "2026-10-05")
+    assert day["slots"] == ["2026-10-05T10:00", "2026-10-05T10:05", "2026-10-05T10:10", "2026-10-05T10:15"]
+    assert [p["bear"] for p in bias.series(day)] == [0, 0, 0, 40]
+    # Bias changes only, on Telegram only: no signal messages, no webhooks.
+    bias.save_prefs("meera", {"changes": True, "signals": False, "telegram": True, "webhooks": [], "webhook_payload": ""})
+    before = len(hooks), len(sent)
+    bias._done.clear()
+    store.delete("bias_snapshots", "2026-10-05T10:15")
+    store.update("bias_days", "2026-10-05", {"slots": day["slots"][:3], "announced": "Bullish"})
+    bias.capture_if_due(at(MON, 10, 15) + timedelta(seconds=30))
+    assert len(hooks) == before[0] and [x[1] for x in sent[before[1]:]] == ["🧭 Fractal bias turned Bearish (was Bullish) · 10:15 AM"]
+
+
+def test_older_telegram_switch_still_means_bias_changes():
+    store.put("bias_alerts", "old", {"telegram": True})
+    assert bias.prefs("old")["changes"] and bias.prefs("old")["telegram"] and not bias.prefs("old")["signals"]
+    store.delete("bias_alerts", "old")
 
 
 def test_the_page(kite, monkeypatch):
@@ -146,12 +181,26 @@ def test_the_page(kite, monkeypatch):
         assert "Not counted: NOTLISTED" in page and "Count these signals" not in page
         assert 'data-layout-for="bias"' in page and page.count('class="bias-cards') == 1 and page.count("<article") == 40   # cards as well as the list
         assert "Only the super admin" in c.post("/bias/settings", data={"triggers": ["fail"], "min_candles": "3"}).headers["HX-Trigger"]
-        assert "Notifications page" in c.post("/bias/telegram", data={"on": "1"}).headers["HX-Trigger"]
+        # Notifications: Telegram needs setting up first; webhooks are checked and can be tested.
+        assert "Notifications page" in c.post("/bias/notify", data={"changes": "1", "telegram": "1"}).headers["HX-Trigger"]
+        assert "can't be reached" in c.post("/bias/notify", data={"signals": "1", "webhooks": "http://localhost/x"}).headers["HX-Trigger"]
+        monkeypatch.setattr(bias.webhooks, "_is_public", lambda host: True)
+        posted = []
+
+        class Resp:
+            status_code = 200
+        monkeypatch.setattr(bias.webhooks.httpx, "post", lambda url, json, **kw: posted.append((url, json)) or Resp())
+        r = c.post("/bias/notify", data={"signals": "1", "webhooks": "https://hook.example/x", "webhook_payload": '{"a": 1}'})
+        assert "new signals to 1 webhook" in r.headers["HX-Trigger"] and 'name="signals" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" checked' in r.text
+        assert bias.prefs("meera") == {"changes": False, "signals": True, "telegram": False, "webhooks": ["https://hook.example/x"],
+                                       "webhook_payload": '{"a":1}'}
+        assert "Test request sent" in c.post("/bias/notify/test", data={"webhooks": "https://hook.example/x"}).headers["HX-Trigger"]
+        assert posted[-1][1]["event"] == "fractal_bias_signals" and posted[-1][1]["test"] is True
         c.post("/logout")
         c.post("/login", data={"username": "boss", "password": "boss-pass-123"})
         assert "Count these signals" in c.get("/bias").text
-        c.post("/bias/settings", data={"triggers": ["fail", "bogus"], "min_candles": "3"})
-        assert bias.load_settings() == {"triggers": ["fail"], "min_candles": 3}
+        c.post("/bias/settings", data={"triggers": ["fail", "bogus"], "min_candles": "3", "trigger_tf": "15m"})
+        assert bias.load_settings() == {"triggers": ["fail"], "min_candles": 3, "trigger_tf": "15m"}
         assert "at least one" in c.post("/bias/settings", data={"min_candles": "3"}).headers["HX-Trigger"]
         c.post("/logout")
         store.put("users", "nisha", {"username": "nisha", "role": "user", "active": True, "modules": ["oi"],

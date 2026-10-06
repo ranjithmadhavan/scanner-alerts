@@ -5,7 +5,7 @@
 <div class="flex flex-wrap items-end justify-between gap-4">
   <div class="min-w-0">
     <h1 class="text-4xl font-bold">Fractal bias</h1>
-    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Fractal sweeps across the Nifty 50, counted from the open every 15 minutes: which lows and highs were taken, which of those trades are holding, and which were stopped out. Pick any saved moment to see how the market was leaning then.</p>
+    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Fractal sweeps across the Nifty 50, counted from the open every 5 minutes: which lows and highs were taken, which of those trades are holding, and which were stopped out. Pick any saved moment to see how the market was leaning then.</p>
   </div>
   <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="/bias/capture" hx-swap="none"
           title="Count now with your Kite session (takes about 20 seconds)">{{ icon('refresh', 'h-4 w-4') }} Count now</button>
@@ -33,7 +33,7 @@
 {% if not chosen %}
   <div class="mt-8 rounded-3xl border border-dashed border-line px-6 py-14 text-center">
     <p class="font-display text-xl font-bold">No counts yet</p>
-    <p class="mx-auto mt-2 max-w-md text-ink-soft">The first one is taken when the first 15-minute candle closes, at 9:30, as long as a Kite account is connected.</p>
+    <p class="mx-auto mt-2 max-w-md text-ink-soft">The first one is taken when the first 5-minute candle closes, at 9:20, as long as a Kite account is connected.</p>
   </div>
 {% else %}
   {% set r = reading %}
@@ -161,13 +161,13 @@
     <p class="px-6 py-10 text-center text-ink-soft">No fractal was swept on any Nifty 50 stock by this time.</p>
   </section>
   {% endif %}
-  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on 15-minute closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count.
+  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on {{ counted.trigger_tf|replace("m", "-minute") }} closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count.
     {% if chosen.missing or chosen.failed %}Not counted: {{ (chosen.missing + chosen.failed)|join(', ') }}.{% endif %}</p>
 {% endif %}
 
 {% include "partials/chart_drawer.html" %}
 
-{% include "partials/telegram_switch.html" %}
+{% include "partials/bias_notify.html" %}
 
 {% if is_admin %}
 <form class="panel mt-4 flex flex-wrap items-end gap-x-6 gap-y-4 p-6" hx-post="/bias/settings">
@@ -181,6 +181,8 @@
       {% endfor %}
     </div>
   </fieldset>
+  <div><label class="label" for="bias-tf">Judge sweeps on</label>
+    <select id="bias-tf" name="trigger_tf" class="field w-auto pr-9">{% for tf in trigger_tfs %}<option value="{{ tf }}" {{ 'selected' if tf == settings.trigger_tf }}>{{ tf|replace('m', ' min') }} candles</option>{% endfor %}</select></div>
   <div><label class="label" for="bias-min">Candles between fractal and sweep</label>
     <select id="bias-min" name="min_candles" class="field w-auto pr-9">{% for n in min_choices %}<option value="{{ n }}" {{ 'selected' if n == settings.min_candles }}>{{ n if n else 'Any' }}</option>{% endfor %}</select></div>
   <button class="btn-primary htmx-busy">Save</button>

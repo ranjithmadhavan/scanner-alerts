@@ -682,3 +682,10 @@ document.addEventListener("click", (e) => {
   pill.animate([{ transform: `translate(${from.left - to.left}px, ${from.top - to.top}px)` }, { transform: "none" }],
     { duration: 320, easing: "cubic-bezier(.16,1,.3,1)" });
 });
+
+// ---- Strips of times (Nifty OI, Fractal bias): keep the chosen one in view ------------------
+// A day of 5-minute counts is a long strip; open it scrolled to the moment being shown.
+document.querySelectorAll('nav.overflow-x-auto [aria-current="true"]').forEach((pick) => {
+  const strip = pick.parentElement;
+  strip.scrollLeft = pick.offsetLeft - strip.clientWidth / 2 + pick.offsetWidth / 2;
+});
