@@ -15,13 +15,35 @@
 @layer components {
   .field { @apply w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-soft transition focus:border-peacock focus:ring-4 focus:ring-peacock-50 focus:outline-none; }
   .label { @apply mb-1.5 block text-sm font-medium text-ink-soft; }
-  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[15px] font-semibold transition active:scale-[.98] disabled:opacity-50; }
-  .btn-primary { @apply btn bg-peacock text-white hover:bg-peacock-dark shadow-sm; }
+  /* Buttons rise a little toward the pointer and press in when clicked; colour, shadow and lift move together. */
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-[15px] font-semibold disabled:opacity-50;
+    transition: transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .22s cubic-bezier(.2,.8,.2,1), background-color .2s ease-out,
+      border-color .2s ease-out, color .2s ease-out, opacity .15s ease-out; }
+  @media (hover: hover) { .btn:hover:not(:disabled) { transform: translateY(-1px); } }
+  .btn:active:not(:disabled) { transform: translateY(0) scale(.97); transition-duration: .08s; }
+  .btn svg { transition: transform .3s cubic-bezier(.34,1.56,.64,1); }
+  @media (hover: hover) { .btn:hover:not(:disabled) svg { transform: scale(1.12); } }
+  .btn-primary { @apply btn bg-peacock text-white shadow-sm hover:bg-peacock-dark; }
+  .btn-primary:hover:not(:disabled) { box-shadow: 0 8px 18px -8px rgba(15,94,92,.55); }
   .btn-quiet { @apply btn text-ink-soft hover:bg-peacock-50 hover:text-ink; }
-  .btn-outline { @apply btn border border-line bg-white text-ink hover:border-peacock/40; }
+  .btn-outline { @apply btn border border-line bg-white text-ink hover:border-peacock/40 hover:text-peacock-dark; }
+  .btn-outline:hover:not(:disabled) { box-shadow: 0 8px 18px -10px rgba(22,55,58,.22); }
   .panel { @apply rounded-3xl border border-line bg-white; }
   .num { font-variant-numeric: tabular-nums; }
 }
+
+/* Hover and press for everything else that can be clicked: round icon buttons swell their icon and
+   press in; cards and linked panels rise; tabs and pills ease their colours (via the transition defaults). */
+button[class~="rounded-full"]:not([class*="btn"]), a[class~="rounded-full"]:not([class*="btn"]) { transition: transform .2s cubic-bezier(.2,.8,.2,1), background-color .2s ease-out, color .2s ease-out, box-shadow .2s ease-out; }
+button[class~="rounded-full"]:not([class*="btn"]):active, a[class~="rounded-full"]:not([class*="btn"]):active { transform: scale(.92); transition-duration: .08s; }
+button[class~="rounded-full"]:not([class*="btn"]) > svg, [data-chart] svg { transition: transform .3s cubic-bezier(.34,1.56,.64,1); }
+@media (hover: hover) {
+  button[class~="rounded-full"]:not([class*="btn"]):hover > svg, [data-chart]:hover svg { transform: scale(1.15); }
+  article[class~="transition"]:hover, a[class~="panel"]:hover { transform: translateY(-2px); box-shadow: 0 1px 2px rgba(22,55,58,.04), 0 14px 30px -16px rgba(22,55,58,.22); }
+}
+article[class~="transition"], a[class~="panel"] { transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s cubic-bezier(.2,.8,.2,1), border-color .2s ease-out; }
+.nav-link:active .nav-text { transform: scale(.98); }
+.nav-text { transition: transform .12s ease-out; }
 
 /* Motion: only what answers an action or explains a change, plus the market-open pulse.
    The one authored moment is a level being hit (.just-hit): the row is swept in marigold. */
@@ -141,6 +163,9 @@ details > summary::-webkit-details-marker { display: none; }
   .breathe, .count-pulse, .just-hit .hit-chip { animation: none; }
   .just-hit::before { animation: fade-in 1.6s ease-in reverse both; clip-path: none; }
   .rail-dot, .drawer-panel, #chart-drawer.open .drawer-panel { transition: none; }
+  .btn:hover:not(:disabled), .btn:active:not(:disabled), .btn:hover:not(:disabled) svg,
+  button[class~="rounded-full"]:not([class*="btn"]):active, button[class~="rounded-full"]:not([class*="btn"]):hover > svg, [data-chart]:hover svg,
+  article[class~="transition"]:hover, a[class~="panel"]:hover, .nav-link:active .nav-text { transform: none; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
   * { scroll-behavior: auto !important; }
 }

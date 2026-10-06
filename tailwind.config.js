@@ -19,6 +19,9 @@ module.exports = {
       boxShadow: {
         soft: '0 1px 2px rgba(22,55,58,.04), 0 8px 24px -12px rgba(22,55,58,.12)',
       },
+      // Every `transition` utility eases out the same way, a touch slower than the default 150ms.
+      transitionDuration: { DEFAULT: '220ms' },
+      transitionTimingFunction: { DEFAULT: 'cubic-bezier(.2,.8,.2,1)' },
     },
   },
   plugins: [],
