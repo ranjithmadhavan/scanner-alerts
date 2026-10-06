@@ -348,22 +348,26 @@ const StockChart = (() => {
   const box = document.getElementById("chart");
   const msg = document.getElementById("chart-msg");
   const levelNote = document.getElementById("chart-level");
+  const hitsBox = document.getElementById("chart-hits");
   let chart, series, levelLines = [], lastFocus, request = 0;
-  const state = { symbol: "", range: "1D", levels: [] };
+  // levels: [{price, title}]. Only the ones nearest price stretch the axis, so twenty fractal levels
+  // don't flatten the candles; the rest are drawn when they come into view.
+  const state = { symbol: "", range: "5D", interval: "", levels: [], framed: [], last: null };
+  const intervalPick = document.getElementById("chart-interval");
   const rupees = chartRupees;
   const loadLib = loadChartLib;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   function build() {
     const L = window.LightweightCharts;
     chart = L.createChart(box, chartLook(L));
     series = chart.addCandlestickSeries({
       ...candleLook,
-      // Stretch the price axis so every level line is on screen, even far from price.
       autoscaleInfoProvider: (original) => {
         const res = original();
-        if (res && state.levels.length) {
-          res.priceRange.minValue = Math.min(res.priceRange.minValue, ...state.levels);
-          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, ...state.levels);
+        if (res && state.framed.length) {
+          res.priceRange.minValue = Math.min(res.priceRange.minValue, ...state.framed);
+          res.priceRange.maxValue = Math.max(res.priceRange.maxValue, ...state.framed);
         }
         return res;
       },
@@ -371,21 +375,58 @@ const StockChart = (() => {
   }
 
   const parseLevels = (values) => [...new Set(values.map(parseFloat).filter((v) => v > 0))];
+  const nearest = (levels, last) => ({
+    above: levels.filter((l) => l.price > last).sort((a, b) => a.price - b.price)[0],
+    below: levels.filter((l) => l.price < last).sort((a, b) => b.price - a.price)[0],
+  });
+
+  function frame() {
+    // A handful of levels are all kept in view; with more, just the nearest one each side of price.
+    const levels = state.levels;
+    if (levels.length <= 4 || state.last === null) { state.framed = levels.map((l) => l.price); return; }
+    const { above, below } = nearest(levels, state.last);
+    state.framed = [above, below].filter(Boolean).map((l) => l.price);
+  }
 
   function setLevels(levels) {
     state.levels = levels;
+    frame();
     if (series) levelLines.forEach((line) => series.removePriceLine(line));
     levelLines = [];
     levelNote.hidden = !levels.length;
     if (!levels.length) { chart?.priceScale("right").applyOptions({ autoScale: true }); return; }
-    levelNote.lastElementChild.textContent =
-      (levels.length > 1 ? "Your levels " : "Your level ") + levels.map(rupees).join(", ");
+    levelNote.lastElementChild.textContent = levels.length > 3 ? `${levels.length} levels on watch`
+      : (levels.length > 1 ? "Your levels " : "Your level ") + levels.map((l) => rupees(l.price)).join(", ");
     if (series) {
-      levelLines = levels.map((price) => series.createPriceLine({
-        price, color: "#E9A23B", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: "Level",
+      levelLines = levels.map((l) => series.createPriceLine({
+        price: l.price, color: "#E9A23B", lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: l.title,
       }));
       chart.priceScale("right").applyOptions({ autoScale: true }); // re-fit to include the levels
     }
+  }
+
+  function showHits(hits) {
+    series.setMarkers(hits.map((h) => ({
+      time: h.time, text: h.label, position: h.signal === "sell" ? "aboveBar" : "belowBar",
+      shape: h.signal === "sell" ? "arrowDown" : "arrowUp", color: h.signal === "sell" ? "#C2475A" : "#2E8B57",
+    })));
+    const parts = [];
+    if (hits.length) {
+      parts.push(`<p class="mb-1.5 font-semibold text-ink">Recent hits</p><ul class="space-y-1">` + hits.slice().reverse().map((h) =>
+        `<li class="flex flex-wrap items-baseline gap-x-2"><span class="num w-36 shrink-0 text-ink-soft">${esc(h.at)}</span>` +
+        `<span class="rounded-full px-1.5 text-xs font-semibold ${h.signal === "sell" ? "bg-fall-50 text-fall" : "bg-rise-50 text-rise"}">Potential ${h.signal}</span>` +
+        `<span class="min-w-0">${esc(h.summary)} <span class="num text-ink-soft">at ${rupees(h.price)}</span></span></li>`).join("") + "</ul>");
+    } else if (state.levels.length) {
+      parts.push(`<p class="text-ink-soft">Nothing has fired here in this range.</p>`);
+    }
+    if (state.levels.length && state.last !== null) {
+      const { above, below } = nearest(state.levels, state.last);
+      const say = (l, side) => l ? `${esc(l.title)} ${rupees(l.price)} ${side}, ${(Math.abs(l.price - state.last) / state.last * 100).toFixed(2)}% away` : "";
+      const next = [say(above, "above"), say(below, "below")].filter(Boolean).join(" · ");
+      if (next) parts.push(`<p class="mt-2 text-ink-soft"><span class="font-semibold text-ink">Next:</span> ${next}</p>`);
+    }
+    hitsBox.innerHTML = parts.join("");
+    hitsBox.hidden = !parts.length;
   }
 
   async function load() {
@@ -394,7 +435,7 @@ const StockChart = (() => {
     msg.textContent = "Loading " + state.symbol + "…";
     try {
       await loadLib();
-      const r = await fetch(`/alerts/chart?symbol=${encodeURIComponent(state.symbol)}&range=${state.range}`);
+      const r = await fetch(`/alerts/chart?symbol=${encodeURIComponent(state.symbol)}&range=${state.range}&interval=${state.interval}`);
       const data = await r.json();
       if (mine !== request) return; // a newer request superseded this one
       if (!r.ok) throw new Error(data.error || "Couldn't load the chart.");
@@ -403,21 +444,31 @@ const StockChart = (() => {
       document.getElementById("chart-name").textContent = data.name || "";
       chart.applyOptions({ timeScale: { timeVisible: !data.daily, secondsVisible: false } });
       series.setData(data.candles);
+      state.last = data.candles.length ? data.candles[data.candles.length - 1].close : null;
       setLevels(state.levels);
+      showHits(data.hits || []);
       chart.timeScale().fitContent();
       msg.textContent = data.candles.length ? "" : "Kite has no candles for this range.";
+      if (data.trimmed && data.candles.length) {
+        hitsBox.insertAdjacentHTML("afterbegin", `<p class="mb-2 text-[13px] text-marigold-dark">Kite serves only the last few weeks of ${esc(intervalPick.selectedOptions[0].textContent.toLowerCase())} candles, so this shows the most recent part of the range.</p>`);
+        hitsBox.hidden = false;
+      }
     } catch (e) {
       if (mine === request) msg.textContent = e.message;
     }
   }
 
-  function open(symbol, levels) {
+  function open(symbol, levels, interval = "") {
     lastFocus = document.activeElement;
     state.symbol = symbol;
+    state.interval = interval;
+    if (intervalPick) intervalPick.value = interval;
     state.levels = levels;
+    state.last = null;
     document.getElementById("chart-title").textContent = symbol;
     document.getElementById("chart-name").textContent = "";
-    if (series) series.setData([]);
+    hitsBox.hidden = true;
+    if (series) { series.setData([]); series.setMarkers([]); }
     drawer.hidden = false;
     requestAnimationFrame(() => drawer.classList.add("open"));
     document.body.style.overflow = "hidden";
@@ -438,17 +489,23 @@ const StockChart = (() => {
     if (tab && tab.dataset.range !== state.range) { state.range = tab.dataset.range; load(); }
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !drawer.hidden) close(); });
+  intervalPick?.addEventListener("change", () => { state.interval = intervalPick.value; load(); });
 
-  // Any [data-chart] button opens the panel; levels come from data-levels or the form's level fields.
-  const fieldLevels = (selector) => parseLevels([...document.querySelectorAll(selector)].map((el) => el.value));
+  // Any [data-chart] button opens the panel. Lines come from data-lines (an alert row: what is on watch,
+  // named), data-levels (plain prices) or the form's level fields while an alert is being set up.
+  const asLines = (prices) => prices.map((price) => ({ price, title: "Level" }));
+  const fieldLevels = (selector) => asLines(parseLevels([...document.querySelectorAll(selector)].map((el) => el.value)));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-chart]");
     if (!btn) return;
-    open(btn.dataset.chart, btn.dataset.levels ? parseLevels(btn.dataset.levels.split(","))
-      : btn.dataset.levelsFrom ? fieldLevels(btn.dataset.levelsFrom) : []);
+    let lines = [];
+    try { lines = btn.dataset.lines ? JSON.parse(btn.dataset.lines) : []; } catch {}
+    if (!lines.length && btn.dataset.levels) lines = asLines(parseLevels(btn.dataset.levels.split(",")));
+    if (!lines.length && btn.dataset.levelsFrom) lines = fieldLevels(btn.dataset.levelsFrom);
+    open(btn.dataset.chart, lines, btn.dataset.interval || "");
   });
 
-  // Typing a level in the form (or removing a row) moves the lines live.
+// Typing a level in the form (or removing a row) moves the lines live.
   const form = document.getElementById("new-alert");
   function fromForm() {
     const formSymbol = document.getElementById("symbol")?.value.trim().toUpperCase();
@@ -472,7 +529,8 @@ const StockChart = (() => {
 
   document.addEventListener("htmx:beforeSwap", (e) => {
     if (e.detail.target.id !== "alert-list") return;
-    before = { counts: counts(), alerts: new Map() };
+    before = { counts: counts(), alerts: new Map(), prices: new Map() };
+    document.querySelectorAll("#alert-list .price-group").forEach((g) => before.prices.set(g.dataset.group, g.dataset.price));
     rows().forEach((row) => before.alerts.set(row.dataset.alert, {
       ...row.dataset, dot: row.querySelector(".rail-dot")?.style.left }));
   });
@@ -488,10 +546,6 @@ const StockChart = (() => {
       const hit = Number(now.hits) > Number(old.hits) || (now.last && now.last !== old.last)
         || (old.status === "active" && now.status === "triggered");
       if (hit) row.classList.add("just-hit");
-      const price = row.querySelector(".price-now");
-      if (price && old.price && now.price && Number(now.price) !== Number(old.price)) {
-        price.classList.add(Number(now.price) > Number(old.price) ? "tick-up" : "tick-down");
-      }
       const dot = row.querySelector(".rail-dot");
       if (dot && old.dot && old.dot !== dot.style.left) {
         const to = dot.style.left;
@@ -502,23 +556,26 @@ const StockChart = (() => {
         dot.style.left = to;
       }
     });
+    document.querySelectorAll("#alert-list .price-group").forEach((g) => {
+      const old = was.prices.get(g.dataset.group), now = g.dataset.price, price = g.querySelector(".price-now");
+      if (price && old && now && Number(now) !== Number(old)) price.classList.add(Number(now) > Number(old) ? "tick-up" : "tick-down");
+    });
     document.querySelectorAll('#alert-list [data-count="triggered"]').forEach((badge) => {
       if (Number(badge.textContent) > (was.counts.triggered ?? Infinity)) badge.classList.add("count-pulse");
     });
   });
 })();
 
-// ---- Remember whether the New alert form was left open --------------------------
+// ---- New alert form: folded away once there are alerts, opened from the page header ---------
 (() => {
   const panel = document.getElementById("new-alert-panel");
   if (!panel) return;
-  const KEY = "newAlertOpen";
-  const hasAlerts = !!document.querySelector('#alert-list [role="tablist"]');
-  try {
-    const saved = localStorage.getItem(KEY);
-    if (saved !== null && hasAlerts) panel.open = saved === "1"; // with no alerts yet, keep it open
-  } catch {}
-  panel.addEventListener("toggle", () => { try { localStorage.setItem(KEY, panel.open ? "1" : "0"); } catch {} });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-open-new-alert]")) return;
+    panel.open = true;
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("symbol")?.focus({ preventScroll: true });
+  });
 })();
 
 // ---- Alerts layout: list or cards, remembered in this browser only -----------------

@@ -225,8 +225,9 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
     if alert.get("webhooks"):
         results["webhook"] = webhooks.send(alert["webhooks"], webhook_body(alert, hit, signal, what, price, candle, now))
     store.put("events", new_id(), {
-        "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
-        "summary": describe(hit), "price": price, "at": now.isoformat(), "delivery": results,
+        "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"], "key": alert_key(alert),
+        "summary": describe(hit), "price": price, "level": hit["level"], "signal": "sell" if up else "buy",
+        "at": now.isoformat(), "delivery": results,
     })
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
     return alert
@@ -402,8 +403,9 @@ def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) ->
     if alert.get("webhooks"):
         results["webhook"] = webhooks.send(alert["webhooks"], fractal_webhook_body(alert, hit, signal, what, price, now))
     store.put("events", new_id(), {
-        "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"],
-        "summary": summary, "price": price, "at": now.isoformat(), "delivery": results,
+        "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"], "key": alert_key(alert),
+        "summary": summary, "price": price, "level": f.level, "signal": hit.signal,
+        "at": now.isoformat(), "delivery": results,
     })
     log.info("fractal %s for %s: %s %s", alert["id"], alert["user"], hit.key, results)
     return {**alert, **changes}

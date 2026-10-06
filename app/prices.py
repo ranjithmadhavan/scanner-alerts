@@ -10,7 +10,7 @@ import time
 from datetime import timedelta
 
 from app import brokers
-from app.kite import Candle, Instrument
+from app.kite import TIMEFRAMES, Candle, Instrument
 from app.market import IST, is_market_open, is_trading_day, load_settings, now_ist
 
 IST_OFFSET = 19800  # lightweight-charts draws UTC; shift so the axis reads in IST
@@ -23,6 +23,10 @@ RANGES = {
     "6M": ("1d", 183),
     "1Y": ("1d", 366),
 }
+# Kite serves this many days of each candle size per request, so a small candle over a long range
+# shows the most recent part of the range.
+MAX_DAYS = {"1m": 60, "3m": 100, "5m": 100, "10m": 100, "15m": 200, "30m": 200, "1h": 400, "1d": 2000}
+MAX_CANDLES = 15000
 
 _cache: dict[tuple, tuple[float, object]] = {}
 _lock = threading.Lock()
@@ -77,9 +81,14 @@ def _latest_session(client, token: int, timeframe: str) -> list[Candle]:
     return [c for c in candles if c.start.astimezone(IST).date() == last_day]
 
 
-def chart(username: str, inst: Instrument, range_key: str) -> dict:
-    """Candles shaped for lightweight-charts. Raises KiteError/KiteAuthError."""
+def chart(username: str, inst: Instrument, range_key: str, interval: str = "") -> dict:
+    """Candles shaped for lightweight-charts, at the range's own candle size unless `interval` asks
+    for another. Raises KiteError/KiteAuthError."""
     timeframe, days = RANGES.get(range_key, RANGES["5D"])
+    if interval in TIMEFRAMES:
+        timeframe = interval
+        if days:
+            days = min(days, MAX_DAYS[interval])
 
     def fetch():
         client = brokers.client_for(username)
@@ -88,10 +97,13 @@ def chart(username: str, inst: Instrument, range_key: str) -> dict:
         else:
             today = now_ist().date()
             candles = client.candles_range(inst.token, timeframe, today - timedelta(days=days), today)
+        candles = candles[-MAX_CANDLES:]
         daily = timeframe == "1d"
         return {
             "symbol": inst.symbol,
             "range": range_key,
+            "interval": timeframe,
+            "trimmed": bool(days) and days < RANGES.get(range_key, RANGES["5D"])[1],
             "daily": daily,
             "candles": [
                 {
@@ -102,4 +114,4 @@ def chart(username: str, inst: Instrument, range_key: str) -> dict:
                 for c in candles
             ],
         }
-    return _cached(("chart", username, inst.token, range_key), 30, 600, fetch)
+    return _cached(("chart", username, inst.token, range_key, timeframe), 30, 600, fetch)

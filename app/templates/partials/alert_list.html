@@ -1,6 +1,7 @@
 {% from "partials/icons.html" import icon %}
 {#
-  Alerts are rendered twice, as list rows and as cards, from the same pieces below.
+  Alerts are grouped under their instrument and rendered twice, as a list and as cards, from the
+  same pieces below.
   Which one shows is decided by <html data-alert-layout> (set from localStorage in base.html),
   so the 30-second refresh never changes the user's chosen layout.
 #}
@@ -17,34 +18,28 @@
 {%- endmacro %}
 
 {% macro rule(a, note_len=32) -%}
-  {% if a.fractal -%}
-    {# A fractal alert's levels are the instrument's unmitigated fractals; show the nearest on each side. #}
-    <span class="inline-flex flex-wrap items-center gap-1 align-middle">
-      <span class="rounded-full bg-peacock-50 px-2 py-0.5 text-[13px] font-medium text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
-      {% if not a.fractal.scanned %}<span class="text-[13px] text-ink-soft">levels appear after the first scan</span>
-      {% else %}
-        {% if a.fractal.above %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest resistance: an unmitigated fractal {{ a.fractal.above.side }}{{ ' that price gapped below' if a.fractal.above.flipped }}, formed {{ a.fractal.above.at|ist }}. Potential sell if taken.">{{ a.fractal.above.side|capitalize }}{{ ', flipped' if a.fractal.above.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span>{% endif %}
-        {% if a.fractal.below %}<span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]" title="Nearest support: an unmitigated fractal {{ a.fractal.below.side }}{{ ' that price gapped above' if a.fractal.below.flipped }}, formed {{ a.fractal.below.at|ist }}. Potential buy if taken.">{{ a.fractal.below.side|capitalize }}{{ ', flipped' if a.fractal.below.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span>{% endif %}
-        <span class="text-[13px] text-ink-soft">{{ a.fractal.count }} unmitigated</span>
-      {% endif %}
-      {% if a.note %}<span class="text-[13px] text-ink-soft" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
-    </span>
-  {%- elif a.levels|length > 1 -%}
-    {# One chip per level; the ones that have fired are marked and no longer watched. #}
-    <span class="inline-flex flex-wrap items-center gap-1 align-middle">
+  {# The levels as a line of text. Fired levels stay listed, marked, and are no longer watched. #}
+  <span class="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 align-middle">
+  {% if a.fractal %}
+    {% if not a.fractal.scanned %}<span class="text-ink-soft">levels appear after the first scan</span>
+    {% else %}
+      {% if a.fractal.above %}<span class="whitespace-nowrap" title="Nearest resistance: an unmitigated fractal {{ a.fractal.above.side }}{{ ' that price gapped below' if a.fractal.above.flipped }}, formed {{ a.fractal.above.at|ist }}. Potential sell if taken.">{{ a.fractal.above.side|capitalize }}{{ ', flipped' if a.fractal.above.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.above.level|price }}</strong></span><span class="text-line" aria-hidden="true">·</span>{% endif %}
+      {% if a.fractal.below %}<span class="whitespace-nowrap" title="Nearest support: an unmitigated fractal {{ a.fractal.below.side }}{{ ' that price gapped above' if a.fractal.below.flipped }}, formed {{ a.fractal.below.at|ist }}. Potential buy if taken.">{{ a.fractal.below.side|capitalize }}{{ ', flipped' if a.fractal.below.flipped }} <strong class="num font-semibold text-ink">₹{{ a.fractal.below.level|price }}</strong></span><span class="text-line" aria-hidden="true">·</span>{% endif %}
+      <span class="whitespace-nowrap">{{ a.fractal.count }} unmitigated</span>
+    {% endif %}
+  {% else %}
     {% for lv in a.levels %}
       {% if lv.status == 'hit' %}
-      <span class="hit-chip inline-flex items-center gap-1 rounded-full bg-marigold-50 px-2 py-0.5 text-[13px] font-medium text-marigold-dark"
+      <span class="hit-chip inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-marigold-50 px-1.5 font-medium text-marigold-dark"
             title="Hit at ₹{{ lv.hit_price|price }} on {{ lv.hit_at|ist }}. This level is switched off.">{{ icon('check', 'h-3 w-3') }}{{ lv.label }} <span class="num">₹{{ lv.level|price }}</span></span>
       {% else %}
-      <span class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[13px]">{{ lv.label }} <strong class="num font-semibold text-ink">₹{{ lv.level|price }}</strong>{% if lv.is_close %}<span class="text-ink-soft">{{ tf_label(a.timeframe) }}</span>{% endif %}</span>
+      <span class="whitespace-nowrap">{{ lv.label }} <strong class="num font-semibold text-ink">₹{{ lv.level|price }}</strong>{% if lv.is_close %} <span class="text-ink-soft">{{ tf_label(a.timeframe) }}</span>{% endif %}</span>
       {% endif %}
+      {% if not loop.last %}<span class="text-line" aria-hidden="true">·</span>{% endif %}
     {% endfor %}
-    {% if a.note %}<span class="text-[13px] text-ink-soft" title="{{ a.note }}">{{ a.note|truncate(note_len) }}</span>{% endif %}
-    </span>
-  {%- else -%}
-  {{ a.label }} <strong class="num font-semibold text-ink">₹{{ a.level|price }}</strong>{% if a.is_close %}<span class="text-ink-soft">, {{ tf_label(a.timeframe) }}</span>{% endif %}{% if a.note %}<span class="text-ink-soft" title="{{ a.note }}">, {{ a.note|truncate(note_len) }}</span>{% endif %}
-  {%- endif %}
+  {% endif %}
+  {% if a.note %}<span class="truncate italic text-ink-soft" title="{{ a.note }}">“{{ a.note|truncate(note_len) }}”</span>{% endif %}
+  </span>
 {%- endmacro %}
 
 {% macro chips(a) -%}
@@ -62,28 +57,41 @@
   </span>
 {%- endmacro %}
 
-{% macro price_bar(a) -%}
-  {% if a.fractal and a.price is not none %}
-    <p class="num text-sm"><strong class="price-now font-semibold">₹{{ a.price|price }}</strong>
-      {% if a.fractal.above %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }} below resistance</span>{% endif %}
-      {%- if a.fractal.above and a.fractal.below %}<span class="text-ink-soft">,</span>{% endif %}
-      {% if a.fractal.below %}<span class="text-ink-soft">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }} above support</span>{% endif %}
+{% macro proximity(a) -%}
+  {# How close this alert is to firing. The price itself is shown once, on the instrument. #}
+  {% if a.status == 'triggered' %}
+  {% elif a.fractal and a.price is not none and (a.fractal.above or a.fractal.below) %}
+    <p class="num truncate text-[13px] text-ink-soft">
+      {% if a.fractal.above %}<span title="To the nearest resistance, ₹{{ a.fractal.above.level|price }}"><strong class="font-semibold text-ink">{{ '%.2f%%'|format((a.fractal.above.level - a.price) / a.price * 100) }}</strong> to resistance</span>{% endif %}
+      {%- if a.fractal.above and a.fractal.below %} · {% endif %}
+      {% if a.fractal.below %}<span title="To the nearest support, ₹{{ a.fractal.below.level|price }}"><strong class="font-semibold text-ink">{{ '%.2f%%'|format((a.price - a.fractal.below.level) / a.price * 100) }}</strong> to support</span>{% endif %}
     </p>
   {% elif a.rail %}
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-      <div class="relative h-5 min-w-[60px] flex-1" title="Last price ₹{{ a.price|price }}">
+    <div class="flex items-center gap-2.5" title="Last price ₹{{ a.price|price }}">
+      <div class="relative h-4 w-16 shrink-0">
         <div class="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-line"></div>
-        <div class="absolute left-1/2 top-1/2 h-4 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-marigold"></div>
-        <div class="rail-dot absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-soft {{ 'bg-rise' if a.rail.side == 'above' else 'bg-fall' }}" style="left: {{ a.rail.pos }}%"></div>
+        <div class="absolute left-1/2 top-1/2 h-3.5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-marigold"></div>
+        <div class="rail-dot absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-soft {{ 'bg-rise' if a.rail.side == 'above' else 'bg-fall' }}" style="left: {{ a.rail.pos }}%"></div>
       </div>
-      <span class="num text-sm"><strong class="price-now font-semibold">₹{{ a.price|price }}</strong>
-        <span class="{{ 'text-marigold-dark' if a.rail.reached else 'text-ink-soft' }}">{{ 'past level' if a.rail.reached else '%.2f%% away'|format(a.rail.pct) }}{% if a.levels|length > 1 %} from ₹{{ a.level|price }}{% endif %}</span></span>
+      <span class="num truncate text-[13px] {{ 'text-marigold-dark' if a.rail.reached else 'text-ink-soft' }}">
+        {%- if a.rail.reached %}past ₹{{ a.level|price }}{% else %}<strong class="font-semibold text-ink">{{ '%.2f%%'|format(a.rail.pct) }}</strong> to ₹{{ a.level|price }}{% endif -%}
+      </span>
     </div>
   {% endif %}
 {%- endmacro %}
 
+{% macro kind(a) -%}
+  {# What sort of alert this is, in a word or two; the detail is in the rule beside it. #}
+  {% if a.fractal %}
+    <span class="inline-flex items-center rounded-full bg-peacock-50 px-2 py-0.5 text-[12px] font-semibold text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
+  {% elif a.levels|length > 1 %}
+    <span class="inline-flex items-center rounded-full bg-canvas px-2 py-0.5 text-[12px] font-semibold text-ink-soft">{{ a.levels|length }} levels</span>
+  {% endif %}
+  {{ status_pill(a) }}
+{%- endmacro %}
+
 {% macro timing(a) -%}
-  <p class="text-[13px] text-ink-soft">
+  <p class="truncate text-[12.5px] text-ink-soft">
     {% if a.status == 'triggered' %}
       <span class="font-semibold text-marigold-dark">{{ 'All ' ~ a.levels|length ~ ' levels hit, last at' if a.levels|length > 1 else 'Hit at' }} ₹{{ a.trigger_price|price }}</span> on {{ a.triggered_at|ist }}
     {% elif a.expired %}
@@ -103,9 +111,25 @@
   </p>
 {%- endmacro %}
 
+{% macro chart_button(g) -%}
+  <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ g.symbol }}" title="Chart: levels on watch and recent hits"
+          data-chart="{{ g.key }}" data-lines='{{ g.levels|tojson }}' data-interval="{{ g.interval }}">{{ icon('chart', 'h-4 w-4') }}</button>
+{%- endmacro %}
+
+{% macro group_head(g) -%}
+  <div class="flex min-w-0 flex-1 items-baseline gap-2">
+    <span class="font-display text-[17px] font-bold">{{ g.symbol }}</span>
+    <span class="truncate text-sm text-ink-soft">{{ g.name|company }}</span>
+    {{ exchange_tag(g) }}
+  </div>
+  {% if g.price is not none %}<strong class="price-now num shrink-0 text-[15px] font-semibold">₹{{ g.price|price }}</strong>{% endif %}
+{%- endmacro %}
+
+{% macro row_attrs(a) -%}
+data-alert="{{ a.id }}" data-hits="{{ a.hit_count }}" data-last="{{ a.last_hit.at if a.last_hit else '' }}" data-status="{{ a.status }}" style="view-transition-name: alert-{{ a.id }}"
+{%- endmacro %}
+
 {% macro actions(a) -%}
-  <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-peacock-50 hover:text-peacock" aria-label="Chart for {{ a.symbol }}" title="Chart"
-          data-chart="{{ a.key }}" data-levels="{{ (a.fractal.all if a.fractal else a.levels)|map(attribute='level')|join(',') }}">{{ icon('chart', 'h-4 w-4') }}</button>
   <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-peacock-50 hover:text-peacock" aria-label="Edit {{ a.symbol }} alert" title="Edit or add levels"
           hx-get="/alerts/{{ a.id }}/edit" hx-target="#alert-editor" hx-swap="innerHTML">{{ icon('edit', 'h-4 w-4') }}</button>
   {% if a.status == 'active' %}
@@ -118,24 +142,33 @@
           hx-delete="/alerts/{{ a.id }}" hx-target="#alert-list" hx-swap="outerHTML" hx-confirm="Remove the {{ a.symbol }} alert?">{{ icon('trash', 'h-4 w-4') }}</button>
 {%- endmacro %}
 
-<section id="alert-list" class="mt-12" hx-get="/alerts/list" hx-trigger="every 30s [document.visibilityState === 'visible']" hx-swap="outerHTML">
+<section id="alert-list" class="mt-10" hx-get="/alerts/list" hx-trigger="every 30s [document.visibilityState === 'visible']" hx-swap="outerHTML">
 {% if total %}
-  {# One sentence about the scanner as a whole, so rows and cards only need their own timing. #}
-  <p class="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-sm text-ink-soft">
-    <span class="h-2 w-2 rounded-full {{ 'bg-rise breathe' if scan.running and scan.in_window and broker_ok else 'bg-ink-soft/30' }}"></span>
-    {% if not scan.running %}
-      The scanner isn't running on this server.
-    {% elif not broker_ok %}
-      Scanning is paused until Kite is connected.
-    {% elif scan.in_window %}
-      Scanning.{% if scan.last %} Last run {{ scan.last|ist('%-I:%M:%S %p') }} checked {{ scan.checked }} alert{{ 's' if scan.checked != 1 }}.{% endif %}{% if scan.next %} Next run {{ scan.next|ist('%-I:%M:%S %p') }}.{% endif %}
-    {% else %}
-      Market is closed. Scanning starts {{ scan.next|when }}.{% if scan.last %} Last run {{ scan.last|when }}.{% endif %}
-    {% endif %}
-  </p>
+  {# The whole watch in one line: what is covered, what is closest, what needs attention, and the scanner. #}
+  {% set ov = overview %}
+  <div class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 px-1 text-sm text-ink-soft">
+    <p class="text-ink">
+      <strong class="num font-semibold">{{ total }}</strong> alert{{ 's' if total != 1 }} on <strong class="num font-semibold">{{ ov.instruments }}</strong> instrument{{ 's' if ov.instruments != 1 }}
+      <span class="text-ink-soft">·
+        {%- if ov.price_levels %} {{ ov.price_levels }} price level{{ 's' if ov.price_levels != 1 }}{% endif %}
+        {%- if ov.price_levels and ov.fractal_alerts %},{% endif %}
+        {%- if ov.fractal_alerts %} {{ ov.fractal_levels }} fractal level{{ 's' if ov.fractal_levels != 1 }}{% endif %}
+        {%- if ov.price_levels or ov.fractal_alerts %} on watch{% else %} nothing on watch{% endif %}
+        {%- if ov.nearest %} · nearest: <span class="font-medium text-ink">{{ ov.nearest.symbol }}</span>, <span class="num">{{ '%.2f%%'|format(ov.nearest.pct) }}</span> away{% endif %}</span>
+    </p>
+    {% if ov.unsent %}<span class="rounded-full bg-marigold-50 px-2.5 py-0.5 text-xs font-medium text-marigold-dark" title="Active alerts with no channel and no webhook: a hit would go nowhere">{{ ov.unsent }} not sent anywhere</span>{% endif %}
+    {% if ov.unscanned %}<span class="rounded-full bg-canvas px-2.5 py-0.5 text-xs font-medium text-ink-soft" title="Fractal levels are worked out on the first scan of a session">{{ ov.unscanned }} fractal alert{{ 's' if ov.unscanned != 1 }} waiting for a scan</span>{% endif %}
+    <span class="ml-auto inline-flex items-center gap-2 text-[13px]">
+      <span class="h-2 w-2 shrink-0 rounded-full {{ 'bg-rise breathe' if scan.running and scan.in_window and broker_ok else 'bg-ink-soft/30' }}"></span>
+      {% if not scan.running %}The scanner isn't running on this server.
+      {% elif not broker_ok %}Scanning is paused until Kite is connected.
+      {% elif scan.in_window %}Scanning.{% if scan.last %} Last run {{ scan.last|ist('%-I:%M:%S %p') }}.{% endif %}{% if scan.next %} Next {{ scan.next|ist('%-I:%M:%S %p') }}.{% endif %}
+      {% else %}Market is closed. Scanning starts {{ scan.next|when }}.{% endif %}
+    </span>
+  </div>
 
   <div class="flex flex-wrap items-center gap-3">
-    <div class="inline-flex max-w-full overflow-x-auto rounded-full bg-white p-1 ring-1 ring-line" role="tablist" aria-label="Filter alerts">
+    <div class="no-scrollbar inline-flex max-w-full overflow-x-auto rounded-full bg-white p-1 ring-1 ring-line" role="tablist" aria-label="Filter alerts">
       {% for key, label in tabs.items() %}
         {% set on = filters.tab == key %}
         <button type="button" role="tab" aria-selected="{{ 'true' if on else 'false' }}"
@@ -164,53 +197,71 @@
     </div>
   </div>
 
-  {% if alerts %}
-  {# ---- List layout ---- #}
-  <ul class="layout-list mt-4 divide-y divide-line overflow-hidden rounded-3xl border border-line bg-white">
-  {% for a in alerts %}
-    <li data-alert="{{ a.id }}" data-hits="{{ a.hit_count }}" data-last="{{ a.last_hit.at if a.last_hit else '' }}" data-status="{{ a.status }}" data-price="{{ a.price if a.price is not none else '' }}" style="view-transition-name: alert-{{ a.id }}" class="alert-row grid items-center gap-x-5 gap-y-2 px-5 py-3.5 sm:px-6 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto] {{ 'arrive' if a.id == fresh_id }} {{ 'bg-marigold-50/60' if a.status == 'triggered' }}">
-      <div class="min-w-0 {{ 'opacity-60' if a.status == 'paused' }}">
-        <div class="flex items-baseline gap-2">
-          <span class="font-display text-[17px] font-bold">{{ a.symbol }}</span>
-          <span class="truncate text-sm text-ink-soft">{{ a.name|company }}</span>
-          {{ exchange_tag(a) }}
-          {% if filters.tab == 'all' %}{{ status_pill(a) }}{% endif %}
-        </div>
-        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <p class="text-[15px] text-ink-soft">{{ rule(a) }}</p>
-          {{ chips(a) }}
-        </div>
-      </div>
-      <div class="min-w-0 space-y-0.5 {{ 'opacity-60' if a.status == 'paused' }}">
-        {% if a.status != 'triggered' %}{{ price_bar(a) }}{% endif %}
-        {{ timing(a) }}
-      </div>
-      <div class="flex items-center gap-0.5 justify-self-start md:justify-self-end">{{ actions(a) }}</div>
-    </li>
-  {% endfor %}
-  </ul>
-
-  {# ---- Card layout ---- #}
-  <div class="layout-cards mt-4 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-  {% for a in alerts %}
-    <article data-alert="{{ a.id }}" data-hits="{{ a.hit_count }}" data-last="{{ a.last_hit.at if a.last_hit else '' }}" data-status="{{ a.status }}" data-price="{{ a.price if a.price is not none else '' }}" style="view-transition-name: alert-{{ a.id }}" class="alert-row flex min-w-0 flex-col rounded-2xl border p-4 transition hover:shadow-soft {{ 'arrive' if a.id == fresh_id }}
-                    {{ 'border-marigold/30 bg-marigold-50/60' if a.status == 'triggered' else 'border-line bg-white' }}">
-      <div class="mb-3 {{ 'opacity-60' if a.status == 'paused' }}">
-        <div class="flex items-start gap-2">
-          <div class="min-w-0 flex-1">
-            <p class="font-display text-[17px] font-bold leading-tight">{{ a.symbol }}</p>
-            <p class="truncate text-xs text-ink-soft">{{ a.name|company }} {{ exchange_tag(a) }}</p>
+  {% if groups %}
+  {# ---- List layout: a row per alert; the instrument (name, price, chart) is shown once, beside its first alert ---- #}
+  <div class="layout-list mt-4 overflow-hidden rounded-3xl border border-line bg-white">
+  {% for g in groups %}
+    <section class="price-group {{ 'border-t-2 border-line' if not loop.first }}" data-group="{{ g.key }}" data-price="{{ g.price if g.price is not none else '' }}" aria-label="{{ g.symbol }}">
+    <ul>
+    {% for a in g.alerts %}
+      <li {{ row_attrs(a) }} class="alert-row grid items-center gap-x-5 gap-y-1.5 py-2.5 pl-5 pr-3 sm:pl-6 xl:grid-cols-[minmax(10rem,13.5rem)_minmax(14rem,1fr)_minmax(12rem,16rem)_auto_auto] {{ 'border-t border-line/60' if not loop.first }} {{ 'arrive' if a.id == fresh_id }} {{ 'bg-marigold-50/60' if a.status == 'triggered' }}">
+        {% if loop.first %}
+        <div class="flex min-w-0 items-center gap-2 xl:block">
+          <div class="flex min-w-0 items-baseline gap-1.5">
+            <span class="font-display text-[16px] font-bold">{{ g.symbol }}</span>
+            <span class="truncate text-[13px] text-ink-soft">{{ g.name|company }}</span>
+            {{ exchange_tag(g) }}
           </div>
-          {{ status_pill(a) }}
+          <div class="ml-auto flex items-center gap-1.5 xl:ml-0">
+            {% if g.price is not none %}<strong class="price-now num text-[14px] font-semibold">₹{{ g.price|price }}</strong>{% endif %}
+            {% if g.alerts|length > 1 %}<span class="text-xs text-ink-soft">· {{ g.alerts|length }} alerts</span>{% endif %}
+            <span class="-my-1.5">{{ chart_button(g) }}</span>
+          </div>
         </div>
-        <p class="mt-2.5 text-sm text-ink-soft">{{ rule(a, 24) }}</p>
-        {% if a.status != 'triggered' %}<div class="mt-2">{{ price_bar(a) }}</div>{% endif %}
-        <div class="mt-1.5">{{ timing(a) }}</div>
+        {% else %}
+        <div class="hidden xl:block" aria-hidden="true"></div>
+        {% endif %}
+        <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-ink-soft {{ 'opacity-60' if a.status == 'paused' }}">
+          {{ kind(a) }}
+          {{ rule(a) }}
+        </div>
+        <div class="min-w-0 {{ 'opacity-60' if a.status == 'paused' }}">
+          {{ proximity(a) }}
+          {{ timing(a) }}
+        </div>
+        {# Channels and buttons share a line on a phone; on a wide screen each takes its own column. #}
+        <div class="flex items-center justify-between gap-2 xl:contents">
+          <div class="min-w-0">{{ chips(a) }}</div>
+          <div class="flex shrink-0 items-center gap-0.5 xl:justify-self-end">{{ actions(a) }}</div>
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
+    </section>
+  {% endfor %}
+  </div>
+
+  {# ---- Card layout: a card per instrument, its alerts stacked inside ---- #}
+  <div class="layout-cards mt-4 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
+  {% for g in groups %}
+    <article class="price-group min-w-0 overflow-hidden rounded-2xl border border-line bg-white transition hover:shadow-soft" data-group="{{ g.key }}" data-price="{{ g.price if g.price is not none else '' }}">
+      <header class="flex items-center gap-2 border-b border-line bg-canvas/60 py-2.5 pl-4 pr-2">
+        {{ group_head(g) }}
+        {{ chart_button(g) }}
+      </header>
+      {% for a in g.alerts %}
+      <div {{ row_attrs(a) }} class="alert-row px-4 py-3 {{ 'border-t border-line/70' if not loop.first }} {{ 'arrive' if a.id == fresh_id }} {{ 'bg-marigold-50/60' if a.status == 'triggered' }}">
+        <div class="{{ 'opacity-60' if a.status == 'paused' }}">
+          <div class="flex flex-wrap items-center gap-1.5">{{ kind(a) }}</div>
+          <p class="mt-1.5 text-sm text-ink-soft">{{ rule(a, 24) }}</p>
+          <div class="mt-1.5 space-y-0.5">{{ proximity(a) }}{{ timing(a) }}</div>
+        </div>
+        <div class="mt-2 flex items-center gap-2">
+          <div class="min-w-0 flex-1">{{ chips(a) }}</div>
+          <div class="flex shrink-0 items-center">{{ actions(a) }}</div>
+        </div>
       </div>
-      <div class="mt-auto flex items-center gap-2 border-t border-line pt-2.5">
-        <div class="min-w-0 flex-1">{{ chips(a) }}</div>
-        <div class="flex shrink-0 items-center">{{ actions(a) }}</div>
-      </div>
+      {% endfor %}
     </article>
   {% endfor %}
   </div>

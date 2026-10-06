@@ -238,7 +238,11 @@ def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
     store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
 
     page = client.get("/alerts/list?tab=active&sort=near&q=").text
-    assert page.index("TCS") < page.index("INFY")          # closest to level first
+    rows_html = page[page.index('class="layout-list'):]
+    assert rows_html.index("TCS") < rows_html.index("INFY")          # closest to level first
+    # The overview line above the list sums up the whole watch and names the nearest alert.
+    assert "4</strong> alerts on <strong" in page and "2 price levels on watch" in page and "nearest: <span" in page
+    assert "TCS</span>, <span class=\"num\">0.48%</span> away" in page
     assert "HDFCBANK" not in page and "ITC" not in page     # other tabs hidden
     assert "Checked" in page and "Not checked yet" in page and ", next" in page
     # Both layouts are rendered (CSS picks one from localStorage), with the same alerts in each.
@@ -246,7 +250,8 @@ def test_alert_list_tabs_search_sort_and_scan_times(client, monkeypatch):
     assert page.count('data-chart="TCS"') == 2 and 'data-layout-set="cards"' in page
 
     page = client.get("/alerts/list?sort=symbol").text     # tab remembered from the session
-    assert page.index("INFY") < page.index("TCS") and "HDFCBANK" not in page
+    rows_html = page[page.index('class="layout-list'):]
+    assert rows_html.index("INFY") < rows_html.index("TCS") and "HDFCBANK" not in page
 
     page = client.get("/alerts/list?tab=all&q=hdfc").text
     assert "HDFCBANK" in page and "INFY" not in page and "Triggered" in page
@@ -366,7 +371,9 @@ def test_levels_fire_one_at_a_time_and_the_rest_stay_on_watch(client, monkeypatc
     assert "Still watching: trades below 1400, trades above 1550, closes above 1600 on 15m" in sent[0][1]
     page = client.get("/alerts/list?tab=active&q=").text
     assert "1 of 4 hit" in page and "This level is switched off" in page
-    assert 'data-levels="1500.0,1400.0,1550.0,1600.0"' in page
+    # The chart shows what is still on watch, named; the level that fired is no longer a line.
+    assert '{"price": 1400.0, "title": "Trades below"}' in page and '{"price": 1600.0, "title": "Closes above"}' in page
+    assert '"price": 1500.0' not in page
 
     # Same price on the next scan: the level that already fired stays quiet.
     scanner.run_scan(now.replace(second=45))
@@ -894,7 +901,7 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
     scanner.run_scan(monday.replace(minute=18, second=5))
     assert sent == []
     page = client.get("/alerts/list?tab=active&q=").text
-    assert "110.00" in page and "100.00" in page and "2 unmitigated" in page and 'data-levels="110,100"' in page
+    assert "110.00" in page and "100.00" in page and "2 unmitigated" in page and '{"price": 110, "title": "Resistance"}' in page and '{"price": 100, "title": "Support"}' in page
 
     # 9:20: a trade goes above the fractal high. One "taken" message, with the fractal low as the target.
     state["minutes"].append(minute(20, 109, 110.8, 108.9, 110.2))
@@ -1234,3 +1241,86 @@ def test_fractal_taken_too_soon_after_forming_is_ignored(client, monkeypatch):
         assert scanner.fractal_levels[a["id"]]["resistance"] == []                   # taken either way, so no longer watched
         store.delete("alerts", a["id"])
     scanner._fractal_history.clear()
+
+
+def test_alerts_are_grouped_by_instrument(client):
+    from app.scanner import last_prices
+    login(client, "boss", "boss-pass-123")
+    base = {"user": "boss", "name": "INFOSYS", "token": 1, "timeframe": "", "channels": [], "note": "", "status": "active",
+            "created_at": "2026-09-28", "armed_at": "2026-09-28T09:15:00+05:30"}
+    store.put("alerts", "g1", {**base, "id": "g1", "symbol": "INFY", "levels": [{"level": 1500.0, "condition": "cross", "status": "active"}]})
+    store.put("alerts", "g2", {**base, "id": "g2", "symbol": "INFY", "channels": ["telegram"],
+                               "levels": [{"level": 1600.0, "condition": "high_above", "status": "active"},
+                                          {"level": 1400.0, "condition": "low_below", "status": "active"}]})
+    store.put("alerts", "g3", {**base, "id": "g3", "symbol": "TCS", "name": "TCS", "token": 2,
+                               "levels": [{"level": 4000.0, "condition": "cross", "status": "active"}]})
+    last_prices[("boss", "INFY")] = (1490.0, datetime.now(IST))
+    page = client.get("/alerts/list?tab=active&sort=near&q=").text
+    rows_html = page[page.index('class="layout-list'):page.index('class="layout-cards')]
+    # One block for INFY holding both of its alerts, its price and one chart with all three levels.
+    assert rows_html.count('data-group="INFY"') == 1 and rows_html.count('data-group="TCS"') == 1
+    assert rows_html.count('class="alert-row') == 3 and "2 alerts" in rows_html
+    assert rows_html.count(">₹1,490.00<") == 1 and '[{"price": 1500.0, "title": "Crosses"}, {"price": 1600.0, "title": "Trades above"}, {"price": 1400.0, "title": "Trades below"}]' in rows_html
+    assert "0.67%</strong> to ₹1,500.00" in rows_html                      # how close each alert is, on its own line
+    assert "3</strong> alerts on <strong class=\"num font-semibold\">2</strong> instruments" in page
+    assert "2 not sent anywhere" in page                                   # g1 and g3 have no channel or webhook
+    for aid in ("g1", "g2", "g3"):
+        store.delete("alerts", aid)
+
+
+def test_chart_shows_recent_hits_on_the_candles_they_happened_in(client, monkeypatch):
+    from datetime import timedelta
+    from app import prices
+    prices._cache.clear()
+    login(client, "boss", "boss-pass-123")
+    day = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
+    candles = [Candle(day + timedelta(minutes=15 * i), 1490, 1495, 1485, 1490 + i) for i in range(6)]
+
+    class FakeKite:
+        def candles_range(self, token, tf, start, end):
+            return candles
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    monkeypatch.setattr("app.prices.now_ist", lambda: datetime(2026, 9, 26, 12, 0, tzinfo=IST))
+    store.put("events", "h1", {"user": "boss", "alert_id": "a", "symbol": "INFY", "key": "INFY", "summary": "INFY trades above 1500",
+                               "price": 1501.5, "level": 1500.0, "signal": "sell", "at": (day + timedelta(minutes=37)).isoformat()})
+    store.put("events", "h2", {"user": "boss", "alert_id": "a", "symbol": "INFY", "summary": "INFY 30 min fractal low 1480 swept",
+                               "price": 1481.0, "at": (day + timedelta(minutes=50)).isoformat()})       # older record: no key or signal
+    store.put("events", "h3", {"user": "boss", "alert_id": "a", "symbol": "INFY", "key": "INFY", "summary": "INFY trades below 1400",
+                               "price": 1399.0, "level": 1400.0, "signal": "buy", "at": (day - timedelta(days=3)).isoformat()})  # before the chart
+    store.put("events", "h4", {"user": "boss", "alert_id": "b", "symbol": "TCS", "key": "TCS", "summary": "TCS trades above 4000",
+                               "price": 4001.0, "level": 4000.0, "signal": "sell", "at": (day + timedelta(minutes=20)).isoformat()})
+    store.put("events", "h5", {"user": "boss", "alert_id": "a", "symbol": "INFY", "key": "INFY", "summary": "INFY trades above 1520",
+                               "price": 1521.0, "level": 1520.0, "signal": "sell", "at": (day + timedelta(days=1)).isoformat()})  # after the chart ends
+    data = client.get("/alerts/chart?symbol=INFY&range=5D").json()
+    hits = data["hits"]
+    assert [h["summary"] for h in hits] == ["INFY trades above 1500", "INFY 30 min fractal low 1480 swept"]
+    assert hits[0]["time"] == data["candles"][2]["time"] and hits[1]["time"] == data["candles"][3]["time"]   # the candles they fell in
+    assert (hits[0]["signal"], hits[0]["label"]) == ("sell", "1,500") and (hits[1]["signal"], hits[1]["label"]) == ("buy", "1,481")
+    # A different candle size on request; the hits move to the candles of that size they fall in.
+    asked = []
+    FakeKite.candles_range = lambda self, token, tf, start, end: asked.append((tf, (end - start).days)) or candles
+    data = client.get("/alerts/chart?symbol=INFY&range=5D&interval=5m").json()
+    assert data["interval"] == "5m" and asked[-1] == ("5m", 7) and not data["trimmed"]
+    data = client.get("/alerts/chart?symbol=INFY&range=1Y&interval=1m").json()
+    assert asked[-1] == ("1m", 60) and data["trimmed"]                          # Kite's limit for 1-minute candles
+    assert client.get("/alerts/chart?symbol=INFY&range=5D&interval=7m").json()["interval"] == "15m"   # not a size: the range's own
+    for eid in ("h1", "h2", "h3", "h4", "h5"):
+        store.delete("events", eid)
+    prices._cache.clear()
+
+
+def test_chart_opens_on_the_alerts_own_candle(client):
+    login(client, "boss", "boss-pass-123")
+    base = {"user": "boss", "name": "INFOSYS", "token": 1, "channels": [], "note": "", "status": "active",
+            "created_at": "2026-09-28", "armed_at": "2026-09-28T09:15:00+05:30"}
+    store.put("alerts", "i1", {**base, "id": "i1", "symbol": "INFY", "timeframe": "15m",
+                               "levels": [{"level": 1500.0, "condition": "close_cross", "status": "active"}]})
+    store.put("alerts", "i2", {**base, "id": "i2", "symbol": "INFY", "kind": "fractal", "timeframe": "30m", "confirm_timeframe": "3m",
+                               "sides": "both", "triggers": ["confirm"], "levels": [], "fired": []})
+    store.put("alerts", "i3", {**base, "id": "i3", "symbol": "TCS", "name": "TCS", "token": 2, "timeframe": "",
+                               "levels": [{"level": 4000.0, "condition": "cross", "status": "active"}]})
+    page = client.get("/alerts/list?tab=all&q=").text
+    assert 'data-chart="INFY"' in page and page.count('data-interval="3m"') == 2          # the smaller of 15 min and 3 min
+    assert 'data-chart="TCS" data-lines' in page and page.count('data-interval=""') == 2  # trades only: the range decides
+    for aid in ("i1", "i2", "i3"):
+        store.delete("alerts", aid)

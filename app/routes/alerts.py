@@ -1,4 +1,5 @@
 import json
+from bisect import bisect_right
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -105,6 +106,59 @@ def _fractal_view(a: dict, price: float | None) -> dict:
     }
 
 
+def _distance(a: dict) -> float | None:
+    """How far, in percent of price, the alert is from firing; 0 once a level has been passed.
+    None when there's no price yet or nothing left to watch."""
+    if a.get("fractal"):
+        price, fr = a["price"], a["fractal"]
+        gaps = [abs(f.level - price) / price * 100 for f in (fr["above"], fr["below"]) if f and price]
+        return min(gaps, default=None)
+    if a["rail"]:
+        return 0.0 if a["rail"]["reached"] else a["rail"]["pct"]
+    return None
+
+
+def _groups(alerts: list[dict]) -> list[dict]:
+    """The sorted alerts gathered under their instrument, in the order each instrument first appears.
+    Price and chart are per instrument, so they show once however many alerts it has."""
+    groups: dict[str, dict] = {}
+    for a in alerts:
+        g = groups.setdefault(a["key"], {"key": a["key"], "symbol": a["symbol"], "name": a.get("name", ""),
+                                         "exchange": a.get("exchange"), "price": a["price"], "alerts": [], "levels": [],
+                                         "interval": ""})
+        g["alerts"].append(a)
+        # The candle this alert decides on: a fractal alert's trigger candle, a close-based price alert's timeframe.
+        tf = scanner.trigger_timeframe(a) if a.get("fractal") else (a["timeframe"] if a.get("is_close") else "")
+        if tf and (not g["interval"] or TIMEFRAMES[tf][1] and (TIMEFRAMES[g["interval"]][1] or 10 ** 6) > TIMEFRAMES[tf][1]):
+            g["interval"] = tf
+        if a["status"] != "active":
+            continue  # a paused or triggered alert isn't watching anything
+        if a.get("fractal"):
+            g["levels"] += [{"price": f.level, "title": f.role.capitalize() + (" (flipped)" if f.flipped else "")}
+                            for f in a["fractal"]["all"]]
+        else:
+            g["levels"] += [{"price": lv["level"], "title": lv["label"]} for lv in a["levels"] if lv["status"] == "active"]
+    for g in groups.values():  # the same price from two alerts is one line
+        g["levels"] = list({lv["price"]: lv for lv in g["levels"]}.values())
+    return list(groups.values())
+
+
+def _overview(everything: list[dict]) -> dict:
+    """Figures for the line above the list: what is on watch, and what needs attention."""
+    active = [a for a in everything if a["status"] == "active"]
+    near = [(d, a) for a in active if (d := _distance(a)) is not None]
+    nearest = min(near, key=lambda pair: pair[0], default=None)
+    return {
+        "instruments": len({a["key"] for a in everything}),
+        "price_levels": sum(1 for a in active if not a.get("fractal") for lv in a["levels"] if lv["status"] == "active"),
+        "fractal_levels": sum(a["fractal"]["count"] for a in active if a.get("fractal")),
+        "fractal_alerts": sum(1 for a in active if a.get("fractal")),
+        "nearest": {"symbol": nearest[1]["symbol"], "pct": nearest[0]} if nearest else None,
+        "unsent": sum(1 for a in active if not a.get("channels") and not a.get("webhooks")),
+        "unscanned": sum(1 for a in active if a.get("fractal") and not a["fractal"]["scanned"]),
+    }
+
+
 def _sorted(alerts: list[dict], f: dict) -> list[dict]:
     q = f["q"].lower()
     if q:
@@ -120,8 +174,8 @@ def _sorted(alerts: list[dict], f: dict) -> list[dict]:
     def near(a):
         if a["status"] == "triggered":
             return (0, -datetime.fromisoformat(a["triggered_at"]).timestamp() if a.get("triggered_at") else 0, "")
-        pct = a["rail"]["pct"] if a["rail"] and not a["rail"]["reached"] else (0 if a["rail"] else 1e9)
-        return (1 if a["status"] == "active" else 2, pct, a["symbol"])
+        pct = _distance(a)
+        return (1 if a["status"] == "active" else 2, 1e9 if pct is None else pct, a["symbol"])
     return sorted(alerts, key=near)
 
 
@@ -135,8 +189,11 @@ def _page_ctx(request: Request, user: dict) -> dict:
     everything = _view(raw, username, broker_ok, now)
     f = _filters(request)
     s = load_settings()
+    shown = _sorted(everything, f)
     return {
-        "alerts": _sorted(everything, f),
+        "alerts": shown,
+        "groups": _groups(shown),
+        "overview": _overview(everything),
         "total": len(everything),
         "counts": {**{k: sum(1 for a in everything if a["status"] == k) for k in ("active", "triggered", "paused")},
                    "all": len(everything)},
@@ -349,17 +406,56 @@ def quote(request: Request, symbol: str = "", user: dict = Depends(guard)):
 
 
 @router.get("/chart")
-def chart_data(symbol: str, range: str = "5D", user: dict = Depends(guard)):
+def chart_data(symbol: str, range: str = "5D", interval: str = "", user: dict = Depends(guard)):
     inst = _instrument(symbol)
     if not inst:
         return JSONResponse({"error": f"{symbol} isn't a symbol we know."}, status_code=404)
     try:
-        data = prices.chart(user["username"], inst, range)
+        data = prices.chart(user["username"], inst, range, interval)
     except KiteAuthError:
         return JSONResponse({"error": "Connect Kite on the Broker page to see charts."}, status_code=409)
     except KiteError as e:
         return JSONResponse({"error": f"Kite: {e}"}, status_code=502)
-    return {**data, "name": _company(inst.name)}
+    return {**data, "name": _company(inst.name), "hits": _chart_hits(user["username"], inst, data)}
+
+
+def _event_signal(e: dict) -> str:
+    """Buy or sell for a hit; older records didn't store it, so read it off their wording."""
+    if e.get("signal"):
+        return e["signal"]
+    text = e.get("summary", "")
+    if "as resistance" in text or ("as support" not in text and (" above " in text or "fractal high" in text)):
+        return "sell"
+    return "buy"
+
+
+def _chart_hits(username: str, inst, chart: dict, limit: int = 8) -> list[dict]:
+    """The most recent alert hits on this instrument that fall inside the chart, each pinned to the
+    candle it happened in, oldest first (the order the chart wants them)."""
+    candles = chart["candles"]
+    if not candles:
+        return []
+    times = [c["time"] for c in candles]
+    # A hit after the last candle (the chart is a little behind) has no candle to sit on yet.
+    newest = times[-1] if chart["daily"] else times[-1] + (times[-1] - times[-2] if len(times) > 1 else 300)
+    mine = [e for e in store.list("events", user=username)
+            if e.get("key") == inst.key or (not e.get("key") and e.get("symbol") == inst.symbol)]
+    out = []
+    for e in sorted(mine, key=lambda e: e["at"], reverse=True):
+        at = datetime.fromisoformat(e["at"]).astimezone(prices.IST)
+        t = at.date().isoformat() if chart["daily"] else int(at.timestamp()) + prices.IST_OFFSET
+        if t > newest:
+            continue
+        i = bisect_right(times, t) - 1
+        if i < 0:
+            break  # older than the chart, and so is everything after it
+        level = e.get("level")
+        out.append({"time": times[i], "price": e["price"], "signal": _event_signal(e),
+                    "label": f"{level if level is not None else e['price']:,.2f}".rstrip("0").rstrip("."),
+                    "summary": e.get("summary", ""), "at": at.strftime("%a %-d %b, %-I:%M %p")})
+        if len(out) == limit:
+            break
+    return out[::-1]
 
 
 @router.post("")

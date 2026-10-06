@@ -81,6 +81,9 @@ html[data-alert-layout="cards"] .layout-list { display: none; }
 html[data-alert-layout="cards"] .layout-cards { display: grid; }
 html:not([data-alert-layout="cards"]) .layout-btn[data-layout-set="list"],
 html[data-alert-layout="cards"] .layout-btn[data-layout-set="cards"] { background: #16373A; color: #fff; }
+/* Rows that scroll sideways (the filter tabs on a phone) without a scrollbar track under them. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 /* Channel chips show a tick only when selected. */
 .tick { display: none; }
 input:checked + span .tick { display: inline; }
