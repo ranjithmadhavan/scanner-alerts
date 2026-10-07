@@ -83,7 +83,7 @@
 {% macro kind(a) -%}
   {# What sort of alert this is, in a word or two; the detail is in the rule beside it. #}
   {% if a.fractal %}
-    <span class="inline-flex items-center rounded-full bg-peacock-50 px-2 py-0.5 text-[12px] font-semibold text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}</span>
+    <span class="inline-flex items-center rounded-full bg-peacock-50 px-2 py-0.5 text-[12px] font-semibold text-peacock" title="{{ a.fractal.triggers|join(', ') }}. {{ a.fractal.sides }}. Sweeps judged on {{ a.fractal.trigger|lower }} candles.{% if a.fractal.min_candles %} At least {{ a.fractal.min_candles }} candles after the fractal.{% endif %}{% if a.fractal.extremes_only %} Only fractals at a day's high or low.{% endif %}">Fractal {{ a.fractal.tf|lower }}{% if a.fractal.trigger != a.fractal.tf %}, {{ a.fractal.trigger|lower }} close{% endif %}{% if a.fractal.extremes_only %} · day high/low{% endif %}</span>
   {% elif a.levels|length > 1 %}
     <span class="inline-flex items-center rounded-full bg-canvas px-2 py-0.5 text-[12px] font-semibold text-ink-soft">{{ a.levels|length }} levels</span>
   {% endif %}

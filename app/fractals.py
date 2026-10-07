@@ -260,6 +260,22 @@ def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
     return Outcome(hit.price, target, stop, stopped, reached, result)
 
 
+def at_day_extreme(hit: Hit, candles: list[Candle]) -> bool:
+    """Is the fractal behind this hit a day's high or low? A fractal high counts when it is the high of the
+    session it formed in, as that session stood until the candles that made this signal (so for an earlier
+    day, that day's high; for today, the high so far); a fractal low, the low. `candles` must reach back to
+    the fractal's session; a live touch (index -1) brings its own candle, after them."""
+    span = {"fail": 3, "confirm": 2}.get(hit.trigger, 1)
+    cutoff = candles[max(0, hit.index - span + 1)].start if hit.index >= 0 else hit.candle.start
+    day = hit.fractal.at.date()
+    session = [c for c in candles if c.start.date() == day and c.start < cutoff]
+    if not session:
+        return False
+    if hit.fractal.side == "high":
+        return hit.fractal.level >= max(c.high for c in session)
+    return hit.fractal.level <= min(c.low for c in session)
+
+
 def last_sessions(candles: list[Candle], sessions: int) -> list[Candle]:
     """Keep only the most recent `sessions` trading days of candles."""
     days = sorted({c.start.date() for c in candles})[-sessions:]

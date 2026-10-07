@@ -193,7 +193,7 @@ def test_the_page(kite, monkeypatch):
         r = c.post("/bias/notify", data={"signals": "1", "webhooks": "https://hook.example/x", "webhook_payload": '{"a": 1}'})
         assert "new signals to 1 webhook" in r.headers["HX-Trigger"] and 'name="signals" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" checked' in r.text
         assert bias.prefs("meera") == {"changes": False, "signals": True, "telegram": False, "webhooks": ["https://hook.example/x"],
-                                       "webhook_payload": '{"a":1}'}
+                                       "webhook_payload": '{"a":1}', "extremes_only": False}
         assert "Test request sent" in c.post("/bias/notify/test", data={"webhooks": "https://hook.example/x"}).headers["HX-Trigger"]
         assert posted[-1][1]["event"] == "fractal_bias_signals" and posted[-1][1]["test"] is True
         c.post("/logout")
@@ -299,3 +299,52 @@ def test_gap_flips_count_but_are_not_sent_as_signals(kite, monkeypatch):
     bias.notify_all(snap, S)
     assert sent == ["🧭 TCS potential sell · 10:05 AM"]
     assert bias.read(snap["signals"])["bear"] == 2                                       # the flip still counts
+
+
+def test_only_at_the_days_high_or_low(kite, monkeypatch):
+    """Signals on fractals that are a day's high or low are marked; someone can choose to see and be sent only those."""
+    from app import fractals
+    candles = friday() + monday()
+    held = bias.signals("INFY", candles, MON, S, CFG15, at(MON, 10, 0) + timedelta(seconds=30))
+    assert {g["level"]: g["extreme"] for g in held} == {95: True, 100: False}             # 95 was Friday's low, 100 wasn't
+    # Directly: Friday's low and high count, a low above Friday's low doesn't; today's fractals count against today so far.
+    sweep = len(friday())  # Monday 9:15, the candle that takes them
+    for f, expected in ((fractals.Fractal("low", 95.0, at(FRI, 10, 45)), True), (fractals.Fractal("low", 100.0, at(FRI, 9, 15)), False),
+                        (fractals.Fractal("high", 105.0, at(FRI, 9, 15)), True)):
+        assert fractals.at_day_extreme(fractals.Hit(f, "reject", candles[sweep], sweep, 101), candles) is expected
+    today_low = fractals.Fractal("low", 94.0, at(MON, 9, 15))                             # but 10:00 traded to 93 before 10:15 took it
+    assert not fractals.at_day_extreme(fractals.Hit(today_low, "reject", candles[-1], len(candles) - 1, 93), candles)
+
+    sigs = [{"key": "A", "extreme": True}, {"key": "B", "extreme": False}, {"key": "C"}]
+    assert [g["key"] for g in bias.shown(sigs, False)] == ["A", "B", "C"] and [g["key"] for g in bias.shown(sigs, True)] == ["A"]
+
+    # The page: the choice is per person, narrows the table and cards, and is kept when notifications are saved.
+    import app.routes.bias as routes
+    monkeypatch.setattr(config, "SUPERADMIN_USERNAME", "boss")
+    monkeypatch.setattr(config, "SUPERADMIN_PASSWORD", "boss-pass-123")
+    snap = bias.capture(kite, at(MON, 10, 0) + timedelta(seconds=30), "2026-10-05T10:00")
+    n = sum(1 for g in snap["signals"] if g["extreme"])
+    assert n == 20                                                                         # one of each stock's two
+    from app.main import app
+    with TestClient(app) as c:
+        c.post("/login", data={"username": "meera", "password": "meera-pass-1"})
+        page = c.get("/bias?day=2026-10-05&at=2026-10-05T10:00").text
+        assert "Signals <span class=\"num text-base font-semibold text-ink-soft\">40</span>" in page and "day low" in page
+        assert "high or low" in c.post("/bias/extremes", data={"on": "1"}).headers["HX-Trigger"]
+        page = c.get("/bias?day=2026-10-05&at=2026-10-05T10:00").text
+        assert f">{n} of 40</span>" in page and page.count("<article") == n
+        c.post("/bias/notify", data={"signals": "1"})
+        assert bias.prefs("meera")["extremes_only"] is True
+        c.post("/bias/extremes", data={})
+        assert bias.prefs("meera")["extremes_only"] is False
+
+    # Messages follow the same choice.
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append(subject) or {"telegram": "sent"})
+    bias.save_prefs("meera", {**bias.prefs("meera"), "signals": True, "telegram": True, "extremes_only": True})
+    fresh = {**snap, "id": "2026-10-05T10:05", "signals": [{**snap["signals"][0], "symbol": "AAA", "key": "AAA", "extreme": False},
+                                                             {**snap["signals"][1], "symbol": "BBB", "key": "BBB", "extreme": True}]}
+    store.put("bias_snapshots", fresh["id"], fresh)
+    store.update("bias_days", "2026-10-05", {"slots": [snap["id"], fresh["id"]]})
+    bias.notify_all(fresh, S)
+    assert sent == ["🧭 BBB potential buy · 10:05 AM"]                                    # AAA's fractal wasn't a day's low

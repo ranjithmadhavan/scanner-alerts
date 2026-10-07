@@ -28,6 +28,7 @@
     <span class="rounded-full bg-peacock-50 px-2.5 py-0.5 font-medium text-peacock">Fractals on {{ tf_label|lower }} candles</span>
     <span class="rounded-full bg-marigold-50 px-2.5 py-0.5 font-medium text-marigold-dark">{{ 'Sweeps and breaks judged on the same candles' if same_candles else 'Sweeps and breaks judged on ' ~ trigger_label|lower ~ ' closes' }}</span>
     <span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">{{ 'At least ' ~ min_candles ~ ' ' ~ tf_label|lower ~ ' candles between a fractal and the candle that takes it' if min_candles else 'No minimum gap after a fractal forms' }}</span>
+    {% if extremes_only %}<span class="rounded-full bg-peacock-50 px-2.5 py-0.5 font-medium text-peacock">Only fractals at a day's high or low</span>{% endif %}
   </p>
 
   {# The chart draws the trigger candles with every signal marked; clicking a row jumps to it. #}

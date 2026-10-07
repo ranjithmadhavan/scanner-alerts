@@ -39,8 +39,10 @@ def page(request: Request, user: dict = Depends(guard), day: str = "", at: str =
     chosen = store.get("bias_snapshots", sid) if sid else None
     before = bias.previous(chosen) if chosen else None
     seen_before = {g["key"]: g["status"] for g in before["signals"]} if before else {}
+    extremes_only = bias.prefs(user["username"])["extremes_only"]
     ctx = {
-        "days": days, "day": day, "chosen": chosen,
+        "days": days, "day": day, "chosen": chosen, "extremes_only": extremes_only,
+        "listed": bias.shown(chosen["signals"], extremes_only) if chosen else [],
         "reading": bias.read(chosen["signals"]) if chosen else None,
         "counted": _counted(chosen["settings"] if chosen else bias.load_settings()),
         "seen_before": seen_before, "has_before": before is not None,
@@ -119,7 +121,7 @@ def _prefs_from_form(user: dict, changes: str, signals: str, telegram: str, hook
     if telegram and not notify.recipient_ready("telegram", notify.load_contacts(user["username"])):
         return {}, "Set up Telegram on the Notifications page first."
     return {"changes": bool(changes), "signals": bool(signals), "telegram": bool(telegram),
-            "webhooks": urls, "webhook_payload": payload}, None
+            "webhooks": urls, "webhook_payload": payload, "extremes_only": bias.prefs(user["username"])["extremes_only"]}, None
 
 
 @router.post("/notify")
@@ -134,6 +136,14 @@ def save_notify(request: Request, user: dict = Depends(guard), changes: str = Fo
     where = [w for w, on in (("Telegram", p["telegram"]), (f"{len(p['webhooks'])} webhook{'s' if len(p['webhooks']) != 1 else ''}", p["webhooks"])) if on]
     msg = f"Fractal bias: {' and '.join(what)} to {' and '.join(where)}" if what and where else "Fractal bias notifications are off"
     return toast(render(request, "partials/bias_notify.html", _notify_ctx(user, p)), msg)
+
+
+@router.post("/extremes")
+def set_extremes(user: dict = Depends(guard), on: str = Form("")):
+    """All fractal signals, or only those on fractals that are a day's high or low: for this person's table, cards and messages."""
+    bias.save_prefs(user["username"], {**bias.prefs(user["username"]), "extremes_only": bool(on)})
+    response = HTMLResponse("", headers={"HX-Refresh": "true"})
+    return toast(response, "Showing and sending only signals at a day's high or low" if on else "Showing and sending every fractal signal")
 
 
 @router.post("/notify/test")

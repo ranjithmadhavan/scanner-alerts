@@ -237,3 +237,39 @@ def test_a_sweep_that_holds_needs_the_next_candle_to_close_back_too():
     # Mirrored on a fractal low: a potential buy.
     hits, _ = walk(series(*SETUP, (104, 105, 99, 101), (101, 102, 99.6, 100.5)))
     assert keys(hits) == [("low", "touch"), ("low", "reject"), ("low", "confirm")] and hits[2].signal == "buy"
+
+
+def test_fractal_alerts_can_report_only_at_the_days_high_or_low():
+    from app import fractals, scanner
+    from app.routes.alerts import _fractal_fields
+    fields, error = _fractal_fields("30m", "both", ["reject"], "", 5, "1")
+    assert error is None and fields["extremes_only"] is True
+    assert _fractal_fields("30m", "both", ["reject"], "", 5, "")[0]["extremes_only"] is False
+    fri, mon = datetime(2026, 10, 2, 9, 15, tzinfo=IST), datetime(2026, 10, 5, 9, 15, tzinfo=IST)
+    candles = [Candle(fri, 100, 101, 95, 100), Candle(fri + timedelta(minutes=30), 100, 103, 97, 102),
+               Candle(mon, 102, 103, 94, 99)]
+    day_low, higher_low = Fractal("low", 95.0, fri), Fractal("low", 97.0, fri + timedelta(minutes=30))
+    alert = {"sides": "both", "triggers": ["reject"], "extremes_only": True}
+    assert scanner.fractal_wanted(alert, fractals.Hit(day_low, "reject", candles[2], 2, 99), candles)       # Friday's low
+    assert not scanner.fractal_wanted(alert, fractals.Hit(higher_low, "reject", candles[2], 2, 99), candles)
+    assert scanner.fractal_wanted({**alert, "extremes_only": False}, fractals.Hit(higher_low, "reject", candles[2], 2, 99), candles)
+    # A live touch (no index) is judged the same way.
+    touch = fractals.Hit(day_low, "touch", Candle(mon + timedelta(minutes=30), 99, 99, 94.5, 96), -1, 95.0)
+    assert scanner.fractal_wanted({**alert, "triggers": ["touch"]}, touch, candles)
+
+
+def test_any_earlier_days_high_or_low_counts_not_just_yesterdays():
+    """A 30-minute fractal that was the low of a day several sessions back still counts when price comes back to it;
+    one that was only a dip inside its day doesn't."""
+    from app import fractals
+    days = [datetime(2026, 9, 30, 9, 15, tzinfo=IST), datetime(2026, 10, 1, 9, 15, tzinfo=IST), datetime(2026, 10, 5, 9, 15, tzinfo=IST)]
+    bars = {  # (open, high, low, close) per 30-minute candle
+        days[0]: [(105, 107, 103, 104), (104, 105, 98, 101), (101, 104, 100, 103), (103, 104, 101, 102), (102, 103, 99.5, 101), (101, 103, 100, 102)],
+        days[1]: [(102, 106, 101, 105), (105, 108, 104, 107), (107, 109, 105, 108)],
+        days[2]: [(108, 108, 102, 103), (103, 104, 97, 101)],
+    }
+    candles = [Candle(d + timedelta(minutes=30 * k), *b) for d in days for k, b in enumerate(bars[d])]
+    hits, _ = fractals.walk(candles)
+    taken = {h.fractal.level: fractals.at_day_extreme(h, candles) for h in hits if h.trigger == "reject" and h.fractal.side == "low"}
+    assert taken[98] is True        # 30 Sept's low, swept on 5 Oct, two sessions later
+    assert taken[99.5] is False     # a later dip on 30 Sept, above that day's low

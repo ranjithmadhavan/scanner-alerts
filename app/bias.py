@@ -126,6 +126,7 @@ def signals(symbol: str, candles: list[Candle], day: date, s: MarketSettings, cf
             "side": hit.fractal.side, "flipped": hit.fractal.flipped, "level": hit.fractal.level,
             "at": _end(hit.candle, m, s).isoformat(), "price": hit.price, "stop": o.stop,
             "target": o.target, "status": status,
+            "extreme": fractals.at_day_extreme(hit, candles),  # the fractal is a day's high or low
             # when the stop or target was traded: the close of that candle, like "at"
             "until": _end(o.stopped if status == "stopped" else o.reached, m, s).isoformat() if status != "held" else None,
         })
@@ -351,7 +352,14 @@ def prefs(username: str) -> dict:
     if "changes" not in doc and doc.get("telegram"):
         doc = {**doc, "changes": True}
     return {"changes": bool(doc.get("changes")), "signals": bool(doc.get("signals")), "telegram": bool(doc.get("telegram")),
-            "webhooks": doc.get("webhooks", []), "webhook_payload": doc.get("webhook_payload", "")}
+            "webhooks": doc.get("webhooks", []), "webhook_payload": doc.get("webhook_payload", ""),
+            "extremes_only": bool(doc.get("extremes_only"))}
+
+
+def shown(sigs: list[dict], extremes_only: bool) -> list[dict]:
+    """The signals someone sees and is sent: all of them, or only those on fractals that are a day's high or low.
+    (Counts from before this was recorded have no 'extreme' and drop out of the narrower view.)"""
+    return [g for g in sigs if g.get("extreme")] if extremes_only else sigs
 
 
 def save_prefs(username: str, p: dict) -> None:
@@ -408,7 +416,7 @@ def signals_message(snap: dict, fresh: list[dict]) -> tuple[str, str]:
 
 
 def _signal_data(g: dict) -> dict:
-    return {k: g.get(k) for k in ("symbol", "signal", "trigger", "side", "flipped", "level", "price", "stop", "target", "at")}
+    return {k: g.get(k) for k in ("symbol", "signal", "trigger", "side", "flipped", "level", "price", "stop", "target", "at", "extreme")}
 
 
 def hook_body(event: str, snap: dict, p: dict, **more) -> dict:
@@ -434,13 +442,13 @@ def notify_all(snap: dict, s: MarketSettings | None = None) -> dict:
     people = [(u["username"], prefs(u["username"])) for u in store.list("users") if can_see(u["username"])]
     people = [(u, p) for u, p in people if (p["telegram"] or p["webhooks"]) and (p["changes"] or p["signals"])]
     results: dict[str, dict] = {}
-    fresh = new_signals(snap, previous(snap))
-    if fresh:
-        subject, body = signals_message(snap, fresh)
-        for u, p in people:
-            if p["signals"]:
-                hook = hook_body("fractal_bias_signals", snap, p, signals=[_signal_data(g) for g in fresh])
-                results.setdefault(u, {})["signals"] = _deliver(u, p, subject, body, hook)
+    fresh_all = new_signals(snap, previous(snap))
+    for u, p in people:
+        fresh = shown(fresh_all, p["extremes_only"])
+        if p["signals"] and fresh:
+            subject, body = signals_message(snap, fresh)
+            hook = hook_body("fractal_bias_signals", snap, p, signals=[_signal_data(g) for g in fresh])
+            results.setdefault(u, {})["signals"] = _deliver(u, p, subject, body, hook)
     if bias_mark(snap["id"], s):
         day = store.get("bias_days", snap["date"]) or {}
         was = day.get("announced")

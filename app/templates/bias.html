@@ -75,8 +75,15 @@
   </section>
 
   {% if chosen.signals %}
-  <div class="mt-6 flex items-center justify-between gap-3">
-    <h2 class="text-xl font-bold">Signals <span class="num text-base font-semibold text-ink-soft">{{ chosen.signals|length }}</span></h2>
+  <div class="mt-6 flex flex-wrap items-center gap-3">
+    <h2 class="text-xl font-bold">Signals <span class="num text-base font-semibold text-ink-soft">{{ listed|length }}{% if extremes_only %} of {{ chosen.signals|length }}{% endif %}</span></h2>
+    {# All fractal signals, or only those at the day's high or low: for this table and the cards, and for the signal messages. #}
+    <form hx-post="/bias/extremes" hx-trigger="change" hx-swap="none" class="ml-auto">
+      <label class="flex cursor-pointer items-center gap-2 rounded-full bg-white px-3.5 py-1.5 text-sm font-semibold ring-1 ring-line transition hover:ring-peacock/40 has-[:checked]:bg-peacock-50 has-[:checked]:text-peacock has-[:checked]:ring-peacock/30"
+             title="Ticked: only signals on fractals that are a day's high or low (an earlier day's, or today's so far), here and in your signal messages. Unticked: every fractal signal.">
+        <input type="checkbox" name="on" value="1" class="h-4 w-4 rounded accent-peacock" {{ 'checked' if extremes_only }}> Only at day high / day low
+      </label>
+    </form>
     <div class="inline-flex rounded-full bg-white p-1 ring-1 ring-line" role="group" aria-label="Layout">
       <button type="button" data-layout-set="list" data-layout-for="bias" aria-pressed="true" title="Show as list" aria-label="Show as list"
               class="layout-btn rounded-full p-1.5 text-ink-soft transition hover:text-ink">{{ icon('rows', 'h-4 w-4') }}</button>
@@ -84,6 +91,7 @@
               class="layout-btn rounded-full p-1.5 text-ink-soft transition hover:text-ink">{{ icon('grid', 'h-4 w-4') }}</button>
     </div>
   </div>
+  {% if listed %}
   <section class="bias-list panel mt-3 overflow-hidden">
     <div class="no-scrollbar max-h-[560px] overflow-auto">
       <table class="w-full min-w-[760px] text-sm">
@@ -99,7 +107,7 @@
           </tr>
         </thead>
         <tbody class="divide-y divide-line/70 whitespace-nowrap">
-          {% for g in chosen.signals|reverse %}
+          {% for g in listed|reverse %}
           {% set new = has_before and g.key not in seen_before %}
           {% set turned = has_before and g.key in seen_before and seen_before[g.key] != g.status %}
           <tr class="num {{ 'bg-marigold-50/60' if new or turned }}">
@@ -108,7 +116,7 @@
             <td class="py-2 pr-3 font-semibold"><button type="button" class="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 -mx-1.5 transition hover:bg-canvas hover:text-peacock"
                 data-chart="{{ g.symbol }}" data-interval="5m" data-lines='{{ lines|tojson }}' title="Chart {{ g.symbol }}">{{ g.symbol }} <span class="text-ink-soft">{{ icon('chart', 'h-3.5 w-3.5') }}</span></button>{% if new %} <span class="ml-1 rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark ring-1 ring-marigold/30">new</span>{% endif %}</td>
             <td class="py-2 pr-3"><span class="font-semibold {{ 'text-rise' if g.signal == 'buy' else 'text-fall' }}">Potential {{ g.signal }}</span>
-              <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span></td>
+              <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span>{% if g.extreme %} <span class="rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark">{{ 'day high' if g.side == 'high' else 'day low' }}</span>{% endif %}</td>
             <td class="py-2 pr-3 text-right">{{ g.level|price }} <span class="text-[12px] text-ink-soft">{{ g.side }}</span></td>
             <td class="py-2 pr-3 text-right">{{ g.price|price }}</td>
             <td class="py-2 pr-3 text-right text-ink-soft">{{ g.stop|price }}</td>
@@ -125,7 +133,7 @@
     </div>
   </section>
   <div class="bias-cards mt-3 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3">
-    {% for g in chosen.signals|reverse %}
+    {% for g in listed|reverse %}
     {% set new = has_before and g.key not in seen_before %}
     {% set turned = has_before and g.key in seen_before and seen_before[g.key] != g.status %}
     {% set lines = [{'price': g.level, 'title': 'Fractal ' ~ g.side}, {'price': g.stop, 'title': 'Stop'}] + ([{'price': g.target, 'title': 'Target'}] if g.target is not none else []) %}
@@ -140,7 +148,7 @@
       </header>
       <div class="px-4 pb-4 pt-3">
         <p class="text-[15px]"><span class="font-semibold {{ 'text-rise' if g.signal == 'buy' else 'text-fall' }}">Potential {{ g.signal }}</span>
-          <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span></p>
+          <span class="text-ink-soft">· {{ trigger_names[g.trigger]|lower }}{{ ' (gap flip)' if g.flipped }}</span>{% if g.extreme %} <span class="rounded-full bg-marigold-50 px-1.5 text-[11px] font-semibold text-marigold-dark">{{ 'day high' if g.side == 'high' else 'day low' }}</span>{% endif %}</p>
         <dl class="num mt-3 grid grid-cols-3 gap-2 text-sm">
           <div><dt class="text-[12px] text-ink-soft">Fractal {{ g.side }}</dt><dd class="font-semibold">{{ g.level|price }}</dd></div>
           <div><dt class="text-[12px] text-ink-soft">Price</dt><dd class="font-semibold">{{ g.price|price }}</dd></div>
@@ -157,11 +165,16 @@
     {% endfor %}
   </div>
   {% else %}
+  <section class="panel mt-3">
+    <p class="px-6 py-10 text-center text-ink-soft">No signal on a day's high or low by this time. Untick “Only at day high / day low” to see all {{ chosen.signals|length }}.</p>
+  </section>
+  {% endif %}
+  {% else %}
   <section class="panel mt-4">
     <p class="px-6 py-10 text-center text-ink-soft">No fractal was swept on any Nifty 50 stock by this time.</p>
   </section>
   {% endif %}
-  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on {{ counted.trigger_tf|replace("m", "-minute") }} closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count.
+  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on {{ counted.trigger_tf|replace("m", "-minute") }} closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count. “Day high” and “day low” mark fractals that are a day's high or low (an earlier day's, or today's as it stood); the bias reading counts every signal either way.
     {% if chosen.missing or chosen.failed %}Not counted: {{ (chosen.missing + chosen.failed)|join(', ') }}.{% endif %}</p>
 {% endif %}
 

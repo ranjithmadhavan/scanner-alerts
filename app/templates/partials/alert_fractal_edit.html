@@ -20,7 +20,7 @@
         {% for key, tf in fractal_timeframes.items() %}<option value="{{ key }}" data-min="{{ tf[2] }}" {{ 'selected' if key == a.timeframe }}>{{ tf[0] }} candles</option>{% endfor %}
       </select>
     </div>
-    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers, f_confirm=a.confirm_timeframe or '', f_min=a.min_candles if a.min_candles is defined else min_default %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
+    <div class="mt-5">{% with f_sides=a.sides, f_triggers=a.triggers, f_confirm=a.confirm_timeframe or '', f_min=a.min_candles if a.min_candles is defined else min_default, f_extremes=a.extremes_only %}{% include "partials/fractal_fields.html" %}{% endwith %}</div>
 
     <div class="mt-5">
       <label for="edit-note" class="label">Alert message <span class="font-normal text-ink-soft">(optional)</span></label>

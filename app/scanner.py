@@ -338,8 +338,11 @@ def _cached(what: str, client, username: str, alert: dict, tf: str, s: MarketSet
     return _fractal_history[key][1]
 
 
-def fractal_wanted(alert: dict, hit: fractals.Hit) -> bool:
-    return alert.get("sides", "both") in ("both", hit.fractal.side) and hit.trigger in alert.get("triggers", [])
+def fractal_wanted(alert: dict, hit: fractals.Hit, candles: list[Candle] | None = None) -> bool:
+    """Is this hit one the alert reports? With extremes_only, only fractals that are a day's high or low."""
+    if not (alert.get("sides", "both") in ("both", hit.fractal.side) and hit.trigger in alert.get("triggers", [])):
+        return False
+    return not alert.get("extremes_only") or candles is None or fractals.at_day_extreme(hit, candles)
 
 
 def fractal_text(alert: dict, hit: fractals.Hit) -> tuple[str, str, str]:
@@ -454,7 +457,7 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
     for hit in hits:
         end = candle_end(hit.candle, trigger_tf, s)
         if (hit.index >= first and end.date() == now.date() and end > armed_at
-                and fractal_wanted(alert, hit) and hit.key not in fired):
+                and fractal_wanted(alert, hit, stream) and hit.key not in fired):
             traded = hit.candle.high if hit.signal == "sell" else hit.candle.low
             to_fire.append((hit, traded if hit.trigger == "touch" else hit.price))
             fired.add(hit.key)
@@ -475,7 +478,7 @@ def _scan_fractal(username: str, alert: dict, client, cache: dict, s: MarketSett
         too_soon = fractals.candles_between(f, first_beyond.start, closes) < min_between(alert)
         hit = fractals.Hit(f, "touch", first_beyond, -1, f.level)
         if (not too_soon and first_beyond.start >= armed_at.replace(second=0, microsecond=0)
-                and fractal_wanted(alert, hit) and hit.key not in fired):
+                and fractal_wanted(alert, hit, stream + forming) and hit.key not in fired):
             touches.append((hit, first_beyond.high if hit.signal == "sell" else first_beyond.low))
     remaining = [f for f in live if f not in touched]
     for hit, _ in touches:
