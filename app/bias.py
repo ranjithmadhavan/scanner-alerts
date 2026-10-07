@@ -18,7 +18,7 @@ holds each count's totals for the chart) so any moment can be looked at again.
 Notifications, per person (bias_alerts/{username}), to Telegram and/or their own webhooks:
 * bias changes: looked at every 15 minutes (9:30, 9:45, ...), so the label isn't flipping every
   5 minutes; the first of the day and every change of label after it;
-* new signals: every 5-minute check, each signal that wasn't in the previous count.
+* new signals: every 5-minute check, each signal that wasn't in the previous count (gap flips aside).
 """
 
 import csv
@@ -336,8 +336,11 @@ def previous(snap: dict) -> dict | None:
 
 
 def new_signals(snap: dict, before: dict | None) -> list[dict]:
+    """Signals in this count that weren't in the one before, to notify about. A gap flip (price gapped through
+    the fractal, which then plays the opposite role) is left out: it still counts toward the bias and shows on
+    the page, but a signal against the level's own side isn't one to act on."""
     known = {g["key"] for g in (before or {}).get("signals", [])}
-    return [g for g in snap["signals"] if g["key"] not in known]
+    return [g for g in snap["signals"] if g["key"] not in known and not g.get("flipped")]
 
 
 # ---- notifications ---------------------------------------------------------------------------

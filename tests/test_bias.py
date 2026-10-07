@@ -281,3 +281,21 @@ def test_a_signals_chart(kite, monkeypatch):
         bias.capture(kite, at(MON, 10, 0) + timedelta(seconds=30), "2026-10-05T10:00")         # still holding then
         held = c.get("/bias/chart?snap=2026-10-05T10:00&symbol=ADANIENT&range=5D&interval=15m").json()["hits"]
         assert [h["summary"].rsplit(", ", 1)[1] for h in held] == ["holding", "holding"]
+
+
+def test_gap_flips_count_but_are_not_sent_as_signals(kite, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append(subject) or {"telegram": "sent"})
+    bias.save_prefs("meera", {"changes": False, "signals": True, "telegram": True, "webhooks": [], "webhook_payload": ""})
+
+    def sig(symbol, flipped):
+        return {"key": f"{symbol}:k", "symbol": symbol, "signal": "sell", "trigger": "confirm", "side": "low", "flipped": flipped,
+                "level": 100.0, "at": at(MON, 10, 0).isoformat(), "price": 99.0, "stop": 101.0, "target": 95.0, "status": "held"}
+    snap = {"id": "2026-10-05T10:05", "date": "2026-10-05", "at": at(MON, 10, 5).isoformat(),
+            "signals": [sig("INFY", True), sig("TCS", False)], "label": "Neutral"}
+    store.put("bias_snapshots", snap["id"], snap)
+    store.put("bias_days", "2026-10-05", {"date": "2026-10-05", "slots": [snap["id"]]})
+    assert [g["symbol"] for g in bias.new_signals(snap, None)] == ["TCS"]
+    bias.notify_all(snap, S)
+    assert sent == ["🧭 TCS potential sell · 10:05 AM"]
+    assert bias.read(snap["signals"])["bear"] == 2                                       # the flip still counts
