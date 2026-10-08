@@ -123,6 +123,7 @@
             <td class="py-2 pr-6">
               {% if g.status == 'stopped' %}<span class="font-semibold text-fall">Stopped out</span> <span class="text-ink-soft">{{ g.until|ist('%-I:%M') }}</span>
               {% elif g.status == 'target' %}<span class="font-semibold text-rise">At target</span> <span class="text-ink-soft">{{ g.target|price }}</span>
+              {% elif g.watch %}<span class="font-semibold">Holding</span> <span class="text-marigold-dark">stop hit, {{ g.watch[0] }} of {{ g.watch[1] }}</span>
               {% else %}<span class="font-semibold">Holding</span>{% endif %}
               {% if turned %}<span class="ml-1 text-[11px] font-semibold text-marigold-dark">changed</span>{% endif %}
             </td>
@@ -157,7 +158,7 @@
         <p class="mt-3 flex flex-wrap items-center gap-x-2 border-t border-line pt-3 text-sm">
           {% if g.status == 'stopped' %}<span class="rounded-full bg-fall-50 px-2 py-0.5 font-semibold text-fall">Stopped out</span> <span class="num text-ink-soft">{{ g.until|ist('%-I:%M') }}</span>
           {% elif g.status == 'target' %}<span class="rounded-full bg-rise-50 px-2 py-0.5 font-semibold text-rise">At target</span> <span class="num text-ink-soft">{{ g.target|price }}</span>
-          {% else %}<span class="rounded-full bg-canvas px-2 py-0.5 font-semibold">Holding</span>{% if g.target is not none %} <span class="num text-ink-soft">target {{ g.target|price }}</span>{% endif %}{% endif %}
+          {% else %}<span class="rounded-full bg-canvas px-2 py-0.5 font-semibold">Holding</span>{% if g.watch %} <span class="num text-marigold-dark">stop hit, watching {{ g.watch[0] }} of {{ g.watch[1] }}</span>{% elif g.target is not none %} <span class="num text-ink-soft">target {{ g.target|price }}</span>{% endif %}{% endif %}
           {% if turned %}<span class="ml-auto text-[12px] font-semibold text-marigold-dark">changed</span>{% endif %}
         </p>
       </div>
@@ -174,7 +175,7 @@
     <p class="px-6 py-10 text-center text-ink-soft">No fractal was swept on any Nifty 50 stock by this time.</p>
   </section>
   {% endif %}
-  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on {{ counted.trigger_tf|replace("m", "-minute") }} closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count. “Day high” and “day low” mark fractals that are a day's high or low (an earlier day's, or today's as it stood); the bias reading counts every signal either way.
+  <p class="mt-3 px-1 text-[13px] leading-relaxed text-ink-soft">How it's read: fractals are found on 30-minute candles over the last {{ sessions }} sessions and judged on {{ counted.trigger_tf|replace("m", "-minute") }} closes. A swept fractal low is a potential buy, a swept fractal high a potential sell; counted here: {{ counted.names }}, with at least {{ counted.min_candles }} candles between the fractal and the sweep. The stop is the extreme of the candles that made the signal{% if counted.flip_after %}; trading through it only counts as a stop-out if, {{ counted.flip_after }} candle{{ 's' if counted.flip_after != 1 }} later (counting the one that broke it), price still closes beyond the fractal. Until then the signal shows “stop hit” and keeps its own direction{% endif %}. Buys holding and sells stopped out lean bullish; sells holding and buys stopped out lean bearish. Highlighted rows are new or changed since the previous count. “Day high” and “day low” mark fractals that are a day's high or low (an earlier day's, or today's as it stood); the bias reading counts every signal either way.
     {% if chosen.missing or chosen.failed %}Not counted: {{ (chosen.missing + chosen.failed)|join(', ') }}.{% endif %}</p>
 {% endif %}
 
@@ -196,10 +197,19 @@
   </fieldset>
   <div><label class="label" for="bias-tf">Judge sweeps on</label>
     <select id="bias-tf" name="trigger_tf" class="field w-auto pr-9">{% for tf in trigger_tfs %}<option value="{{ tf }}" {{ 'selected' if tf == settings.trigger_tf }}>{{ tf|replace('m', ' min') }} candles</option>{% endfor %}</select></div>
+  <div><label class="label" for="bias-flip">Stop-out confirmed after</label>
+    <select id="bias-flip" name="flip_after" class="field w-auto pr-9">{% for n in flip_choices %}<option value="{{ n }}" {{ 'selected' if n == settings.flip_after }}>{{ n }} candle{{ 's' if n != 1 }} beyond</option>{% endfor %}</select></div>
   <div><label class="label" for="bias-min">Candles between fractal and sweep</label>
     <select id="bias-min" name="min_candles" class="field w-auto pr-9">{% for n in min_choices %}<option value="{{ n }}" {{ 'selected' if n == settings.min_candles }}>{{ n if n else 'Any' }}</option>{% endfor %}</select></div>
   <button class="btn-primary htmx-busy">Save</button>
   <p class="w-full text-[13px] text-ink-soft">Applies from the next count. Only you, the super admin, see this.</p>
+</form>
+<form class="panel mt-4 flex flex-wrap items-end gap-4 p-6" hx-post="/bias/recount" hx-swap="none"
+      hx-confirm="Rebuild every count of this day with the current rules? The saved counts for that day are replaced. Nothing is sent.">
+  <div><label class="label" for="bias-recount">Recount a day</label>
+    <input id="bias-recount" type="date" name="day" value="{{ day }}" class="field w-auto"></div>
+  <button class="btn-outline htmx-busy">{{ icon('refresh', 'h-4 w-4') }} Recount this day</button>
+  <p class="w-full text-[13px] text-ink-soft">Works the day out again from Kite's candles with today's rules and settings, replacing its saved counts (useful after the rules change). Takes about a minute. Nothing is sent.</p>
 </form>
 {% endif %}
 {% endblock %}

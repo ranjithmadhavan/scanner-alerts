@@ -40,7 +40,10 @@ FRACTAL_TF = "30m"
 TRIGGER_TFS = ["5m", "15m"]  # the candles sweeps are judged on
 SESSIONS = fractals.TIMEFRAMES[FRACTAL_TF][1]
 TRIGGER_CHOICES = ["reject", "confirm", "fail"]
-DEFAULTS = {"triggers": ["confirm", "fail"], "min_candles": fractals.DEFAULT_MIN_BETWEEN, "trigger_tf": "5m"}
+DEFAULTS = {"triggers": ["confirm", "fail"], "min_candles": fractals.DEFAULT_MIN_BETWEEN, "trigger_tf": "5m", "flip_after": 3}
+# A signal whose stop is traded through only turns against itself (and leans the bias the other way) when, this many
+# candles on, price still closes beyond the fractal. Signals themselves go out straight away, as before.
+FLIP_CHOICES = [1, 2, 3, 4, 5, 6, 8, 10]
 EVERY = 5  # minutes between counts
 BIAS_EVERY = 15  # minutes between looks at the bias label
 TRIGGER_NAMES = {"reject": "Sweep", "confirm": "Sweep holds", "fail": "Break fails"}
@@ -60,8 +63,9 @@ def load_settings() -> dict:
     return {**DEFAULTS, **(store.get("settings", "bias") or {})}
 
 
-def save_settings(triggers: list[str], min_candles: int, trigger_tf: str = "5m") -> None:
-    store.update("settings", "bias", {"triggers": triggers, "min_candles": min_candles, "trigger_tf": trigger_tf})
+def save_settings(triggers: list[str], min_candles: int, trigger_tf: str = "5m", flip_after: int = 3) -> None:
+    store.update("settings", "bias", {"triggers": triggers, "min_candles": min_candles, "trigger_tf": trigger_tf,
+                                      "flip_after": flip_after})
 
 
 def stocks(today: date) -> list[str]:
@@ -118,19 +122,46 @@ def signals(symbol: str, candles: list[Candle], day: date, s: MarketSettings, cf
     for hit in hits:
         if hit.trigger not in cfg["triggers"] or hit.candle.start.astimezone(IST).date() != day or hit.fractal.key in seen:
             continue
+        if not fractals.within_one_session(hit, candles):
+            continue  # taken on the previous day's last candle, "held" only by today's gap
         seen.add(hit.fractal.key)  # one signal per fractal, from the first way it qualified
-        o = fractals.outcome(hit, candles)
-        status = {"stop": "stopped", "target": "target"}.get(o.result, "held")
+        f = follow(hit, candles, int(cfg.get("flip_after", 1)))
         out.append({
             "key": f"{symbol}:{hit.key}", "symbol": symbol, "signal": hit.signal, "trigger": hit.trigger,
             "side": hit.fractal.side, "flipped": hit.fractal.flipped, "level": hit.fractal.level,
-            "at": _end(hit.candle, m, s).isoformat(), "price": hit.price, "stop": o.stop,
-            "target": o.target, "status": status,
+            "at": _end(hit.candle, m, s).isoformat(), "price": hit.price, "stop": f["stop"],
+            "target": f["target"], "status": f["status"], "watch": f["watch"],
             "extreme": fractals.at_day_extreme(hit, candles),  # the fractal is a day's high or low
-            # when the stop or target was traded: the close of that candle, like "at"
-            "until": _end(o.stopped if status == "stopped" else o.reached, m, s).isoformat() if status != "held" else None,
+            # when the target was reached or the stop-out confirmed: the close of that candle, like "at"
+            "until": _end(f["until"], m, s).isoformat() if f["until"] else None,
         })
     return out
+
+
+def follow(hit: fractals.Hit, candles: list[Candle], after: int) -> dict:
+    """How a signal has gone, for the bias. Reaching its target first makes it a win. Trading through its stop
+    turns it against itself (a stop-out, which leans the bias the other way) only if, `after` candles on (counting
+    the one that broke the stop), the last of them still closes beyond the fractal. Back on the near side by then,
+    the signal stands, and the next break of the stop is watched the same way.
+    Returns status (held / target / stopped), the candle that settled it, and while a break is being watched,
+    watch = [candles seen, candles needed]."""
+    o = fractals.outcome(hit, candles)
+    sell, level = hit.signal == "sell", hit.fractal.level
+    later = candles[hit.index + 1:]
+    reached = next((k for k, c in enumerate(later) if o.target is not None and (c.low <= o.target if sell else c.high >= o.target)), None)
+    for k, c in enumerate(later):
+        if not (c.high > o.stop if sell else c.low < o.stop):
+            continue
+        if reached is not None and reached < k:
+            break  # the target came first
+        end = k + after - 1
+        if end >= len(later):
+            return {"status": "held", "until": None, "watch": [len(later) - k, after], "stop": o.stop, "target": o.target}
+        if later[end].close > level if sell else later[end].close < level:
+            return {"status": "stopped", "until": later[end], "watch": None, "stop": o.stop, "target": o.target}
+    if reached is not None:
+        return {"status": "target", "until": later[reached], "watch": None, "stop": o.stop, "target": o.target}
+    return {"status": "held", "until": None, "watch": None, "stop": o.stop, "target": o.target}
 
 
 def leaning(sig: dict) -> str:
@@ -206,21 +237,66 @@ def capture(client, now: datetime, slot_id: str | None = None) -> dict:
             failed.append(symbol)
             continue
         sigs += signals(symbol, fractals.last_sessions(candles, SESSIONS), day, s, cfg, now)
+    return _save(_snapshot(day, now, slot_id, sigs, missing, failed, cfg))
+
+
+def _snapshot(day: date, now: datetime, slot_id: str | None, sigs: list[dict], missing: list[str], failed: list[str],
+              cfg: dict) -> dict:
     sigs.sort(key=lambda g: (g["at"], g["symbol"]))
     r = read(sigs)
-    snap = {
+    return {
         "id": slot_id or f"{day.isoformat()}T{now.astimezone(IST):%H:%M}", "date": day.isoformat(), "at": now.isoformat(),
         "label": r["label"], "score": r["score"], "bull": r["bull"], "bear": r["bear"],
         "signals": sigs, "missing": missing, "failed": failed, "settings": cfg,
     }
+
+
+def _save(snap: dict) -> dict:
     store.put("bias_snapshots", snap["id"], snap)
     summary = store.get("bias_days", snap["date"]) or {}
     slots = sorted(set(summary.get("slots", [])) | {snap["id"]})
     # Each count's totals live in the day's summary too, so the page and the chart needn't read every count.
-    points = {**summary.get("points", {}), snap["id"]: {"bull": r["bull"], "bear": r["bear"], "label": r["label"], "at": snap["at"]}}
+    points = {**summary.get("points", {}), snap["id"]: {"bull": snap["bull"], "bear": snap["bear"], "label": snap["label"],
+                                                        "at": snap["at"]}}
     store.update("bias_days", snap["date"], {"date": snap["date"], "count": len(slots), "slots": slots, "last_at": snap["at"],
                                              "points": points})
     return snap
+
+
+def recount_day(client, day: date) -> int:
+    """Work a past (or the current) day's counts out again with today's rules and settings, from Kite's candles,
+    replacing what was saved. Nothing is sent. Each stock's candles are fetched once; every saved count of the day
+    (or, if none, every 5-minute close) is rebuilt as of its own time. Returns how many counts were rebuilt."""
+    s, cfg = market_settings(), load_settings()
+    known = instruments()
+    start = day - timedelta(days=int(SESSIONS * 1.5) + 7)
+    per_stock, missing, failed = {}, [], []
+    for symbol in stocks(day):
+        inst = known.get(symbol)
+        if not inst:
+            missing.append(symbol)
+            continue
+        try:
+            got = client.candles_range(inst.token, cfg["trigger_tf"], start, day)
+        except KiteAuthError:
+            raise
+        except KiteError as e:
+            log.warning("bias recount: %s candles failed: %s", symbol, e)
+            failed.append(symbol)
+            continue
+        per_stock[symbol] = fractals.last_sessions([c for c in got if c.start.astimezone(IST).date() <= day], SESSIONS)
+    summary = store.get("bias_days", day.isoformat()) or {}
+    opening = datetime.combine(day, s.open, IST)
+    slots = sorted(summary.get("slots", [])) or [
+        f"{day.isoformat()}T{opening + timedelta(minutes=EVERY * k):%H:%M}"
+        for k in range(1, int((s.close_at(opening) - opening).total_seconds() // (EVERY * 60)) + 1)]
+    store.put("bias_days", day.isoformat(), {"date": day.isoformat(), "announced": summary.get("announced")})
+    for sid in slots:
+        at = datetime.combine(day, datetime.strptime(sid[11:16], "%H:%M").time(), IST) + SETTLE + timedelta(seconds=1)
+        sigs = [g for symbol, candles in per_stock.items() for g in signals(symbol, candles, day, s, cfg, at)]
+        _save(_snapshot(day, at, sid, sigs, list(missing), list(failed), cfg))
+    log.info("bias recount %s: %d counts, %d stocks", day, len(slots), len(per_stock))
+    return len(slots)
 
 
 def slot(now: datetime, s: MarketSettings) -> str | None:

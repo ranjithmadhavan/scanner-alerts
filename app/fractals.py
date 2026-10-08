@@ -260,6 +260,16 @@ def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
     return Outcome(hit.price, target, stop, stopped, reached, result)
 
 
+def within_one_session(hit: Hit, candles: list[Candle]) -> bool:
+    """Were the candles that made this hit all in one session? A sweep on one day's last candle that the next
+    day's gap "confirms" is not a sweep that held: price never came back to the level that day. `candles` is the
+    list the hit indexes into; a live touch (index -1) is a single candle."""
+    if hit.index < 0:
+        return True
+    span = {"fail": 3, "confirm": 2}.get(hit.trigger, 1)
+    return candles[max(0, hit.index - span + 1)].start.date() == hit.candle.start.date()
+
+
 def at_day_extreme(hit: Hit, candles: list[Candle]) -> bool:
     """Is the fractal behind this hit a day's high or low? A fractal high counts when it is the high of the
     session it formed in, as that session stood until the candles that made this signal (so for an earlier

@@ -45,6 +45,16 @@ article[class~="transition"], a[class~="panel"] { transition: transform .25s cub
 .nav-link:active .nav-text { transform: scale(.98); }
 .nav-text { transition: transform .12s ease-out; }
 
+/* Loading: a thin marigold bar along the top while a page or request is on its way. It runs toward the end
+   without reaching it, then completes and fades when the work is done (app.js toggles the classes). */
+#page-progress { position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 100; pointer-events: none; transform-origin: left;
+  background: linear-gradient(90deg, #E9A23B, #F4C27A 60%, #E9A23B); box-shadow: 0 0 8px rgba(233,162,59,.6);
+  transform: scaleX(0); opacity: 0; transition: opacity .3s ease-out; }
+#page-progress.loading { opacity: 1; animation: progress-run 8s cubic-bezier(.08,.6,.2,1) forwards; }
+#page-progress.done { opacity: 0; transform: scaleX(1); transition: transform .2s ease-out, opacity .35s ease-out .15s; }
+@keyframes progress-run { 0% { transform: scaleX(0); } 10% { transform: scaleX(.35); } 40% { transform: scaleX(.7); } 100% { transform: scaleX(.92); } }
+html.page-loading, html.page-loading * { cursor: progress; }
+
 /* Motion: only what answers an action or explains a change, plus the market-open pulse.
    The one authored moment is a level being hit (.just-hit): the row is swept in marigold. */
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -163,6 +173,7 @@ details > summary::-webkit-details-marker { display: none; }
   .breathe, .count-pulse, .just-hit .hit-chip { animation: none; }
   .just-hit::before { animation: fade-in 1.6s ease-in reverse both; clip-path: none; }
   .rail-dot, .drawer-panel, #chart-drawer.open .drawer-panel { transition: none; }
+  #page-progress.loading { animation: none; transform: scaleX(.6); }
   .btn:hover:not(:disabled), .btn:active:not(:disabled), .btn:hover:not(:disabled) svg,
   button[class~="rounded-full"]:not([class*="btn"]):active, button[class~="rounded-full"]:not([class*="btn"]):hover > svg, [data-chart]:hover svg,
   article[class~="transition"]:hover, a[class~="panel"]:hover, .nav-link:active .nav-text { transform: none; }

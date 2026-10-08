@@ -342,6 +342,8 @@ def fractal_wanted(alert: dict, hit: fractals.Hit, candles: list[Candle] | None 
     """Is this hit one the alert reports? With extremes_only, only fractals that are a day's high or low."""
     if not (alert.get("sides", "both") in ("both", hit.fractal.side) and hit.trigger in alert.get("triggers", [])):
         return False
+    if candles is not None and not fractals.within_one_session(hit, candles):
+        return False  # taken on one day's last candles and "held" only by the next day's gap
     return not alert.get("extremes_only") or candles is None or fractals.at_day_extreme(hit, candles)
 
 

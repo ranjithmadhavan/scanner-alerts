@@ -25,7 +25,8 @@ def _notify_ctx(user: dict, p: dict | None = None) -> dict:
 def _counted(cfg: dict) -> dict:
     """The settings a count was made with, in words."""
     return {"names": ", ".join(bias.TRIGGER_NAMES[t] for t in cfg["triggers"]).lower(), "min_candles": cfg["min_candles"],
-            "trigger_tf": cfg.get("trigger_tf", "15m")}  # counts from before the setting existed were on 15-minute candles
+            "trigger_tf": cfg.get("trigger_tf", "15m"),  # counts from before the setting existed were on 15-minute candles
+            "flip_after": cfg.get("flip_after")}  # None: before this setting, any trade through the stop was a stop-out
 
 
 @router.get("")
@@ -52,7 +53,7 @@ def page(request: Request, user: dict = Depends(guard), day: str = "", at: str =
         "chart_source": f"/bias/chart?snap={chosen['id']}" if chosen else "/bias/chart", "chart_named_lines": True, "settings": bias.load_settings(),
         "trigger_choices": [(k, bias.TRIGGER_NAMES[k], fractals.TRIGGERS[k]) for k in bias.TRIGGER_CHOICES],
         "trigger_names": bias.TRIGGER_NAMES, "min_choices": fractals.MIN_BETWEEN_CHOICES, "sessions": bias.SESSIONS,
-        "trigger_tfs": bias.TRIGGER_TFS, "every": bias.EVERY,
+        "trigger_tfs": bias.TRIGGER_TFS, "every": bias.EVERY, "flip_choices": bias.FLIP_CHOICES,
         "broker_ok": brokers.load(user["username"]).get("status") == "connected",
         "is_admin": user.get("role") == "superadmin",
         "times": [(x, bias.slot_time(x).removesuffix(" AM").removesuffix(" PM")) for x in slots],
@@ -82,7 +83,8 @@ def chart_data(symbol: str, snap: str = "", range: str = "5D", interval: str = "
         if t is None:
             continue
         since = (f"stopped out {_hm(g['until'])}" if g["status"] == "stopped" else
-                 f"at target {g['target']:,.2f}" if g["status"] == "target" else "holding")
+                 f"at target {g['target']:,.2f}" if g["status"] == "target" else
+                 f"stop hit, watching {g['watch'][0]} of {g['watch'][1]} candles" if g.get("watch") else "holding")
         hits.append({"time": t, "price": g["price"], "signal": g["signal"], "label": f"{g['level']:,.2f}",
                      "summary": f"{bias.TRIGGER_NAMES[g['trigger']]} of the 30 min fractal {g['side']} {g['level']:,.2f}, {since}",
                      "at": datetime.fromisoformat(g["at"]).strftime("%a %-d %b, %-I:%M %p")})
@@ -165,14 +167,36 @@ def test_notify(user: dict = Depends(guard), webhooks_text: str = Form("", alias
     return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {len(urls)} webhook URL{'s' if len(urls) != 1 else ''}")
 
 
+@router.post("/recount")
+def recount(user: dict = Depends(guard), day: str = Form("")):
+    """Super admin: rebuild a day's counts with the current rules, from Kite (nothing is sent)."""
+    if user.get("role") != "superadmin":
+        return fail("Only the super admin can recount a day.")
+    try:
+        when = datetime.fromisoformat(day).date()
+    except ValueError:
+        return fail("Pick a day to recount.")
+    if when > now_ist().date():
+        return fail("That day hasn't happened yet.")
+    try:
+        n = bias.recount_day(brokers.client_for(user["username"]), when)
+    except KiteAuthError:
+        return fail("Kite isn't connected or the session has expired. Log in on the Broker page first.")
+    except KiteError as e:
+        return fail(f"Couldn't get candles from Kite: {e}")
+    response = HTMLResponse("", headers={"HX-Redirect": f"/bias?day={when.isoformat()}"})
+    return toast(response, f"Recounted {when:%-d %b}: {n} counts rebuilt with the current rules")
+
+
 @router.post("/settings")
 def save_settings(request: Request, user: dict = Depends(guard), triggers: list[str] = Form([]), min_candles: int = Form(5),
-                  trigger_tf: str = Form("5m")):
+                  trigger_tf: str = Form("5m"), flip_after: int = Form(3)):
     if user.get("role") != "superadmin":
         return fail("Only the super admin can change how the bias is counted.")
     triggers = [t for t in bias.TRIGGER_CHOICES if t in triggers]
-    if not triggers or min_candles not in fractals.MIN_BETWEEN_CHOICES or trigger_tf not in bias.TRIGGER_TFS:
-        return fail("Pick at least one kind of signal, and one of the gaps shown.")
-    bias.save_settings(triggers, min_candles, trigger_tf)
+    if (not triggers or min_candles not in fractals.MIN_BETWEEN_CHOICES or trigger_tf not in bias.TRIGGER_TFS
+            or flip_after not in bias.FLIP_CHOICES):
+        return fail("Pick at least one kind of signal, and one of the choices shown.")
+    bias.save_settings(triggers, min_candles, trigger_tf, flip_after)
     names = ", ".join(bias.TRIGGER_NAMES[t].lower() for t in triggers)
     return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Counting {names}; at least {min_candles} candles after the fractal")

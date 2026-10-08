@@ -272,7 +272,11 @@ def sentiment(username: str, now: datetime) -> dict | None:
     if not (user.get("role") == "superadmin" or "oi" in user.get("modules", [])):
         return None
     now = now.astimezone(IST)
-    snaps = [s for s in day_snapshots(now.date().isoformat()) if datetime.fromisoformat(s["at"]) <= now]
+    day = now.date().isoformat()
+    # Only the day's first snapshot and the latest one by `now` are read, not the whole day.
+    opens = f"{day}T{market_settings().open:%H:%M}"
+    ids = sorted(sid for sid in (store.get("oi_days", day) or {}).get("slots", []) if opens <= sid <= f"{day}T{now:%H:%M}")
+    snaps = [s for s in (store.get("oi_snapshots", ids[0]), store.get("oi_snapshots", ids[-1])) if s] if ids else []
     if not snaps:
         return None
     r = analyse(snaps[-1], snaps[0])

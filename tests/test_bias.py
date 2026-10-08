@@ -12,7 +12,7 @@ from app.security import hash_password
 from app.store import store
 
 S = MarketSettings(time(9, 15), time(15, 30), 60)
-CFG15 = {**bias.DEFAULTS, "trigger_tf": "15m"}  # the candles below are 15-minute ones
+CFG15 = {**bias.DEFAULTS, "trigger_tf": "15m", "flip_after": 1}  # 15-minute candles; a stop-out shows at once
 FRI, MON = date(2026, 10, 2), date(2026, 10, 5)
 
 
@@ -35,7 +35,7 @@ def monday() -> list[Candle]:
         Candle(at(MON, 9, 15), 102, 103, 94, 101),
         Candle(at(MON, 9, 30), 101, 104, 100, 103),
         Candle(at(MON, 9, 45), 103, 104, 101, 103),       # short of the 105 target
-        Candle(at(MON, 10, 0), 103, 103, 93, 95),
+        Candle(at(MON, 10, 0), 103, 103, 93, 93.5),
         Candle(at(MON, 10, 15), 95, 96, 92, 93),
     ]
 
@@ -106,7 +106,7 @@ def kite(monkeypatch):
     for coll in ("bias_snapshots", "bias_days"):
         for d in store.list(coll):
             store.delete(coll, d.get("id") or d["date"])
-    store.put("settings", "bias", {"trigger_tf": "15m"})
+    store.put("settings", "bias", {"trigger_tf": "15m", "flip_after": 1})
     bias._done.clear()
     bias._past.clear()
     fake = FakeKite()
@@ -200,7 +200,7 @@ def test_the_page(kite, monkeypatch):
         c.post("/login", data={"username": "boss", "password": "boss-pass-123"})
         assert "Count these signals" in c.get("/bias").text
         c.post("/bias/settings", data={"triggers": ["fail", "bogus"], "min_candles": "3", "trigger_tf": "15m"})
-        assert bias.load_settings() == {"triggers": ["fail"], "min_candles": 3, "trigger_tf": "15m"}
+        assert bias.load_settings() == {"triggers": ["fail"], "min_candles": 3, "trigger_tf": "15m", "flip_after": 3}
         assert "at least one" in c.post("/bias/settings", data={"min_candles": "3"}).headers["HX-Trigger"]
         c.post("/logout")
         store.put("users", "nisha", {"username": "nisha", "role": "user", "active": True, "modules": ["oi"],
@@ -216,6 +216,7 @@ def test_each_reading_carries_the_other(kite, monkeypatch):
     oi_snap = {"id": "2026-10-05T09:45", "date": "2026-10-05", "at": at(MON, 9, 46).isoformat(), "expiry": "2026-10-06",
                "spot": 24510.0, "rows": [{"strike": 24500.0, "ce_oi": 100_000, "pe_oi": 150_000, "ce_ltp": 90.0, "pe_ltp": 80.0}]}
     store.put("oi_snapshots", oi_snap["id"], oi_snap)
+    store.put("oi_days", "2026-10-05", {"date": "2026-10-05", "slots": [oi_snap["id"]]})
     monkeypatch.setattr(oi, "market_settings", lambda: S)
     store.update("users", "meera", {"modules": ["bias", "oi"]})
     bias.set_telegram("meera", True)
@@ -230,6 +231,7 @@ def test_each_reading_carries_the_other(kite, monkeypatch):
         later = {**oi_snap, "id": "2026-10-05T10:15", "at": at(MON, 10, 16).isoformat(),
                  "rows": [{**oi_snap["rows"][0], "ce_oi": 400_000}]}
         store.put("oi_snapshots", later["id"], later)
+        store.update("oi_days", "2026-10-05", {"slots": [oi_snap["id"], later["id"]]})
         oi.announce(later)
         assert sent[-1][0] == "📊 Nifty OI at 10:15 AM: Bearish"
         assert sent[-1][1].split("\n")[-2] == "Fractal bias: Bullish · 40 leaning bullish, 0 bearish (10:00 AM)"
@@ -348,3 +350,67 @@ def test_only_at_the_days_high_or_low(kite, monkeypatch):
     store.update("bias_days", "2026-10-05", {"slots": [snap["id"], fresh["id"]]})
     bias.notify_all(fresh, S)
     assert sent == ["🧭 BBB potential buy · 10:05 AM"]                                    # AAA's fractal wasn't a day's low
+
+
+def test_a_stop_out_turns_the_bias_only_if_price_stays_beyond_the_fractal():
+    """The signal goes out at once; breaking its stop only counts against it if, N candles on, price still closes
+    beyond the fractal. TECHM, 7 Oct: a sell on the 1,506.70 fractal high, stop 1,508."""
+    from app import fractals
+    t0 = at(MON, 9, 15)
+
+    def c(k, o, h, l, cl):
+        return Candle(t0 + timedelta(minutes=5 * k), o, h, l, cl)
+    sell = fractals.Hit(fractals.Fractal("high", 1506.7, t0 - timedelta(days=1)), "confirm", c(1, 1503.4, 1503.7, 1493.6, 1494.7), 1, 1494.7)
+    made = [c(0, 1504.0, 1508.0, 1499.7, 1503.4), c(1, 1503.4, 1503.7, 1493.6, 1494.7)]
+    pop = [c(2, 1495, 1509, 1495, 1507.5), c(3, 1507.5, 1508, 1503, 1504), c(4, 1504, 1505, 1500, 1501)]   # through the stop, then back below
+    run = [c(2, 1495, 1509, 1495, 1507.5), c(3, 1507.5, 1511, 1506, 1510), c(4, 1510, 1513, 1509, 1512)]   # through and staying above
+    assert bias.follow(sell, made + pop, 3)["status"] == "held"                                          # back below 1,506.70: still a sell
+    assert bias.follow(sell, made + pop, 1)["status"] == "stopped"                                       # one candle: the break itself decides
+    out = bias.follow(sell, made + run, 3)
+    assert (out["status"], out["until"].start) == ("stopped", t0 + timedelta(minutes=20))                # settled on the third candle
+    watching = bias.follow(sell, made + run[:2], 3)
+    assert (watching["status"], watching["watch"]) == ("held", [2, 3])                                   # two of three seen
+    assert bias.read([{"symbol": "TECHM", "signal": "sell", "status": watching["status"]}])["bear"] == 1  # still leans bearish
+
+
+def test_no_signal_from_a_sweep_on_the_previous_days_last_candle():
+    """Friday's last candle sweeps a fractal high and closes back; Monday gaps down. No sell on Monday."""
+    quiet = [Candle(at(FRI, 9, 15) + timedelta(minutes=15 * k), 100, 105 if k != 20 else 108, 99, 102) for k in range(24)]
+    quiet.append(Candle(at(FRI, 15, 15), 102, 109, 101, 104))                                   # takes the 108 high, closes back
+    gap = [Candle(at(MON, 9, 15), 96, 97, 94, 95), Candle(at(MON, 9, 30), 95, 96, 94, 95)]
+    sigs = bias.signals("NESTLEIND", quiet + gap, MON, S, {**CFG15, "triggers": ["confirm", "fail", "reject"], "min_candles": 0}, at(MON, 9, 46))
+    assert [g for g in sigs if g["level"] == 108] == []
+
+
+def test_recount_rebuilds_a_day_with_the_current_rules(kite, monkeypatch):
+    """Counts saved under older rules can be rebuilt; nothing is sent while doing it."""
+    monkeypatch.setattr(notify, "send", lambda *a: pytest.fail("a recount sends nothing"))
+    bias.capture(kite, at(MON, 10, 0) + timedelta(seconds=30), "2026-10-05T10:00")
+    old = store.get("bias_snapshots", "2026-10-05T10:00")
+    store.put("bias_snapshots", old["id"], {**old, "signals": old["signals"] + [{**old["signals"][0], "key": "STALE", "symbol": "STALE"}]})
+    calls = kite.calls
+    assert bias.recount_day(kite, MON) == 1
+    assert kite.calls - calls == 20                                                        # each stock's candles once
+    again = store.get("bias_snapshots", "2026-10-05T10:00")
+    assert "STALE" not in {g["symbol"] for g in again["signals"]} and len(again["signals"]) == 40
+    assert store.get("bias_days", "2026-10-05")["points"]["2026-10-05T10:00"]["bull"] == 40
+    # With no saved counts, every 5-minute close of the day is built.
+    store.delete("bias_days", "2026-10-05")
+    assert bias.recount_day(kite, MON) == 75
+    assert store.get("bias_days", "2026-10-05")["slots"][0] == "2026-10-05T09:20"
+
+
+def test_only_the_super_admin_can_recount(kite, monkeypatch):
+    import app.routes.bias as routes
+    monkeypatch.setattr(config, "SUPERADMIN_USERNAME", "boss")
+    monkeypatch.setattr(config, "SUPERADMIN_PASSWORD", "boss-pass-123")
+    from app.main import app
+    with TestClient(app) as c:
+        c.post("/login", data={"username": "meera", "password": "meera-pass-1"})
+        assert "Only the super admin" in c.post("/bias/recount", data={"day": "2026-10-05"}).headers["HX-Trigger"]
+        c.post("/logout")
+        c.post("/login", data={"username": "boss", "password": "boss-pass-123"})
+        monkeypatch.setattr(routes, "now_ist", lambda: at(MON, 16, 0))
+        r = c.post("/bias/recount", data={"day": "2026-10-05"})
+        assert r.headers["HX-Redirect"] == "/bias?day=2026-10-05" and "75 counts rebuilt" in r.headers["HX-Trigger"]
+        assert "Recount this day" in c.get("/bias").text

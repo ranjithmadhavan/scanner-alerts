@@ -689,3 +689,58 @@ document.querySelectorAll('nav.overflow-x-auto [aria-current="true"]').forEach((
   const strip = pick.parentElement;
   strip.scrollLeft = pick.offsetLeft - strip.clientWidth / 2 + pick.offsetWidth / 2;
 });
+
+// ---- Loading bar --------------------------------------------------------------------------
+// Pages here are mostly full loads, so between a click and the next page there was nothing to see.
+// The bar shows for page changes (links, GET forms such as the day picker, script navigations) and for
+// htmx requests that take longer than a moment; the 30-second background refreshes don't show it.
+(() => {
+  const bar = document.getElementById("page-progress");
+  if (!bar) return;
+  let busy = 0, timer;
+  function start(delay = 0) {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      bar.classList.remove("done");
+      void bar.offsetWidth; // restart the run from the left
+      bar.classList.add("loading");
+      document.documentElement.classList.add("page-loading");
+    }, delay);
+  }
+  function finish() {
+    clearTimeout(timer);
+    document.documentElement.classList.remove("page-loading");
+    if (!bar.classList.contains("loading")) return;
+    bar.classList.remove("loading");
+    bar.classList.add("done");
+  }
+  // Leaving the page: a plain click on an internal link, a GET form, or a navigation from script.
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("a[href]");
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (a.target && a.target !== "_self" || a.hasAttribute("download") || a.origin !== location.origin) return;
+    if (a.pathname === location.pathname && a.search === location.search && a.hash) return; // same-page anchor
+    start();
+  });
+  document.addEventListener("submit", (e) => {
+    const form = e.target;
+    if (!e.defaultPrevented && !form.hasAttribute("hx-post") && !form.hasAttribute("hx-get")) start();
+  });
+  window.addEventListener("beforeunload", () => start());
+  // Back/forward restores a page from memory with the bar still running: clear it.
+  window.addEventListener("pageshow", () => { busy = 0; finish(); });
+  // htmx: only for requests someone asked for, and only once they take a little while.
+  const polling = (elt) => /every\s/.test(elt?.getAttribute?.("hx-trigger") || "");
+  document.addEventListener("htmx:beforeRequest", (e) => {
+    if (polling(e.detail.elt)) return;
+    busy += 1;
+    start(150);
+  });
+  document.addEventListener("htmx:afterRequest", (e) => {
+    if (polling(e.detail.elt)) return;
+    busy = Math.max(0, busy - 1);
+    // A redirect (HX-Redirect / HX-Refresh) keeps loading; the next page clears the bar.
+    const h = e.detail.xhr;
+    if (!busy && !(h && (h.getResponseHeader("HX-Redirect") || h.getResponseHeader("HX-Refresh")))) finish();
+  });
+})();

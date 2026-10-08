@@ -273,3 +273,22 @@ def test_any_earlier_days_high_or_low_counts_not_just_yesterdays():
     taken = {h.fractal.level: fractals.at_day_extreme(h, candles) for h in hits if h.trigger == "reject" and h.fractal.side == "low"}
     assert taken[98] is True        # 30 Sept's low, swept on 5 Oct, two sessions later
     assert taken[99.5] is False     # a later dip on 30 Sept, above that day's low
+
+
+def test_a_sweep_held_only_by_the_next_days_gap_is_not_a_signal():
+    """NESTLEIND, 6-7 Oct: the 1:45 PM fractal high (1,339.80) was swept by 6 Oct's last half-hour (1,340.00,
+    closed back), and 7 Oct gapped down to 1,326. The gap is not price holding below the level."""
+    from app import fractals, scanner
+    d6, d7 = datetime(2026, 10, 6, 13, 15, tzinfo=IST), datetime(2026, 10, 7, 9, 15, tzinfo=IST)
+    candles = [Candle(d6, 1322.3, 1337.0, 1322.1, 1329.0), Candle(d6 + timedelta(minutes=30), 1328.7, 1339.8, 1327.7, 1336.4),
+               Candle(d6 + timedelta(minutes=60), 1336.8, 1337.7, 1331.1, 1334.3), Candle(d6 + timedelta(minutes=90), 1334.4, 1340.0, 1332.3, 1338.9),
+               Candle(d7, 1326.3, 1333.0, 1320.7, 1324.4)]
+    hits, _ = fractals.walk(candles)
+    held = [h for h in hits if h.trigger == "confirm" and h.fractal.level == 1339.8]
+    assert len(held) == 1 and not fractals.within_one_session(held[0], candles)
+    assert not scanner.fractal_wanted({"sides": "both", "triggers": ["confirm"]}, held[0], candles)
+    # The same sweep with its hold on the same day still counts.
+    same_day = candles[:4] + [Candle(d6 + timedelta(minutes=120), 1338.9, 1339.0, 1330.0, 1331.0)]
+    held = [h for h in fractals.walk(same_day)[0] if h.trigger == "confirm" and h.fractal.level == 1339.8]
+    assert fractals.within_one_session(held[0], same_day)
+    assert scanner.fractal_wanted({"sides": "both", "triggers": ["confirm"]}, held[0], same_day)

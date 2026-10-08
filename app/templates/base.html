@@ -15,6 +15,8 @@
   <script src="/static/app.js?v={{ v }}" defer></script>
 </head>
 <body class="min-h-screen">
+{# A thin bar across the top while a page or request is loading (app.js). #}
+<div id="page-progress" aria-hidden="true"></div>
 {% if user %}
 <div class="lg:grid lg:grid-cols-[260px_1fr] min-h-screen">
   <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-[260px] -translate-x-full p-3 transition-transform duration-300 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0">
