@@ -33,7 +33,7 @@ Everything here is pure: it works on lists of completed candles, oldest first.
 from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from app.kite import TIMEFRAMES as CANDLES
 from app.kite import Candle
@@ -217,34 +217,69 @@ class Outcome:
     stop: float  # the extreme price made while the fractal was being taken; beyond it the idea has failed
     stopped: Candle | None  # first later candle that traded beyond the stop
     reached: Candle | None  # first later candle that traded to the target
-    result: str  # "target" | "stop" | "open" | "none" (no target to aim at, stop not hit)
+    # "target" | "stop" | "open" | "none" (no target to aim at, stop not hit), and with an intraday square-off:
+    # "squared" (closed at the square-off candle's close) | "skipped" (signalled too late in the day to trade)
+    result: str
+    sell: bool = False
+    squared: Candle | None = None  # the candle whose close the trade was squared off at
+    intraday: bool = False  # followed only until the square-off time on the signal's own day
 
     @property
     def reached_after_stop(self) -> bool:
         return self.result == "stop" and self.reached is not None
 
     @property
+    def exit(self) -> float | None:
+        return self.squared.close if self.squared else None
+
+    @property
     def points(self) -> float | None:
-        """Points made (entry to target) or lost (entry to stop). None while the trade is open, or when
-        there was no target and so no trade to take."""
-        if self.target is None or self.result not in ("target", "stop"):
+        """Points made (entry to target) or lost (entry to stop), or entry to the square-off price. None while
+        the trade is open or wasn't taken. Without a square-off, a signal with no target is no trade to take;
+        with one, every signal is a trade, since the square-off closes it."""
+        if self.result == "squared":
+            return (self.entry - self.squared.close) if self.sell else (self.squared.close - self.entry)
+        if self.result not in ("target", "stop") or (self.target is None and not self.intraday):
             return None
         return abs(self.entry - self.target) if self.result == "target" else -abs(self.stop - self.entry)
 
 
-def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
+def outcome(hit: Hit, candles: list[Candle], square_off: time | None = None) -> Outcome:
     """Follow a hit through the candles after it. The stop is the high (for a sell) or low (for a buy)
     of the candle that took the fractal, including the candle before it for a sweep that held and the
     two candles before it for a failed break. Whichever
     of stop and target is traded first decides the result; if one candle trades both, the stop counts,
-    because candles don't say which came first. The search for the target carries on past a stop."""
+    because candles don't say which came first. The search for the target carries on past a stop.
+
+    With `square_off` (a time of day) the trade is intraday: only candles of the signal's own day that
+    start before that time are followed, and a trade neither stopped nor at target by then is closed at
+    the last of those candles' close. A signal with no such candle after it came too late to trade."""
     sell = hit.signal == "sell"
     span = {"fail": 3, "confirm": 2}.get(hit.trigger, 1)  # candles that made up the signal
     made = candles[max(0, hit.index - span + 1):hit.index + 1] if hit.index >= 0 else [hit.candle]
     stop = max(c.high for c in made) if sell else min(c.low for c in made)
     target = hit.target.level if hit.target else None
     stopped = reached = None
-    for c in candles[hit.index + 1:]:
+    later = candles[hit.index + 1:]
+    if square_off:
+        day = hit.candle.start.date()
+        session = [c for c in later if c.start.date() == day and c.start.time() < square_off]
+        if not session or hit.candle.start.time() >= square_off:
+            return Outcome(hit.price, target, stop, None, None, "skipped", sell, intraday=True)
+        for c in session:
+            if c.high > stop if sell else c.low < stop:
+                return Outcome(hit.price, target, stop, c, None, "stop", sell, intraday=True)
+            if target is not None and (c.low <= target if sell else c.high >= target):
+                return Outcome(hit.price, target, stop, None, c, "target", sell, intraday=True)
+        # Squared off, unless this is the day still in progress: the last candle we have isn't yet the square-off one.
+        last, n = session[-1], hit.index + len(session)
+        day_done = n + 1 < len(candles)
+        if not day_done and len(session) > 1:
+            day_done = (last.start + (last.start - session[-2].start)).time() >= square_off
+        if not day_done:
+            return Outcome(hit.price, target, stop, None, None, "open", sell, intraday=True)
+        return Outcome(hit.price, target, stop, None, None, "squared", sell, squared=last, intraday=True)
+    for c in later:
         if stopped is None and (c.high > stop if sell else c.low < stop):
             stopped = c
         if reached is None and target is not None and (c.low <= target if sell else c.high >= target):
@@ -257,7 +292,7 @@ def outcome(hit: Hit, candles: list[Candle]) -> Outcome:
         result = "target"
     else:
         result = "open" if hit.target else "none"
-    return Outcome(hit.price, target, stop, stopped, reached, result)
+    return Outcome(hit.price, target, stop, stopped, reached, result, sell)
 
 
 def within_one_session(hit: Hit, candles: list[Candle]) -> bool:

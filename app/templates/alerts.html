@@ -69,6 +69,14 @@
 
   <div data-kind-section="fractal" class="mt-5" hidden>
     {% with f_sides='both', f_triggers=['confirm', 'fail'], f_confirm='', f_min=min_default, f_extremes=false %}{% include "partials/fractal_fields.html" %}{% endwith %}
+    {# Only the backtest uses this: it closes trades the same day, so none spill into later days. #}
+    <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-line px-4 py-3">
+      <label class="flex cursor-pointer items-center gap-2.5 text-[15px] font-semibold">
+        <input type="checkbox" name="square_off" value="1" class="h-4 w-4 rounded accent-peacock" checked> Backtest as intraday: square off at
+      </label>
+      <input type="time" name="square_off_time" value="15:15" class="field w-auto py-1.5" aria-label="Square-off time">
+      <span class="w-full text-[13px] leading-snug text-ink-soft">A trade still open at this time is closed at that candle's close and scored on it; signals after it aren't traded. Unticked, trades run on until their target or SL, into later days if need be. Not used with daily trigger candles.</span>
+    </div>
   </div>
 
   <div data-kind-section="price">

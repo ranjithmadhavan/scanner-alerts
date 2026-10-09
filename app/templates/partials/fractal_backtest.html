@@ -9,14 +9,16 @@
       <p class="mt-1.5 flex flex-wrap gap-2 text-sm">
         <span class="rounded-full bg-rise-50 px-2.5 py-0.5 font-semibold text-rise">{{ tally.target }} reached target</span>
         <span class="rounded-full bg-fall-50 px-2.5 py-0.5 font-semibold text-fall">{{ tally.stop }} SL gone{% if tally.late %} ({{ tally.late }} reached target later){% endif %}</span>
-        <span class="rounded-full bg-canvas px-2.5 py-0.5 font-semibold text-ink-soft">{{ tally.open }} still open</span>
+        {% if square_off %}<span class="rounded-full bg-marigold-50 px-2.5 py-0.5 font-semibold text-marigold-dark">{{ tally.squared }} squared off at {{ square_off.strftime('%-I:%M %p') }}</span>{% endif %}
+        {% if tally.open %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-semibold text-ink-soft">{{ tally.open }} still open</span>{% endif %}
+        {% if tally.skipped %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-semibold text-ink-soft">{{ tally.skipped }} too late to trade</span>{% endif %}
       </p>
       <dl class="mt-3 grid max-w-xl grid-cols-3 gap-2 text-[13px] sm:text-sm">
         <div class="rounded-2xl bg-rise-50 px-3 py-2.5 sm:px-3.5"><dt class="whitespace-nowrap text-ink-soft">Earned</dt><dd class="num font-display text-lg font-bold text-rise sm:text-xl">+{{ points.earned|price }}</dd></div>
         <div class="rounded-2xl bg-fall-50 px-3 py-2.5 sm:px-3.5"><dt class="whitespace-nowrap text-ink-soft">Lost</dt><dd class="num font-display text-lg font-bold text-fall sm:text-xl">−{{ points.lost|price }}</dd></div>
         <div class="rounded-2xl bg-canvas px-3 py-2.5 sm:px-3.5"><dt class="whitespace-nowrap text-ink-soft">Net</dt><dd class="num font-display text-lg font-bold sm:text-xl {{ 'text-rise' if points.net > 0 else 'text-fall' if points.net < 0 else 'text-ink' }}">{{ '+' if points.net > 0 else '−' if points.net < 0 else '' }}{{ points.net|abs|price }}</dd></div>
       </dl>
-      <p class="mt-1.5 text-[13px] text-ink-soft">Points over {{ points.trades }} closed trade{{ 's' if points.trades != 1 }}, one unit each. Open trades and signals with no target aren't counted.</p>
+      <p class="mt-1.5 text-[13px] text-ink-soft">Points over {{ points.trades }} closed trade{{ 's' if points.trades != 1 }}, one unit each. {% if square_off %}Every trade is closed the day it was taken: at its target, its SL, or the {{ square_off.strftime('%-I:%M %p') }} square-off price. Signals after that time aren't traded.{% else %}Open trades and signals with no target aren't counted.{% endif %}</p>
       {% endif %}
     </div>
     <button type="button" class="-mr-2 -mt-1 shrink-0 rounded-full p-2 text-ink-soft hover:bg-canvas hover:text-ink" aria-label="Close the backtest" onclick="this.closest('#sim-result').innerHTML=''">
@@ -29,6 +31,7 @@
     <span class="rounded-full bg-marigold-50 px-2.5 py-0.5 font-medium text-marigold-dark">{{ 'Sweeps and breaks judged on the same candles' if same_candles else 'Sweeps and breaks judged on ' ~ trigger_label|lower ~ ' closes' }}</span>
     <span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">{{ 'At least ' ~ min_candles ~ ' ' ~ tf_label|lower ~ ' candles between a fractal and the candle that takes it' if min_candles else 'No minimum gap after a fractal forms' }}</span>
     {% if extremes_only %}<span class="rounded-full bg-peacock-50 px-2.5 py-0.5 font-medium text-peacock">Only fractals at a day's high or low</span>{% endif %}
+    {% if square_off %}<span class="rounded-full bg-marigold-50 px-2.5 py-0.5 font-medium text-marigold-dark">Intraday: squared off at {{ square_off.strftime('%-I:%M %p') }}</span>{% endif %}
   </p>
 
   {# The chart draws the trigger candles with every signal marked; clicking a row jumps to it. #}
@@ -77,7 +80,10 @@
           <td class="whitespace-nowrap py-2 pr-3">
             {% if o.result == 'target' %}<span class="font-medium text-rise">Target reached {{ o.reached.start|ist(fmt) }}</span>
             {% elif o.result == 'stop' %}<span class="font-medium text-fall">SL gone {{ o.stopped.start|ist(fmt) }}</span>
-              <span class="block text-xs text-ink-soft">{% if o.reached %}reached target later, {{ o.reached.start|ist(fmt) }}{% elif r.hit.target %}target not reached since{% else %}no opposite fractal to aim at{% endif %}</span>
+              <span class="block text-xs text-ink-soft">{% if o.intraday %}{% elif o.reached %}reached target later, {{ o.reached.start|ist(fmt) }}{% elif r.hit.target %}target not reached since{% else %}no opposite fractal to aim at{% endif %}</span>
+            {% elif o.result == 'squared' %}<span class="font-medium text-marigold-dark">Squared off {{ square_off.strftime('%-I:%M %p') }}</span>
+              <span class="num block text-xs text-ink-soft">at ₹{{ o.exit|price }}</span>
+            {% elif o.result == 'skipped' %}<span class="text-ink-soft" title="The signal came at or after the square-off time">Too late to trade</span>
             {% elif o.result == 'open' %}<span class="text-ink-soft" title="Neither the target nor the SL has been traded yet">Open</span>
             {% else %}<span class="text-ink-soft">No target, SL not hit</span>{% endif %}
           </td>
@@ -102,5 +108,5 @@
     {% if resistance %}resistance {% for f in resistance %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no resistance overhead{% endif %};
     {% if support %}support {% for f in support %}<span class="num">₹{{ f.level|price }}</span>{{ ', ' if not loop.last }}{% endfor %}{% else %}no support underneath{% endif %}.
   </p>
-  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Points are entry to target when the target is reached first and entry to SL when the SL goes; entry is the fractal level for “taken” and the candle's close for “swept” and “break failed”. No costs or slippage are included. Times are the candle in which it happened. A gap through a fractal gives no signal; the fractal flips between support and resistance, as it does in live alerts. Nothing was saved or sent.</p>
+  <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">SL is the high (for a sell) or low (for a buy) made by the candle that took the fractal; trading beyond it before the target counts as SL gone. If one candle trades both the SL and the target, it counts as SL gone. Points are entry to target when the target is reached first and entry to SL when the SL goes; entry is the fractal level for “taken” and the candle's close for “swept” and “break failed”. {% if square_off %}With the intraday square-off, a trade neither at target nor stopped by {{ square_off.strftime('%-I:%M %p') }} is closed at the close of the last candle before that time, and its points are entry to that price. {% endif %}No costs or slippage are included. Times are the candle in which it happened. A gap through a fractal gives no signal; the fractal flips between support and resistance, as it does in live alerts. Nothing was saved or sent.</p>
 </div>

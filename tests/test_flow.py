@@ -1038,6 +1038,17 @@ def test_fractal_backtest_shows_signals_targets_and_outcomes(client, monkeypatch
     assert "+19.00" in page and "−0.00" in page and "Points over 2 closed trades" in page
     assert "+10.00" in page and "+9.00" in page and "Points / net" in page and "net +19.00" in page
 
+    # Intraday, squared off at 11:45: the sells are closed at the 11:15 candle's close (104) and the 11:45 buys are too late.
+    r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "min_candles": "0", "fractal_timeframe": "30m",
+                                              "sides": "both", "triggers": ["touch", "reject", "fail"],
+                                              "square_off": "1", "square_off_time": "11:45"})
+    assert "2 squared off at 11:45 AM" in r.text and "2 too late to trade" in r.text and "0 reached target" in r.text
+    assert "Squared off 11:45 AM" in r.text and "at ₹104.00" in r.text and "Too late to trade" in r.text
+    assert "+11.00" in r.text and "Points over 2 closed trades" in r.text and "Intraday: squared off at 11:45 AM" in r.text
+    assert "Give the square-off time" in client.post("/alerts/simulate", data={
+        "symbol": "INFY", "kind": "fractal", "fractal_timeframe": "30m", "sides": "both", "triggers": ["reject"],
+        "square_off": "1", "square_off_time": "soon"}).headers["HX-Trigger"]
+
     # Same morning, but price pushes above the sweep's high before falling: SL gone, target reached later.
     candles[4:] = [Candle(day + timedelta(minutes=120), 109, 111.6, 108, 110), Candle(day + timedelta(minutes=150), 110, 110, 99.5, 101)]
     r = client.post("/alerts/simulate", data={"symbol": "INFY", "kind": "fractal", "min_candles": "0", "fractal_timeframe": "30m",

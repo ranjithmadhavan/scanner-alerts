@@ -8,7 +8,7 @@ from app import brokers, fractals, notify, prices
 from app import webhooks as hooks_module  # the forms have a field called `webhooks`
 from app import scanner
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError, find_instrument, search_instruments
-from app.market import in_scan_window, load_settings, now_ist
+from app.market import in_scan_window, load_settings, now_ist, parse_hhmm
 from app.scanner import CONDITIONS, EITHER_WAY, alert_key, last_prices, levels_of, uses_close
 from app.security import require
 from app.store import new_id, store
@@ -512,13 +512,15 @@ def simulate(
     triggers: list[str] = Form([]),
     min_candles: int = Form(fractals.DEFAULT_MIN_BETWEEN),
     extremes_only: str = Form(""),
+    square_off: str = Form(""),
+    square_off_time: str = Form("15:15"),
 ):
     """Replay the form's alert on the last trading day with real Kite data and send the
     result to the chosen channels. Nothing is saved. In Fractals mode: a backtest over the
     sessions fractals are searched on, shown on the page."""
     if kind == "fractal":
         return _fractal_backtest(request, user, symbol, fractal_timeframe, sides, triggers, confirm_timeframe, min_candles,
-                                 extremes_only)
+                                 extremes_only, square_off_time if square_off else "")
     alert, error = _build_alert(user, symbol, condition, _price_level(level), timeframe, note, channels,
                                 extra_condition, extra_level)
     if error:
@@ -544,7 +546,15 @@ def simulate(
 
 
 def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str],
-                      confirm_timeframe: str = "", min_candles: int = fractals.DEFAULT_MIN_BETWEEN, extremes_only: str = ""):
+                      confirm_timeframe: str = "", min_candles: int = fractals.DEFAULT_MIN_BETWEEN, extremes_only: str = "",
+                      square_off: str = ""):
+    """`square_off` ("HH:MM", or empty for none): trades are intraday, closed at that time on the day they were taken."""
+    exit_at = None
+    if square_off:
+        try:
+            exit_at = parse_hhmm(square_off)
+        except ValueError:
+            return fail("Give the square-off time as hours and minutes, like 15:15.")
     alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, "", [],
                                         confirm_timeframe=confirm_timeframe, min_candles=min_candles, extremes_only=extremes_only)
     if error:
@@ -565,6 +575,8 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
     if first >= len(stream):
         return fail(f"Kite returned no {fractals.label(trigger_tf).lower()} candles for {alert['symbol']}.")
     daily = trigger_tf == "1d"
+    if daily:
+        exit_at = None  # daily candles have no time of day to square off at
 
     def chart_time(c: Candle):
         return c.start.astimezone(prices.IST).date().isoformat() if daily else int(c.start.timestamp()) + prices.IST_OFFSET
@@ -575,7 +587,7 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
     for h in hits:
         if h.index < first or not scanner.fractal_wanted(alert, h, stream):
             continue
-        rows.append({"hit": h, "outcome": fractals.outcome(h, stream),
+        rows.append({"hit": h, "outcome": fractals.outcome(h, stream, exit_at),
                      # A touch is dated by the candle it happened in, the others by that candle's close.
                      "when": h.candle.start if h.trigger == "touch" else scanner.candle_end(h.candle, trigger_tf, s),
                      "n": None})
@@ -605,8 +617,10 @@ def _fractal_backtest(request: Request, user: dict, symbol: str, fractal_timefra
         "rows": rows[::-1][:60], "total": len(rows),
         "points": {"earned": sum(p for p in scored if p > 0), "lost": -sum(p for p in scored if p < 0),
                    "net": sum(scored), "trades": len(scored)},
+        "square_off": exit_at,
         "tally": {"target": results.count("target"), "stop": results.count("stop"),
                   "open": results.count("open") + results.count("none"),
+                  "squared": results.count("squared"), "skipped": results.count("skipped"),
                   "late": sum(1 for r in rows if r["outcome"].reached_after_stop)},
         "resistance": sorted((f for f in unmitigated if f.role == "resistance"), key=lambda f: f.level),
         "support": sorted((f for f in unmitigated if f.role == "support"), key=lambda f: f.level, reverse=True),

@@ -292,3 +292,33 @@ def test_a_sweep_held_only_by_the_next_days_gap_is_not_a_signal():
     held = [h for h in fractals.walk(same_day)[0] if h.trigger == "confirm" and h.fractal.level == 1339.8]
     assert fractals.within_one_session(held[0], same_day)
     assert scanner.fractal_wanted({"sides": "both", "triggers": ["confirm"]}, held[0], same_day)
+
+
+def test_intraday_square_off_closes_a_trade_the_day_it_was_taken():
+    from datetime import time
+    from app import fractals
+    d1, d2 = datetime(2026, 10, 5, 13, 45, tzinfo=IST), datetime(2026, 10, 6, 9, 15, tzinfo=IST)
+    candles = [Candle(d1, 100, 101, 98, 100.5),                                   # the signal candle: a buy at 100.5, stop 98
+               Candle(d1 + timedelta(minutes=30), 100.5, 102, 100, 101.5),        # 2:15
+               Candle(d1 + timedelta(minutes=60), 101.5, 103, 101, 102.5),        # 2:45, closes 3:15
+               Candle(d1 + timedelta(minutes=90), 102.5, 104, 102, 103.5),        # 3:15: after the square-off
+               Candle(d2, 104, 111, 103, 110)]                                    # next day reaches the target
+    buy = fractals.Hit(Fractal("low", 99.0, d1 - timedelta(days=1)), "reject", candles[0], 0, 100.5,
+                       target=Fractal("high", 110.0, d1 - timedelta(days=2)))
+    spill = outcome(buy, candles)
+    assert spill.result == "target" and spill.reached is candles[4] and spill.points == 9.5       # carried into the next day
+    intraday = outcome(buy, candles, time(15, 15))
+    assert intraday.result == "squared" and intraday.squared is candles[2] and intraday.exit == 102.5
+    assert intraday.points == 2.0                                                                    # 100.5 to 102.5
+    # A sell is scored the other way round; the stop and the target still end it early.
+    sell = fractals.Hit(Fractal("high", 101.0, d1 - timedelta(days=1)), "reject", candles[0], 0, 100.5)
+    assert outcome(sell, candles, time(15, 15)).result == "stop"                                     # 2:15 traded above 101
+    quiet = [candles[0], Candle(d1 + timedelta(minutes=30), 100.5, 100.9, 99.5, 99.8), Candle(d1 + timedelta(minutes=60), 99.8, 100, 99, 99.2), candles[3]]
+    squared = outcome(sell, quiet, time(15, 15))
+    assert squared.result == "squared" and round(squared.points, 2) == 1.3                           # no target, still a trade: 100.5 to 99.2
+    assert outcome(buy, candles, time(14, 0)).result == "skipped"                                    # nothing left to trade before 2:00
+    late = fractals.Hit(buy.fractal, "reject", candles[3], 3, 103.5, target=buy.target)
+    assert outcome(late, candles, time(15, 15)).result == "skipped"                                  # signalled at the square-off
+    # The day still in progress: not squared off until the square-off candle has closed.
+    assert outcome(buy, candles[:2], time(15, 15)).result == "open"
+    assert outcome(buy, candles[:3], time(15, 15)).result == "squared"                               # 2:45 + 30 min reaches 3:15
