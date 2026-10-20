@@ -690,6 +690,39 @@ document.querySelectorAll('nav.overflow-x-auto [aria-current="true"]').forEach((
   strip.scrollLeft = pick.offsetLeft - strip.clientWidth / 2 + pick.offsetWidth / 2;
 });
 
+// The strips hide their scrollbar, so a plain mouse could not move them: turn the wheel into a
+// sideways scroll, and let the strip be dragged. Touch and trackpads already scroll them natively.
+document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
+  strip.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    const max = strip.scrollWidth - strip.clientWidth;
+    // At either end, leave the wheel to the page.
+    if ((e.deltaY < 0 && strip.scrollLeft <= 0) || (e.deltaY > 0 && strip.scrollLeft >= max - 1)) return;
+    e.preventDefault();
+    strip.scrollLeft += e.deltaY;
+  }, { passive: false });
+
+  let startX = 0, startLeft = 0, dragging = false, moved = false;
+  strip.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    dragging = true; moved = false;
+    startX = e.clientX; startLeft = strip.scrollLeft;
+  });
+  strip.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (!moved && Math.abs(dx) < 5) return;
+    if (!moved) { moved = true; strip.setPointerCapture(e.pointerId); }
+    strip.scrollLeft = startLeft - dx;
+  });
+  const stop = () => { dragging = false; };
+  strip.addEventListener("pointerup", stop);
+  strip.addEventListener("pointercancel", stop);
+  // A drag that ends over a time shouldn't also open it.
+  strip.addEventListener("click", (e) => { if (moved) { e.preventDefault(); moved = false; } }, true);
+  strip.addEventListener("dragstart", (e) => e.preventDefault());
+});
+
 // ---- Loading bar --------------------------------------------------------------------------
 // Pages here are mostly full loads, so between a click and the next page there was nothing to see.
 // The bar shows for page changes (links, GET forms such as the day picker, script navigations) and for
