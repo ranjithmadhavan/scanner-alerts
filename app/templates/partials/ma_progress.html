@@ -10,5 +10,5 @@
   <div class="mt-3 h-2 overflow-hidden rounded-full bg-canvas" role="progressbar" aria-valuemin="0" aria-valuemax="{{ run.total }}" aria-valuenow="{{ run.done }}">
     <div class="h-full rounded-full bg-peacock transition-[width] duration-700" style="width: {{ '%.1f'|format(pct) }}%"></div>
   </div>
-  <p class="mt-2 text-[13px] text-ink-soft">Kite serves about 3 candle requests a second{% if run.total > 20 %}, so this takes a few minutes. You can leave the page and come back{% endif %}.</p>
+  <p class="mt-2 text-[13px] text-ink-soft">Backtests read about 2 candle requests a second, to stay inside Kite's limits{% if run.total > 20 %}, so this takes a few minutes. You can leave the page and come back{% endif %}.</p>
 </div>

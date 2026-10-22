@@ -65,19 +65,40 @@ class Candle:
     close: float
 
 
-# Kite allows ~3 historical requests/second per account; one shared gap is simplest.
-_throttle_lock = threading.Lock()
-_last_call = 0.0
-_MIN_GAP = 0.35
+class RateLimit:
+    """Calls spaced at least `gap` seconds apart, across every thread (scans, scanners, backtests, pages).
+    Kite answers bursts with HTTP 429 "Too many requests", so every call goes through one of these first.
+    pause() holds the next calls back for a while, after Kite has said no anyway."""
+
+    def __init__(self, gap: float):
+        self.gap = gap
+        self._lock = threading.Lock()
+        self._next = 0.0  # monotonic time the next call may go
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if self._next > now:
+                time.sleep(self._next - now)
+            self._next = max(now, self._next) + self.gap
+
+    def pause(self, seconds: float) -> None:
+        with self._lock:
+            self._next = max(self._next, time.monotonic() + seconds)
 
 
-def _throttle() -> None:
-    global _last_call
-    with _throttle_lock:
-        wait = _last_call + _MIN_GAP - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_call = time.monotonic()
+# Kite's published limits, per second: historical candles 3, quotes 1, everything else 10. Each is kept
+# comfortably under, and shared by the whole app (one server, one IP, possibly one Kite app for everyone).
+HISTORICAL = RateLimit(0.4)  # 2.5 a second
+QUOTES = RateLimit(1.1)  # REST quotes and the live-feed connections web sessions use instead
+OTHER = RateLimit(0.2)  # profile and the like
+DUMPS = RateLimit(3.0)  # the daily instrument list downloads (api.kite.trade/instruments)
+# Backtests take their candles through this as well, so they never use more than 2 of the 2.5 a second and
+# live scans and alerts always have room.
+BACKTESTS = RateLimit(0.5)
+TOO_MANY_PAUSE = 3.0  # seconds every call of a kind waits after Kite says "Too many requests"
+DUMPS_PAUSE = 60.0  # ...and before the next instrument list download, after a 429 on one
+TOO_MANY_RETRIES = 2
 
 
 def parse_ticks(msg: bytes) -> dict[int, dict]:
@@ -125,11 +146,22 @@ class KiteClient:
         self.mode = mode
         self.user_id = user_id
 
-    def _get(self, path: str, params: dict | None = None) -> dict:
-        try:
-            r = httpx.get(self.base + path, headers=self.headers, params=params, timeout=15)
-        except httpx.HTTPError as e:
-            raise KiteError(f"Network error talking to Kite: {e}") from e
+    def _get(self, path: str, params: dict | None = None, limit: RateLimit | None = None) -> dict:
+        limit = limit or OTHER
+        for attempt in range(TOO_MANY_RETRIES + 1):
+            limit.wait()
+            try:
+                r = httpx.get(self.base + path, headers=self.headers, params=params, timeout=15)
+            except httpx.HTTPError as e:
+                raise KiteError(f"Network error talking to Kite: {e}") from e
+            if r.status_code != 429:
+                break
+            # Too many requests anyway (another app on the account, or Kite being strict): hold every call of
+            # this kind back for a moment, then try again.
+            limit.pause(TOO_MANY_PAUSE * (attempt + 1))
+            log.warning("Kite said too many requests for %s; pausing %ss", path.split("/")[1], TOO_MANY_PAUSE * (attempt + 1))
+        else:
+            raise KiteError("Kite is turning away requests (too many requests). Try again in a minute.")
         try:
             body = r.json()
         except ValueError:
@@ -150,7 +182,7 @@ class KiteClient:
         one round of ticks off the websocket the Kite web option chain uses instead."""
         if self.mode == "enctoken":
             return self._quote_ticks(keys)
-        return self._get("/quote", {"i": keys})
+        return self._get("/quote", {"i": keys}, QUOTES)
 
     def _quote_ticks(self, keys: list[str], wait: float = 10.0) -> dict:
         known = instruments()
@@ -166,6 +198,7 @@ class KiteClient:
                f"&uid={int(time.time() * 1000)}&user-agent=kite3-web&version=3.0.0")
         out: dict[str, dict] = {}
         deadline = time.monotonic() + wait
+        QUOTES.wait()
         try:
             with ws_connect(url, origin="https://kite.zerodha.com", open_timeout=wait) as ws:
                 ws.send(json.dumps({"a": "subscribe", "v": list(tokens)}))
@@ -198,8 +231,7 @@ class KiteClient:
         params = {"from": f"{start} 00:00:00", "to": f"{end} 23:59:59"}
         if self.mode == "enctoken" and self.user_id:
             params["user_id"] = self.user_id
-        _throttle()
-        data = self._get(f"/instruments/historical/{instrument_token}/{interval}", params)
+        data = self._get(f"/instruments/historical/{instrument_token}/{interval}", params, HISTORICAL)
         return [
             Candle(datetime.fromisoformat(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]))
             for c in data.get("candles", [])
@@ -322,7 +354,10 @@ def _download(exchange: str, force: bool = False) -> tuple[dict[str, Instrument]
     if not force and path.exists() and path.stat().st_mtime >= published_since():
         return parse_instruments(exchange, path.read_text()), True
     try:
+        DUMPS.wait()
         r = httpx.get(f"{INSTRUMENTS_URL}/{exchange}", timeout=30)
+        if r.status_code == 429:
+            DUMPS.pause(DUMPS_PAUSE)  # Kite is strict with these: give it a full minute
         r.raise_for_status()
     except httpx.HTTPError as e:
         if not path.exists():

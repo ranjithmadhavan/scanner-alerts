@@ -213,7 +213,8 @@ async def backtest(request: Request, user: dict = Depends(guard)):
         needed = ma_backtest.requests_needed(n, p.tf, p.start, p.end, p.rules)
         if needed > ma_backtest.MAX_REQUESTS:
             raise ValueError(f"That needs about {needed:,} Kite requests ({n} stocks); the limit is {ma_backtest.MAX_REQUESTS:,} "
-                             f"(about 9 minutes). Shorten the period, use a longer candle, or a shorter list.")
+                             f"(about {ma_backtest.minutes_for(ma_backtest.MAX_REQUESTS)} minutes). Shorten the period, use a longer candle, "
+                             f"or a shorter list.")
         if brokers.load(user["username"]).get("status") != "connected":
             raise ValueError("Kite isn't connected. Log in on the Broker page first.")
         run = ma_backtest.start(user["username"], p)

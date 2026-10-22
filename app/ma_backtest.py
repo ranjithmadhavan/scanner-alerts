@@ -2,7 +2,8 @@
 
 A run fetches each stock's candles from Kite (with enough earlier candles for the moving averages to settle),
 replays app.crossover over them and keeps only the trades, so even the Nifty 500 fits in a small instance.
-Kite allows about 3 candle requests a second, so a long list takes minutes: the page polls the run's progress.
+Backtests read at most 2 candle requests a second (kite.BACKTESTS, leaving room under Kite's limit for live scans
+and alerts), so a long list takes minutes: the page polls the run's progress.
 One run per person at a time; the latest finished run is kept in memory (a restart loses it) for the
 page, the per-trade charts and the CSV download.
 """
@@ -15,7 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from app import brokers, crossover, fractals, universe
+from app import brokers, crossover, fractals, kite, universe
 from app.crossover import Exits, Rules
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.market import IST, MarketSettings, load_settings, now_ist
@@ -29,7 +30,7 @@ TIMEFRAMES = ["3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"]
 # Candle sizes Kite doesn't serve, built from one it does: (source, minutes). They count from the open, as
 # TradingView draws NSE: 4 hours is 9:15-13:15, then 13:15 to the close.
 BUILT = {"4h": ("1h", 240)}
-MAX_REQUESTS = 1500  # ~9 minutes of Kite requests
+MAX_REQUESTS = 1500  # ~12 minutes at the backtest rate
 MAX_SHOWN = 500  # trades listed on the page (the CSV has all of them)
 
 
@@ -103,13 +104,22 @@ def warmup_start(tf: str, start: date, rules: Rules, candles: int | None = None)
     return start - timedelta(days=math.ceil(trading_days * 7 / 5) + 7)
 
 
-def fetch(client, token: int, tf: str, start: date, end: date, s: MarketSettings, now: datetime) -> list[Candle]:
+def fetch(client, token: int, tf: str, start: date, end: date, s: MarketSettings, now: datetime,
+          lane: kite.RateLimit | None = None) -> list[Candle]:
+    """Completed candles from `start` to `end`. `lane` holds a backtest's requests to its own, slower rate."""
     out: list[Candle] = []
     for a, b in chunks(tf, start, end):
+        if lane:
+            lane.wait()
         out += client.candles_range(token, source(tf), a, b)
     if tf in BUILT:
         out = group(out, BUILT[tf][1], s)
     return [c for c in out if candle_end(c, tf, s) <= now - SETTLE]  # completed candles only
+
+
+def minutes_for(requests: int) -> int:
+    """Roughly how long a backtest's requests take at the backtest rate."""
+    return max(1, round(requests * kite.BACKTESTS.gap / 60))
 
 
 def requests_needed(n_stocks: int, tf: str, start: date, end: date, rules: Rules) -> int:
@@ -208,7 +218,7 @@ def _work(run: Run) -> None:
                 run.done += 1
                 continue
             try:
-                candles = fetch(client, inst.token, p.tf, warmup_start(p.tf, p.start, p.rules), p.end, s, now_ist())
+                candles = fetch(client, inst.token, p.tf, warmup_start(p.tf, p.start, p.rules), p.end, s, now_ist(), kite.BACKTESTS)
             except KiteAuthError:
                 raise
             except KiteError as e:
@@ -296,7 +306,8 @@ def chart(run: Run, symbol: str) -> dict:
     inst = instruments().get(symbol)
     if not inst:
         raise KiteError(f"{symbol} isn't on Kite's NSE list")
-    candles = fetch(brokers.client_for(run.user), inst.token, p.tf, warmup_start(p.tf, p.start, p.rules), p.end, s, now_ist())
+    candles = fetch(brokers.client_for(run.user), inst.token, p.tf, warmup_start(p.tf, p.start, p.rules), p.end, s, now_ist(),
+                    kite.BACKTESTS)
     fast, slow = p.rules.averages(candles)
     first = next((i for i, c in enumerate(candles) if c.start.astimezone(IST).date() >= p.start), 0)
     daily = p.tf == "1d"

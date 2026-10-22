@@ -96,7 +96,7 @@
     <div><label for="bt-start" class="label">From</label><input id="bt-start" name="start" type="date" value="{{ start_default }}" max="{{ today }}" class="field num w-auto" required
            data-days='{{ default_days|tojson }}'></div>
     <div><label for="bt-end" class="label">To</label><input id="bt-end" name="end" type="date" value="{{ today }}" max="{{ today }}" class="field num w-auto" required></div>
-    <p class="pb-2.5 text-[13px] text-ink-soft" data-ma-period-note>Long lists over long periods take minutes: Kite serves about 3 requests a second.</p>
+    <p class="pb-2.5 text-[13px] text-ink-soft" data-ma-period-note>Long lists over long periods take minutes: backtests read about 2 stocks' candles a second, to stay inside Kite's limits.</p>
   </div>
 
   <h2 class="mt-7 text-lg font-bold">Exits</h2>

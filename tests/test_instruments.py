@@ -33,6 +33,8 @@ def lists(monkeypatch, tmp_path):
     monkeypatch.setattr(kite, "_instruments", {})
     monkeypatch.setattr(kite, "_tried_at", -kite._RETRY_AFTER)
     monkeypatch.setattr(kite, "_failed_at", -kite._RETRY_AFTER)
+    with kite._refreshing:  # let any background refresh started by an earlier test finish first
+        pass
     monkeypatch.setattr(kite.httpx, "get", lambda url, **kw: calls.append(url) or Resp(answer["status"], NSE_CSV))
     return calls, answer, tmp_path
 
@@ -89,3 +91,29 @@ def test_nse_index_lists_are_asked_for_at_most_once_a_day(monkeypatch):
     universe.symbols("nifty100", date(2026, 10, 23))
     assert len(asked) == 2  # tomorrow it tries again
     assert universe.refresh_all(today)["Nifty 100"] == "NSE didn't answer; kept the last list"
+
+
+def test_rate_limit_spaces_calls_and_pauses():
+    limit = kite.RateLimit(0.05)
+    start = time.monotonic()
+    for _ in range(4):
+        limit.wait()
+    assert time.monotonic() - start >= 0.15  # three gaps between four calls
+    limit.pause(0.1)
+    start = time.monotonic()
+    limit.wait()
+    assert time.monotonic() - start >= 0.09
+
+
+def test_too_many_requests_is_retried_after_a_pause(monkeypatch):
+    answers = [Resp(429), Resp(429), Resp(200)]
+    for r in answers:
+        r.json = lambda r=r: {"status": "success", "data": {"candles": []}} if r.status_code == 200 else {"status": "error"}
+    monkeypatch.setattr(kite.httpx, "get", lambda *a, **k: answers.pop(0))
+    client = kite.KiteClient("enctoken", enctoken="x")
+    assert client.candles_range(1, "1d", date(2026, 10, 1), date(2026, 10, 2)) == [] and answers == []
+    answers[:] = [Resp(429)] * (kite.TOO_MANY_RETRIES + 1)
+    for r in answers:
+        r.json = lambda: {"status": "error"}
+    with pytest.raises(kite.KiteError, match="too many requests"):
+        client.profile()
