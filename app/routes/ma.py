@@ -21,8 +21,11 @@ MAX_SYMBOLS = 500
 DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "1d": 730}
 SETUP_DEFAULTS = {"universe_kind": "list", "universe_list": "nifty50", "symbols": "", "tf": "15m", "fast_kind": "ema",
                   "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both"}
-EXIT_DEFAULTS = {"stop": "candle", "rr": 2, "book": 100, "trail": "", "breakeven": False, "ma_exit": False, "fill": "open",
-                 "square_off": True, "square_off_time": "15:15", "risk": ""}
+# The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, breakeven at 1R,
+# out on a close beyond the slow MA, ₹1,000 risked per trade.
+BACKTEST_DEFAULTS = {**SETUP_DEFAULTS, "tf": "1d", "fast_len": 10, "slow_len": 20, "touch": "fast", "sides": "buy"}
+EXIT_DEFAULTS = {"stop": "candle", "rr": 2, "book": 100, "trail": "", "breakeven": True, "ma_exit": True, "fill": "open",
+                 "square_off": False, "square_off_time": "15:15", "risk": 1000}
 
 
 def _options() -> dict:
@@ -41,11 +44,11 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
     username = user["username"]
     contacts = notify.load_contacts(username)
     scanners = sorted(store.list(ma_scanner.COL, user=username), key=lambda s: s["created_at"], reverse=True)
-    setup, exits = dict(SETUP_DEFAULTS), dict(EXIT_DEFAULTS)
+    bt_setup, exits = dict(BACKTEST_DEFAULTS), dict(EXIT_DEFAULTS)
     # "Backtest this": the form starts from a saved scanner's settings.
     if from_id and (sc := next((s for s in scanners if s["id"] == from_id), None)):
         spec = sc["spec"]
-        setup.update(universe_kind="list" if spec.get("list") else "symbols", universe_list=spec.get("list") or "nifty50",
+        bt_setup.update(universe_kind="list" if spec.get("list") else "symbols", universe_list=spec.get("list") or "nifty50",
                      symbols=", ".join(spec.get("symbols") or []), tf=sc["tf"], **sc["rules"])
         exits.update(stop=sc.get("stop", "candle"), rr=sc.get("rr") or 2)
         tab = "backtest"
@@ -54,8 +57,8 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
     return {
         "tab": tab if tab in ("scanners", "backtest") else ("scanners" if scanners else "backtest"),
         "scanners": [_scanner_view(s) for s in scanners], "max_scanners": ma_scanner.MAX_SCANNERS,
-        "setup": setup, "exits": exits, "today": today.isoformat(),
-        "start_default": (today - timedelta(days=DEFAULT_DAYS[setup["tf"]])).isoformat(),
+        "setup": dict(SETUP_DEFAULTS), "bt_setup": bt_setup, "exits": exits, "today": today.isoformat(),
+        "start_default": (today - timedelta(days=DEFAULT_DAYS[bt_setup["tf"]])).isoformat(),
         "live_tfs": ma_scanner.TIMEFRAMES, "backtest_tfs": ma_backtest.TIMEFRAMES,
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],

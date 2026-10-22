@@ -83,7 +83,7 @@
 
 {% else %}
 <form id="ma-backtest" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/backtest" hx-target="#ma-run" hx-swap="outerHTML">
-  {% with tfs=backtest_tfs, prefix='bt-' %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
+  {% with tfs=backtest_tfs, prefix='bt-', setup=bt_setup %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
 
   <h2 class="mt-7 text-lg font-bold">Period</h2>
   <div class="mt-2 flex flex-wrap items-end gap-3">

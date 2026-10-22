@@ -224,3 +224,21 @@ def test_slow_ma_stop_in_messages(kite, sent):
     assert stop == 163.0 and target == pytest.approx(166.5 + 1.5 * 3.5)
     assert ma_scanner.plan(sc, "sell", 100, 104, 103) == (103, pytest.approx(100 - 1.5 * 3))
     assert ma_scanner.plan(sc, "buy", 160, 164, 163.0) == (163.0, None)  # entry under the MA: no target to give
+
+
+def test_backtest_form_defaults_are_positional(web):
+    import re
+    page = web.get("/ma?tab=backtest").text
+    form = page[page.index('id="ma-backtest"'):]
+    checked = lambda name: re.search(rf'name="{name}" value="([^"]*)"[^>]*checked', form).group(1)
+    assert '<option value="1d" selected>' in form
+    assert 'name="fast_len" type="number" min="1" max="400" step="1" required value="10"' in form
+    assert 'name="slow_len" type="number" min="1" max="400" step="1" required value="20"' in form
+    assert form.count('<option value="ema" selected>') == 2
+    assert checked("touch") == "fast" and checked("sides") == "buy"
+    assert checked("breakeven") == "1" and checked("ma_exit") == "1"
+    assert not re.search(r'name="square_off" value="1"[^>]*checked', form)  # positional, not intraday
+    assert 'name="risk" type="number" min="1" step="1" value="1000"' in form
+    # The live scanner form keeps its own defaults.
+    scanners = web.get("/ma?tab=scanners").text
+    assert '<option value="15m" selected>' in scanners
