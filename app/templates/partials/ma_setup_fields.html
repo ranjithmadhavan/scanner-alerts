@@ -22,10 +22,22 @@
     <p class="mt-1.5 text-[13px] text-ink-soft">Nifty lists are NSE's, refreshed daily. F&O stocks are every stock with futures on NFO.</p>
   </div>
   <div class="mt-3" data-universe-section="symbols" {{ 'hidden' if setup.universe_kind != 'symbols' }}>
-    <label for="{{ prefix }}symbols" class="sr-only">Stocks</label>
-    <textarea id="{{ prefix }}symbols" name="symbols" rows="2" spellcheck="false" autocomplete="off" class="field uppercase placeholder:normal-case"
-              placeholder="INFY, or several: INFY, TCS, HDFCBANK">{{ setup.symbols }}</textarea>
-    <p class="mt-1.5 text-[13px] text-ink-soft">NSE symbols as Kite has them, separated by commas or new lines. Up to 500.</p>
+    {# Type to search; Enter or a click adds the stock as a pill. The pills are sent as one comma-separated field. #}
+    <div class="relative" data-symbol-picker>
+      <div class="field flex min-h-[46px] cursor-text flex-wrap items-center gap-1.5 py-1.5 focus-within:border-peacock focus-within:ring-4 focus-within:ring-peacock-50" data-picker-box>
+        <span class="contents" data-picker-pills></span>
+        <input id="{{ prefix }}symbols" type="text" spellcheck="false" autocomplete="off" data-picker-input
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ prefix }}symbol-list" aria-label="Add a stock"
+               placeholder="Type a stock, e.g. INFY or hdfc" class="min-w-[9rem] flex-1 border-0 bg-transparent p-1 text-[15px] uppercase outline-none placeholder:normal-case placeholder:text-ink-soft focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0">
+      </div>
+      <div id="{{ prefix }}symbol-list" role="listbox" aria-label="Matching stocks" data-picker-list hidden
+           class="absolute inset-x-0 top-[calc(100%+6px)] z-20 max-h-80 overflow-y-auto rounded-2xl border border-line bg-white p-1.5 shadow-soft"></div>
+      <input type="hidden" name="symbols" value="{{ setup.symbols }}" data-picker-value>
+    </div>
+    <p class="mt-1.5 flex flex-wrap items-center gap-x-3 text-[13px] text-ink-soft">
+      <span><span class="num font-semibold text-ink" data-picker-count>0</span> picked · up to 500 · Backspace removes the last · pasting a list (INFY, TCS, …) adds them all</span>
+      <button type="button" class="font-medium text-peacock underline decoration-peacock/30 underline-offset-4 hover:decoration-peacock" data-picker-clear hidden>Clear all</button>
+    </p>
   </div>
 </fieldset>
 

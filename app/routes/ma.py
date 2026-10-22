@@ -7,11 +7,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app import brokers, crossover, fractals, ma_backtest, ma_scanner, notify, universe, webhooks
 from app.crossover import Exits, Rules
-from app.kite import KiteAuthError, KiteError, instruments
+from app.kite import KiteAuthError, KiteError, instruments, search_instruments
 from app.market import now_ist, parse_hhmm
 from app.security import require
 from app.store import new_id, store
-from app.web import fail, render, toast
+from app.web import _company, fail, render, toast
 
 router = APIRouter(prefix="/ma")
 guard = require("ma")
@@ -71,6 +71,18 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
 @router.get("")
 def page(request: Request, user: dict = Depends(guard), tab: str = "", backtest: str = ""):
     return render(request, "ma.html", _ctx(user, tab, backtest))
+
+
+@router.get("/symbols")
+def symbols(q: str = "", user: dict = Depends(guard)):
+    """Suggestions for the stock picker: NSE stocks and indices matching what has been typed."""
+    if not q.strip():
+        return JSONResponse([])
+    try:
+        found = search_instruments("NSE:" + q.strip(), limit=8)
+    except Exception:
+        return JSONResponse({"error": "Couldn't load the list of stocks. Try again in a moment."}, status_code=503)
+    return JSONResponse([{"symbol": i.symbol, "name": _company(i.name), "index": i.is_index} for i in found])
 
 
 # ---- shared form reading ------------------------------------------------------------------------

@@ -897,3 +897,129 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
   document.addEventListener("htmx:load", (e) => { if (e.detail.elt.id === "ma-run") build(e.detail.elt); });
   if (box()) build(box());
 })();
+
+// ---- MA crossover: stock picker (type, pick with Enter or a click, removable pills) ------------------
+(() => {
+  const MAX = 500;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  document.querySelectorAll("[data-symbol-picker]").forEach((root) => {
+    const box = root.querySelector("[data-picker-box]");
+    const pills = root.querySelector("[data-picker-pills]");
+    const input = root.querySelector("[data-picker-input]");
+    const list = root.querySelector("[data-picker-list]");
+    const value = root.querySelector("[data-picker-value]");
+    const section = root.closest("[data-universe-section]");
+    const count = section.querySelector("[data-picker-count]");
+    const clear = section.querySelector("[data-picker-clear]");
+    let picked = value.value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    let matches = [], active = -1, timer, request;
+
+    function save() {
+      picked = [...new Set(picked)].slice(0, MAX);
+      value.value = picked.join(", ");
+      count.textContent = picked.length;
+      clear.hidden = !picked.length;
+      pills.innerHTML = picked.map((s) => `
+        <span class="inline-flex items-center gap-1 rounded-full bg-peacock-50 py-1 pl-3 pr-1 text-sm font-semibold text-peacock">${esc(s)}
+          <button type="button" data-remove="${esc(s)}" class="grid h-5 w-5 place-items-center rounded-full text-peacock/70 transition hover:bg-white hover:text-fall"
+                  aria-label="Remove ${esc(s)}" title="Remove ${esc(s)}">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button></span>`).join("");
+      input.placeholder = picked.length ? "Add another" : "Type a stock, e.g. INFY or hdfc";
+    }
+
+    function close() {
+      list.hidden = true; list.innerHTML = ""; matches = []; active = -1;
+      input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant");
+    }
+
+    function highlight(i) {
+      const opts = [...list.querySelectorAll('[role="option"]')];
+      if (!opts.length) return;
+      active = (i + opts.length) % opts.length;
+      opts.forEach((o, n) => o.setAttribute("aria-selected", n === active ? "true" : "false"));
+      opts[active].scrollIntoView({ block: "nearest" });
+      input.setAttribute("aria-activedescendant", opts[active].id);
+    }
+
+    function show(found, query) {
+      matches = found;
+      if (!found.length) {
+        list.innerHTML = `<p class="px-3 py-2.5 text-sm text-ink-soft">No NSE stock matches “${esc(query)}”.</p>`;
+      } else {
+        list.innerHTML = found.map((m, n) => {
+          const have = picked.includes(m.symbol);
+          return `<button type="button" role="option" id="${input.id}-opt-${n}" data-pick="${n}" aria-selected="false" tabindex="-1"
+            class="flex w-full items-baseline gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-peacock-50 aria-selected:bg-peacock-50">
+            <span class="font-display font-bold">${esc(m.symbol)}</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-ink-soft">${esc(m.name)}</span>
+            ${m.index ? '<span class="rounded-full bg-marigold-50 px-2 py-0.5 text-xs font-medium text-marigold-dark">Index</span>' : ""}
+            ${have ? '<span class="text-xs font-medium text-peacock">added</span>' : ""}</button>`;
+        }).join("");
+      }
+      list.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      if (found.length) highlight(0);
+    }
+
+    async function search() {
+      const query = input.value.trim();
+      if (!query) return close();
+      request?.abort();
+      request = new AbortController();
+      try {
+        const r = await fetch("/ma/symbols?q=" + encodeURIComponent(query), { signal: request.signal });
+        const got = await r.json();
+        if (document.activeElement !== input || input.value.trim() !== query) return;  // picked or typed on meanwhile
+        if (!r.ok) { list.innerHTML = `<p class="px-3 py-2.5 text-sm text-fall">${esc(got.error)}</p>`; list.hidden = false; return; }
+        show(got, query);
+      } catch (e) { /* aborted by a newer search */ }
+    }
+
+    function add(symbols) {
+      const before = picked.length;
+      picked.push(...symbols);
+      save();
+      if (picked.length >= MAX && before + symbols.length > MAX) {
+        document.body.dispatchEvent(new CustomEvent("toast", { detail: { message: `A list can have up to ${MAX} stocks.`, kind: "error" } }));
+      }
+      input.value = "";
+      close();
+      input.focus();
+    }
+
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 150); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" && !list.hidden) { e.preventDefault(); highlight(active + 1); }
+      else if (e.key === "ArrowUp" && !list.hidden) { e.preventDefault(); highlight(active - 1); }
+      else if (e.key === "Enter") {
+        e.preventDefault();  // never submits the form from here
+        if (matches[active]) add([matches[active].symbol]);
+      } else if (e.key === "Escape") { close(); }
+      else if (e.key === "Backspace" && !input.value && picked.length) { picked.pop(); save(); }
+    });
+    // A pasted list (INFY, TCS or one per line) adds every symbol; the server checks them when the form is sent.
+    input.addEventListener("paste", (e) => {
+      const text = e.clipboardData.getData("text");
+      if (!/[,\n]/.test(text)) return;
+      e.preventDefault();
+      add(text.split(/[,\n]/).map((s) => s.trim().toUpperCase().replace(/^NSE:/, "")).filter(Boolean));
+    });
+    list.addEventListener("mousedown", (e) => {  // mousedown, so it lands before the input loses focus
+      const opt = e.target.closest("[data-pick]");
+      if (opt) { e.preventDefault(); add([matches[Number(opt.dataset.pick)].symbol]); }
+    });
+    pills.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-remove]");
+      if (!btn) return;
+      picked = picked.filter((s) => s !== btn.dataset.remove);
+      save();
+      input.focus();
+    });
+    box.addEventListener("click", (e) => { if (e.target === box) input.focus(); });
+    clear.addEventListener("click", () => { picked = []; save(); input.focus(); });
+    input.addEventListener("blur", () => setTimeout(close, 120));
+    save();
+  });
+})();

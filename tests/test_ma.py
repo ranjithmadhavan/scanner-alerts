@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import brokers, config, crossover, ma_backtest, ma_scanner, notify, universe
+from app import kite as kite_mod
 from app.kite import Candle, Instrument
 from app.market import IST
 from app.routes import ma as routes
@@ -59,7 +60,7 @@ class FakeKite:
 def kite(monkeypatch):
     fake = FakeKite(daily(ROWS))
     insts = {"INFY": INFY}
-    for mod in (ma_backtest, ma_scanner, routes, universe):
+    for mod in (ma_backtest, ma_scanner, routes, universe, kite_mod):
         monkeypatch.setattr(mod, "instruments", lambda: insts)
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: fake)
     monkeypatch.setattr(universe.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("offline")))
@@ -144,7 +145,7 @@ def test_scanner_create_limits_and_list(web):
     assert "Paused" in r.headers["HX-Trigger"]
     # "Backtest this" opens the backtest form with the scanner's settings.
     page = web.get("/ma?backtest=" + sc["id"]).text
-    assert "Run backtest" in page and '<option value="1d" selected>' in page and ">INFY</textarea>" in page
+    assert "Run backtest" in page and '<option value="1d" selected>' in page and 'name="symbols" value="INFY" data-picker-value' in page
     web.post(f"/ma/scanners/{sc['id']}/delete")
     assert store.list("ma_scanners", user="tara") == []
 
@@ -243,3 +244,13 @@ def test_backtest_form_defaults_are_positional(web):
     # The live scanner form keeps its own defaults.
     scanners = web.get("/ma?tab=scanners").text
     assert '<option value="15m" selected>' in scanners
+
+
+def test_stock_picker_suggests_nse_stocks(web, monkeypatch):
+    insts = {"INFY": INFY, "INFIBEAM": Instrument("INFIBEAM", "INFIBEAM AVENUES", 2, False),
+             "BSE:INFY": Instrument("INFY", "INFOSYS", 3, False, "BSE"), "NIFTY 50": Instrument("NIFTY 50", "NIFTY 50", 4, True)}
+    monkeypatch.setattr(kite_mod, "instruments", lambda: insts)
+    got = web.get("/ma/symbols?q=inf").json()
+    assert [g["symbol"] for g in got] == ["INFY", "INFIBEAM"] and got[0]["name"] == "Infosys"  # NSE only
+    assert web.get("/ma/symbols?q=nifty").json() == [{"symbol": "NIFTY 50", "name": "Nifty 50", "index": True}]
+    assert web.get("/ma/symbols?q=").json() == []
