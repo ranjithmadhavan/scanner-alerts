@@ -788,6 +788,8 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     const tf = form.querySelector("[data-ma-tf]")?.value;
     const intraday = form.querySelector("[data-ma-intraday]");
     if (intraday) intraday.hidden = tf === "1d";
+    const second = form.querySelector("[data-ma-second]");  // a second chance only makes sense with one entry per crossover
+    if (second) second.disabled = !form.querySelector("[data-ma-once]").checked;
   }
   document.querySelectorAll(".ma-form").forEach((form) => {
     sync(form);

@@ -82,11 +82,18 @@
   <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Each newer pullback candle replaces the last as the trigger until one is entered: a trade beyond it (its high for a buy, its low for a sell). The opposite crossover cancels a setup that hasn't been entered.</p>
 </fieldset>
 
-<label class="mt-4 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
-  <input type="checkbox" name="once" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if setup.once }}>
-  <span><span class="text-[15px] font-semibold">Only the first entry after each crossover</span>
-    <span class="block text-[13px] leading-snug text-ink-soft">Once a crossover has given its entry, nothing more until the next crossover, however that trade ends. Needs a crossover inside the candles read. Unticked, every later pullback in the same trend sets up another entry.</span></span>
-</label>
+<div class="mt-4 rounded-2xl border border-line px-4 py-3">
+  <label class="flex cursor-pointer items-start gap-2.5">
+    <input type="checkbox" name="once" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" data-ma-once {{ 'checked' if setup.once }}>
+    <span><span class="text-[15px] font-semibold">Only the first entry after each crossover</span>
+      <span class="block text-[13px] leading-snug text-ink-soft">Once a crossover has given its entry, nothing more until the next crossover, however that trade ends. Needs a crossover inside the candles read. Unticked, every later pullback in the same trend sets up another entry.</span></span>
+  </label>
+  <label class="ml-6 mt-2.5 flex cursor-pointer items-start gap-2.5 border-t border-line pt-2.5 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
+    <input type="checkbox" name="second" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" data-ma-second {{ 'checked' if setup.second }} {{ 'disabled' if not setup.once }}>
+    <span><span class="text-[15px] font-semibold">…and a second entry if the first is stopped out</span>
+      <span class="block text-[13px] leading-snug text-ink-soft">If the first trade hits its SL while the crossover still stands, the next pullback can give one more entry (never a third). A first trade that booked anything, or ended any other way, doesn't. Live scanners follow the first trade with their own SL and target to know.</span></span>
+  </label>
+</div>
 
 <div class="mt-4 inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which side">
   {% for key, text in sides.items() %}

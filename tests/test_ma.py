@@ -307,3 +307,15 @@ def test_four_hour_is_offered(web):
     r = web.post("/ma/scanners", data={**SETUP, "tf": "4h", "universe_kind": "list", "universe_list": "nifty500",
                                        "stop": "candle", "rr": "2"})
     assert "Scanner saved" in r.headers["HX-Trigger"] and "on 4 hour candles" in r.text
+
+
+def test_second_entry_needs_first_entry_only(web):
+    base = {**SETUP, "stop": "candle", "rr": "2"}
+    web.post("/ma/scanners", data={**base, "once": "1", "second": "1", "name": "with second"})
+    web.post("/ma/scanners", data={**base, "second": "1", "name": "re-entries"})
+    rules = {sc["name"]: sc["rules"] for sc in store.list("ma_scanners", user="tara")}
+    assert (rules["with second"]["once"], rules["with second"]["second"]) == (True, True)
+    assert (rules["re-entries"]["once"], rules["re-entries"]["second"]) == (False, False)
+    assert "a second after a stop-out" in web.get("/ma?tab=scanners").text
+    for sc in store.list("ma_scanners", user="tara"):
+        store.delete("ma_scanners", sc["id"])

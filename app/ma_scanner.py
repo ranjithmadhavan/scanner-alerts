@@ -60,6 +60,13 @@ def rules_of(sc: dict) -> Rules:
     return Rules(**sc["rules"])
 
 
+def exits_of(sc: dict) -> crossover.Exits:
+    """How a scanner follows a first entry, to know if it was stopped out (for a second chance): its SL and target."""
+    rr = float(sc.get("rr") or 0)
+    return crossover.Exits(stop=sc.get("stop", "candle"), rr=rr, book=100 if rr else 0,
+                           fill="open" if sc.get("gap_alerts") else "skip")
+
+
 def latest_close(tf: str, s: MarketSettings, now: datetime) -> datetime | None:
     """When the most recent candle of this size that has settled closed: today's, or the last session's close."""
     if is_trading_day(now) and (b := last_boundary(tf, s, now - SETTLE)):
@@ -201,9 +208,8 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
             continue
         if not candles:
             continue
-        fast, slow = rules.averages(candles)
-        w = crossover.walk(candles, rules, fast, slow)
-        for e in w.entries:
+        found, pending, fast, slow = crossover.scan(candles, rules, exits_of(sc))
+        for e in found:
             key = f"{symbol}:{candles[e.setup.trigger].start.isoformat()}:entry"
             if candle_end(candles[e.index], tf, s) <= cutoff or key in seen:
                 continue
@@ -216,7 +222,7 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
             entries.append({"key": key, "symbol": symbol, "side": e.side, "level": e.setup.level, "stop": stop,
                             "target": target, "price": price, "gap": e.gap,
                             "trigger_at": candles[e.setup.trigger].start.isoformat()})
-        if p := w.pending:
+        if p := pending:
             trigger = candles[p.trigger]
             item = {"side": p.side, "level": p.level, "candle_stop": p.stop, "slow": slow[p.trigger],
                     "trigger_at": trigger.start.isoformat(), "token": inst.token}

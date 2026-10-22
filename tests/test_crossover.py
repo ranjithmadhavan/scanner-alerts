@@ -235,3 +235,49 @@ def test_one_entry_waits_for_a_crossover_it_can_see():
     w = walk(series(GREEN, RED, (99, 103, 98.5, 102.5)), Rules(), [3, 3, 3], [2, 2, 2])
     assert w.entries == [] and w.pending is None
     assert len(walk(series(GREEN, RED, (99, 103, 98.5, 102.5)), Rules(once=False), [3, 3, 3], [2, 2, 2]).entries) == 1
+
+
+def _second_chance_series(first_hits_target=False):
+    """Crossover up on candle 1. Red candle 2 sets up at 102 (SL 98), candle 3 enters. Candle 4 either trades 97
+    (SL) or 111 (the 1:2 target, 110). Red candle 5 sets up at 100 (SL 96.5), candle 6 enters. Red candle 7 would
+    set up a third."""
+    fourth = (102.5, 111, 102, 110.5) if first_hits_target else (102.5, 103, 97, 97.5)
+    return series(GREEN, GREEN, RED, (99, 103, 98.5, 102.5), fourth, (99, 100, 96.5, 97), (97, 101, 96.8, 100.5),
+                  (100.5, 101, 99.5, 99.8))
+
+
+def test_second_entry_only_after_a_stop_out(monkeypatch):
+    from app import crossover
+    fast, slow = [1] + [3] * 7, [2] * 8
+    monkeypatch.setattr(Rules, "averages", lambda self, c: (fast, slow))
+    rules = Rules(second=True)
+    got, _ = trades(_second_chance_series(), rules, Exits(rr=2))
+    assert [(t.entry.index, t.status, t.reason) for t in got] == [(3, "closed", "SL"), (6, "open", "")]
+    entries, pending, _, _ = crossover.scan(_second_chance_series(), rules, Exits(rr=2))
+    assert [e.index for e in entries] == [3, 6] and pending is None  # no third, and the second is still running
+    # Without the second chance: just the first.
+    got, _ = trades(_second_chance_series(), Rules(), Exits(rr=2))
+    assert [t.entry.index for t in got] == [3]
+    # The first reached its target: no second entry.
+    got, _ = trades(_second_chance_series(first_hits_target=True), rules, Exits(rr=2))
+    assert [(t.entry.index, t.reason) for t in got] == [(3, "Target")]
+    entries, pending, _, _ = crossover.scan(_second_chance_series(first_hits_target=True), rules, Exits(rr=2))
+    assert [e.index for e in entries] == [3] and pending is None
+
+
+def test_second_chance_waiting_and_counted_from_before_the_start(monkeypatch):
+    from app import crossover
+    candles = _second_chance_series()[:6]  # stopped out on candle 4, red candle 5 is waiting for its entry
+    fast, slow = [1] + [3] * 5, [2] * 6
+    monkeypatch.setattr(Rules, "averages", lambda self, c: (fast, slow))
+    entries, pending, _, _ = crossover.scan(candles, Rules(second=True), Exits(rr=2))
+    assert [e.index for e in entries] == [3] and pending.trigger == 5 and pending.level == 100
+    # While the first trade is still running, no second setup is shown.
+    running = candles[:4] + [Candle(candles[4].start, 102.5, 104, 99, 103.5), Candle(candles[5].start, 103.5, 104, 100, 100.5)]
+    _, pending, _, _ = crossover.scan(running, Rules(second=True), Exits(rr=2))
+    assert pending is None
+    # A backtest starting after the first trade still knows it was the first: the second is allowed, a third not.
+    full = _second_chance_series()
+    fast, slow = [1] + [3] * 7, [2] * 8
+    got, _ = trades(full, Rules(second=True), Exits(rr=2), start=5)
+    assert [t.entry.index for t in got] == [6]

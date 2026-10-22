@@ -20,7 +20,8 @@ MAX_SYMBOLS = 500
 # How far back a backtest starts by default, per candle size.
 DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "4h": 365, "1d": 365}
 SETUP_DEFAULTS = {"universe_kind": "list", "universe_list": "nifty50", "symbols": "", "tf": "15m", "fast_kind": "ema",
-                  "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both", "once": True}
+                  "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both", "once": True,
+                  "second": False}
 # The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, half booked at 1:2,
 # breakeven at 1R, the rest out on a close beyond the slow MA, ₹1,000 risked per trade.
 BACKTEST_DEFAULTS = {**SETUP_DEFAULTS, "tf": "1d", "fast_len": 10, "slow_len": 20, "touch": "fast", "sides": "buy"}
@@ -49,7 +50,7 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
     if from_id and (sc := next((s for s in scanners if s["id"] == from_id), None)):
         spec = sc["spec"]
         bt_setup.update(universe_kind="list" if spec.get("list") else "symbols", universe_list=spec.get("list") or "nifty50",
-                     symbols=", ".join(spec.get("symbols") or []), tf=sc["tf"], **{"once": True, **sc["rules"]})
+                     symbols=", ".join(spec.get("symbols") or []), tf=sc["tf"], **{"once": True, "second": False, **sc["rules"]})
         exits.update(stop=sc.get("stop", "candle"), rr=sc.get("rr") or 2)
         tab = "backtest"
     today = now_ist().date()
@@ -128,7 +129,8 @@ def _read_setup(form, timeframes: list[str]) -> tuple[dict, str, Rules]:
     touch, sides = form.get("touch", ""), form.get("sides", "both")
     if touch not in crossover.TOUCH or sides not in crossover.SIDES:
         raise ValueError("Pick the pullback rule and which side to trade.")
-    return spec, tf, Rules(fast_kind, fast_len, slow_kind, slow_len, touch, sides, bool(form.get("once")))
+    once = bool(form.get("once"))
+    return spec, tf, Rules(fast_kind, fast_len, slow_kind, slow_len, touch, sides, once, once and bool(form.get("second")))
 
 
 def _rr(raw: str) -> float:

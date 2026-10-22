@@ -10,7 +10,7 @@ slow one the trend is up and buys are looked for; below, sells. Until the opposi
 * a later candle trading beyond it (above its high for a buy, below its low for a sell) is the entry.
   When that candle opens beyond the level, the entry came on a *gap*;
 * with `once` (the default), a crossover gives one entry: after it, nothing more is looked for until the
-  next crossover, however that trade ends. Without it, the next pullback candle in the same trend sets up
+  next crossover, however that trade ends; with `second` as well, one more if the first was stopped out. Without it, the next pullback candle in the same trend sets up
   the next entry. The opposite crossover cancels a setup that hasn't been entered.
 
 The trend is read from where the averages stand once both exist. With `once`, setups wait for a crossover
@@ -72,7 +72,8 @@ class Rules:
     slow_len: int = 21
     touch: str = ""  # "", "fast" or "slow": the moving average a pullback candle must reach
     sides: str = "both"
-    once: bool = True  # one entry per crossover
+    once: bool = True  # one entry per crossover...
+    second: bool = False  # ...or, with `once`, a second one if the first was stopped out (decided in trades(), not walk())
 
     @property
     def label(self) -> str:
@@ -140,7 +141,8 @@ def walk(candles: list[Candle], rules: Rules, fast: list | None = None, slow: li
                 out.crossovers.append((i, now))
             out.trend, setup, used = now, None, False
             continue  # the crossover candle is never the pullback
-        if entered or rules.sides not in ("both", now) or (rules.once and (used or crossed is None)):
+        # With a second chance, walk() lists every entry of the crossover; trades() keeps the ones allowed.
+        if entered or rules.sides not in ("both", now) or (rules.once and (crossed is None or (used and not rules.second))):
             continue
         if now == "buy" and c.close < c.open and (touch_ma is None or (touch_ma[i] is not None and c.low <= touch_ma[i])):
             setup = Setup("buy", i, c.high, c.low, crossed)
@@ -318,11 +320,56 @@ def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exi
     return t
 
 
-def trades(candles: list[Candle], rules: Rules, x: Exits, minutes: int = 0, start: int = 0) -> tuple[list[Trade], Walk]:
-    """Every entry from candle `start` on, one position at a time: an entry while a trade is still open is
-    passed over, and an open trade at the end blocks everything after it."""
+def stopped_out(t: Trade) -> bool:
+    """Did the trade end at its SL (the trigger candle's, or the slow MA when that is the SL) with nothing booked?"""
+    return t.status == "closed" and all(f.reason in ("stop", "slow_ma") for f in t.fills)
+
+
+def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int) -> list[Trade]:
+    """One position at a time, from the first candle: a crossover's first entry, and a second only once the first
+    has been stopped out. Never a third."""
+    out: list[Trade] = []
+    per: dict[int | None, list[Trade]] = {}
+    free_from = 0
+    for e in w.entries:
+        before = per.get(e.setup.crossed, [])
+        if e.index < free_from or len(before) >= 2 or (before and not stopped_out(before[-1])):
+            continue
+        t = simulate(e, candles, fast, slow, x, minutes)
+        out.append(t)
+        per.setdefault(e.setup.crossed, []).append(t)
+        if t.status == "open":
+            break
+        if t.status == "closed":
+            free_from = t.exit_index + 1
+    return out
+
+
+def scan(candles: list[Candle], rules: Rules, x: Exits) -> tuple[list[Entry], Setup | None, list, list]:
+    """For a live scanner: the entries to report and the setup still waiting for its entry, with both averages.
+    With a second chance, the first entry is followed as a trade (with `x`) to know whether it was stopped out,
+    and nothing is set up while it is still running."""
     fast, slow = rules.averages(candles)
     w = walk(candles, rules, fast, slow)
+    if not (rules.once and rules.second):
+        return w.entries, w.pending, fast, slow
+    taken = _second_chances(w, candles, fast, slow, x, 0)
+    pending = w.pending
+    if pending:
+        before = [t for t in taken if t.entry.setup.crossed == pending.crossed]
+        if (taken and taken[-1].status == "open") or len(before) >= 2 or (before and not stopped_out(before[0])):
+            pending = None
+    return [t.entry for t in taken], pending, fast, slow
+
+
+def trades(candles: list[Candle], rules: Rules, x: Exits, minutes: int = 0, start: int = 0) -> tuple[list[Trade], Walk]:
+    """Every entry from candle `start` on, one position at a time: an entry while a trade is still open is
+    passed over, and an open trade at the end blocks everything after it. With a second chance after a stop-out,
+    trades before `start` are followed too, since they decide what is allowed after it."""
+    fast, slow = rules.averages(candles)
+    w = walk(candles, rules, fast, slow)
+    if rules.once and rules.second:
+        return [t for t in _second_chances(w, candles, fast, slow, x, minutes) if t.entry.index >= start], w
     out: list[Trade] = []
     free_from = start
     for e in w.entries:
