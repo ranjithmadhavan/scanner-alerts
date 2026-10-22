@@ -242,6 +242,7 @@ def test_backtest_form_defaults_are_positional(web):
     assert form.count('<option value="ema" selected>') == 2
     assert checked("touch") == "fast" and checked("sides") == "buy"
     assert checked("breakeven") == "1" and checked("ma_exit") == "1" and checked("once") == "1"
+    assert checked("second") == "1"
     assert not re.search(r'name="square_off" value="1"[^>]*checked', form)  # positional, not intraday
     assert 'name="risk" type="number" min="1" step="1" value="1000"' in form
     assert 'name="book" type="number" min="0" max="100" step="5" value="50"' in form  # half at the target, the rest runs
