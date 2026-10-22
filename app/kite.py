@@ -12,12 +12,17 @@ import hashlib
 import io
 import json
 import logging
+import os
 import struct
+import tempfile
 import threading
 import time
 from urllib.parse import quote as quote_url, unquote
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from websockets.exceptions import InvalidStatus, WebSocketException
@@ -235,14 +240,18 @@ def connect_exchange_token(api_key: str, api_secret: str, request_token: str) ->
     return body["data"]
 
 
-# ---- Instruments (public dumps, refreshed through the day) -------------------
-# F&O contracts are listed and expire all the time, so the lists are re-downloaded
-# every few hours rather than kept for the life of the process.
+# ---- Instruments (Kite's public dumps, once a day) ----------------------------
+# Kite publishes each exchange's list once a day, early in the morning, and rate-limits the downloads hard
+# (HTTP 429). So each list is downloaded once a day, kept on disk so a restart reads it back instead of
+# downloading again, and a failed download is retried after a few minutes, not on every request. A list
+# that can't be downloaded is served from the last copy on disk.
 
 EXCHANGES = ("NSE", "BSE", "NFO", "BFO")  # also the order results are ranked in
 DERIVATIVES = ("NFO", "BFO")
-INSTRUMENTS_REFRESH = 4 * 3600
-_RETRY_AFTER = 300  # an exchange failed to download: try again soon instead of in 4 hours
+LISTS_PUBLISHED = dtime(8, 30)  # IST; a list fetched after the latest of these is the day's
+INSTRUMENTS_DIR = Path(os.environ.get("INSTRUMENTS_CACHE_DIR") or Path(tempfile.gettempdir()) / "stock-scanner-instruments")
+_RETRY_AFTER = 300  # seconds before trying Kite again after a failed download
+_IST = ZoneInfo("Asia/Kolkata")
 _KIND_RANK = {"EQ": 0, "FUT": 1, "CE": 2, "PE": 2}
 
 
@@ -266,7 +275,10 @@ class Instrument:
 
 _by_exchange: dict[str, dict[str, Instrument]] = {}
 _instruments: dict[str, Instrument] = {}
-_instruments_at = 0.0
+_loaded_at = 0.0  # wall-clock time of the last load (from Kite or from disk)
+_stale = False  # some list is an old copy or missing: try Kite again after _RETRY_AFTER
+_tried_at = -_RETRY_AFTER  # monotonic time of the last load attempt
+_failed_at = -_RETRY_AFTER  # ...and of the last one that got no list at all
 _instruments_lock = threading.Lock()
 _refreshing = threading.Lock()
 
@@ -296,25 +308,52 @@ def parse_instruments(exchange: str, text: str) -> dict[str, Instrument]:
     return out
 
 
-def _download(exchange: str) -> dict[str, Instrument]:
-    r = httpx.get(f"{INSTRUMENTS_URL}/{exchange}", timeout=30)
-    r.raise_for_status()
-    return parse_instruments(exchange, r.text)
+def published_since() -> float:
+    """The latest time Kite published its lists (8:30 AM IST today, or yesterday before then), as epoch seconds."""
+    now = datetime.now(_IST)
+    mark = datetime.combine(now.date(), LISTS_PUBLISHED, _IST)
+    return (mark if now >= mark else mark - timedelta(days=1)).timestamp()
 
 
-def _reload() -> None:
-    global _instruments, _instruments_at
-    failed = []
+def _download(exchange: str, force: bool = False) -> tuple[dict[str, Instrument], bool]:
+    """One exchange's list and whether it is the day's: from disk if today's copy is there (unless `force`),
+    else from Kite, saved to disk. If Kite fails, the last copy on disk (not the day's) if there is one."""
+    path = INSTRUMENTS_DIR / f"{exchange}.csv"
+    if not force and path.exists() and path.stat().st_mtime >= published_since():
+        return parse_instruments(exchange, path.read_text()), True
+    try:
+        r = httpx.get(f"{INSTRUMENTS_URL}/{exchange}", timeout=30)
+        r.raise_for_status()
+    except httpx.HTTPError as e:
+        if not path.exists():
+            raise
+        log.warning("couldn't download %s instruments (%s); using the copy from %s", exchange, e,
+                    datetime.fromtimestamp(path.stat().st_mtime, _IST).strftime("%d %b %H:%M"))
+        return parse_instruments(exchange, path.read_text()), False
+    parsed = parse_instruments(exchange, r.text)
+    INSTRUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(r.text)
+    tmp.replace(path)
+    return parsed, True
+
+
+def _reload(force: bool = False) -> None:
+    global _instruments, _loaded_at, _stale, _tried_at, _failed_at
+    _tried_at = time.monotonic()
+    stale = False
     for exchange in EXCHANGES:
         try:
-            _by_exchange[exchange] = _download(exchange)
+            _by_exchange[exchange], fresh = _download(exchange, force)
+            stale = stale or not fresh
         except Exception as e:  # keep the previous list for this exchange if we have one
-            failed.append(exchange)
+            stale = True
             log.warning("couldn't load %s instruments: %s", exchange, e)
     if not _by_exchange:
-        raise KiteError("Couldn't load the instrument lists from Kite")
+        _failed_at = time.monotonic()
+        raise KiteError("Couldn't load the instrument lists from Kite. Trying again in a few minutes.")
     _instruments = {k: i for exchange in EXCHANGES for k, i in _by_exchange.get(exchange, {}).items()}
-    _instruments_at = time.monotonic() - (INSTRUMENTS_REFRESH - _RETRY_AFTER if failed else 0)
+    _loaded_at, _stale = time.time(), stale
 
 
 def _reload_in_background() -> None:
@@ -329,14 +368,25 @@ def _reload_in_background() -> None:
 def instruments() -> dict[str, Instrument]:
     """Everything that can be alerted on, keyed by Instrument.key."""
     if _instruments:
-        # Stale lists are still served while a refresh runs, so a search never waits on the download.
-        if time.monotonic() - _instruments_at >= INSTRUMENTS_REFRESH and _refreshing.acquire(blocking=False):
+        # Once Kite has published the day's lists (or a failed download is due a retry), refresh in the background;
+        # the lists we have are served meanwhile, so a search never waits on a download.
+        due = _loaded_at < published_since() or (_stale and time.monotonic() - _tried_at >= _RETRY_AFTER)
+        if due and _refreshing.acquire(blocking=False):
             threading.Thread(target=_reload_in_background, name="instruments", daemon=True).start()
         return _instruments
     with _instruments_lock:
         if not _instruments:
+            if time.monotonic() - _failed_at < _RETRY_AFTER:  # failed a moment ago: don't hit Kite on every request
+                raise KiteError("Kite's instrument lists couldn't be loaded. Trying again in a few minutes.")
             _reload()
         return _instruments
+
+
+def refresh_instruments() -> dict[str, int]:
+    """Download every list from Kite now (the super admin's Refresh button). Returns instruments per exchange."""
+    with _instruments_lock:
+        _reload(force=True)
+    return {e: len(_by_exchange.get(e, {})) for e in EXCHANGES}
 
 
 def find_instrument(symbol: str) -> Instrument | None:

@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app import brokers, crossover, ma_backtest, ma_scanner, notify, universe, webhooks
 from app.crossover import Exits, Rules
-from app.kite import KiteAuthError, KiteError, instruments, search_instruments
+from app.kite import KiteAuthError, KiteError, instruments, refresh_instruments, search_instruments
 from app.market import now_ist, parse_hhmm
 from app.security import require
 from app.store import new_id, store
@@ -64,6 +64,7 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],
         "broker_ok": brokers.load(username).get("status") == "connected",
+        "is_admin": user.get("role") == "superadmin",
         "run": run, **(_run_ctx(run) if run and run.status != "running" else {}),
         **_options(),
     }
@@ -74,6 +75,30 @@ def page(request: Request, user: dict = Depends(guard), tab: str = "", backtest:
     return render(request, "ma.html", _ctx(user, tab, backtest))
 
 
+REFRESH_EVERY = timedelta(minutes=10)  # Kite and NSE both turn away repeated downloads
+_refreshed_at = None
+
+
+@router.post("/lists/refresh")
+def refresh_lists(user: dict = Depends(guard)):
+    """Download Kite's instrument lists and NSE's Nifty lists now (they refresh on their own once a day)."""
+    global _refreshed_at
+    if user.get("role") != "superadmin":
+        return fail("Only the super admin can refresh the stock lists.")
+    now = now_ist()
+    if _refreshed_at and now - _refreshed_at < REFRESH_EVERY:
+        return fail(f"The lists were refreshed at {_refreshed_at:%-I:%M %p}. Try again after {(_refreshed_at + REFRESH_EVERY):%-I:%M %p}.")
+    _refreshed_at = now
+    try:
+        counts = refresh_instruments()
+        kite_part = f"Kite: {counts['NSE']:,} NSE, {counts['NFO']:,} NFO"
+    except KiteError as e:
+        kite_part = f"Kite: {e}"
+    nse = universe.refresh_all(now.date())
+    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}),
+                 f"{kite_part}. " + "; ".join(f"{k}: {v}" for k, v in nse.items()))
+
+
 @router.get("/symbols")
 def symbols(q: str = "", user: dict = Depends(guard)):
     """Suggestions for the stock picker: NSE stocks and indices matching what has been typed."""
@@ -81,8 +106,8 @@ def symbols(q: str = "", user: dict = Depends(guard)):
         return JSONResponse([])
     try:
         found = search_instruments("NSE:" + q.strip(), limit=8)
-    except Exception:
-        return JSONResponse({"error": "Couldn't load the list of stocks. Try again in a moment."}, status_code=503)
+    except KiteError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
     return JSONResponse([{"symbol": i.symbol, "name": _company(i.name), "index": i.is_index} for i in found])
 
 

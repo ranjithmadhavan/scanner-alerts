@@ -59,22 +59,41 @@ def fno_stocks() -> list[str]:
     return sorted(n for n in names if (inst := known.get(n)) and not inst.is_index)
 
 
-def symbols(key: str, today: date) -> list[str]:
-    """Today's members of a list, NSE symbols as Kite names them."""
+def symbols(key: str, today: date, refresh: bool = False) -> list[str]:
+    """Today's members of a list, NSE symbols as Kite names them. NSE is asked at most once a day (it turns
+    away repeated requests): after a failure the last list fetched, or the built-in copy, serves the rest of
+    the day. `refresh` asks NSE again now."""
     if key == "fno":
         return fno_stocks()
     if key not in UNIVERSES:
         raise KeyError(key)
     saved = store.get("settings", key) or {}
-    if saved.get("date") == today.isoformat():
-        return saved["symbols"]
+    day = today.isoformat()
+    if not refresh and day in (saved.get("date"), saved.get("tried")):
+        return saved.get("symbols") or built_in(key)
     try:
         found = _from_nse(key)
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("%s list from NSE failed (%s); using the last one", UNIVERSES[key], e)
+        store.update("settings", key, {"tried": day})
+        if refresh:
+            raise
         return saved.get("symbols") or built_in(key)
-    store.put("settings", key, {"date": today.isoformat(), "symbols": found})
+    store.put("settings", key, {"date": day, "tried": day, "symbols": found})
     return found
+
+
+def refresh_all(today: date) -> dict[str, str]:
+    """Ask NSE for every Nifty list now. {list name: what happened}, for the Refresh button."""
+    out = {}
+    for key, name in UNIVERSES.items():
+        if key == "fno":
+            continue
+        try:
+            out[name] = f"{len(symbols(key, today, refresh=True))} stocks"
+        except (httpx.HTTPError, ValueError, KeyError):
+            out[name] = "NSE didn't answer; kept the last list"
+    return out
 
 
 def parse_symbols(text: str) -> list[str]:

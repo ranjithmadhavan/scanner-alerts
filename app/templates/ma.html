@@ -2,9 +2,15 @@
 {% block title %}MA crossover{% endblock %}
 {% block width %}max-w-6xl{% endblock %}
 {% block content %}
-<div class="min-w-0">
-  <h1 class="text-4xl font-bold">MA crossover</h1>
-  <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">After a fast moving average crosses the slow one, wait for a pullback candle and enter when price trades beyond it. Scan a stock or a whole index live, or see how it would have gone.</p>
+<div class="flex flex-wrap items-end justify-between gap-4">
+  <div class="min-w-0">
+    <h1 class="text-4xl font-bold">MA crossover</h1>
+    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">After a fast moving average crosses the slow one, wait for a pullback candle and enter when price trades beyond it. Scan a stock or a whole index live, or see how it would have gone.</p>
+  </div>
+  {% if is_admin %}
+  <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="/ma/lists/refresh" hx-swap="none"
+          title="Stock lists refresh on their own once a day: Kite's after 8:30 AM, NSE's Nifty lists the first time they're needed. This downloads them all now.">{{ icon('refresh', 'h-4 w-4') }} Refresh stock lists</button>
+  {% endif %}
 </div>
 
 {% if not broker_ok %}
