@@ -172,7 +172,8 @@ def _index(token, paise):
 
 def test_ticks_carry_price_and_oi():
     ticks = kite_mod.parse_ticks(_frame(_index(256265, 2255575), _full_option(10418434, 11190, 7877610)))
-    assert ticks == {256265: {"last_price": 22555.75}, 10418434: {"last_price": 111.9, "oi": 7877610}}
+    zero = {"open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0}  # the test packets leave the day's OHLC empty
+    assert ticks == {256265: {"last_price": 22555.75}, 10418434: {"last_price": 111.9, "ohlc": zero, "oi": 7877610}}
     assert kite_mod.parse_ticks(b"\x00") == {}  # heartbeat
 
 
@@ -206,7 +207,8 @@ def test_web_session_quotes_come_off_the_live_feed(monkeypatch):
     monkeypatch.setattr(kite_mod.KiteClient, "_get", lambda *a: pytest.fail("no REST quote for a web session"))
     c = kite_mod.KiteClient("enctoken", enctoken="ab/c+d==", user_id="ZG1234")
     got = c.quote([oi.SPOT_KEY, "NFO:NIFTY26O0624500CE"])
-    assert got == {oi.SPOT_KEY: {"last_price": 24512.0}, "NFO:NIFTY26O0624500CE": {"last_price": 100.5, "oi": 4_200_000}}
+    assert got == {oi.SPOT_KEY: {"last_price": 24512.0}, "NFO:NIFTY26O0624500CE": {"last_price": 100.5, "oi": 4_200_000,
+                   "ohlc": {"open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0}}}
     assert "enctoken=ab%2Fc%2Bd%3D%3D" in urls[0] and "user_id=ZG1234" in urls[0]
     assert sent[1] == {"a": "mode", "v": ["full", [256265, opt.token]]}
 

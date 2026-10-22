@@ -78,10 +78,13 @@ def symbols(key: str, today: date) -> list[str]:
 
 
 def parse_symbols(text: str) -> list[str]:
-    """A typed list: symbols separated by commas, spaces or new lines, each once, in the order given."""
+    """A typed list: symbols separated by commas or new lines (not spaces: index names such as NIFTY 50 have
+    them), each once, in the order given."""
     out: list[str] = []
-    for s in text.replace(",", " ").upper().split():
-        s = s.removeprefix("NSE:")
+    for s in text.replace("\n", ",").upper().split(","):
+        s = " ".join(s.split()).removeprefix("NSE:")
+        if not s:
+            continue
         if s not in out:
             out.append(s)
     return out

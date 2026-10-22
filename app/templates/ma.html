@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}MA crossover{% endblock %}
+{% block width %}max-w-6xl{% endblock %}
+{% block content %}
+<div class="min-w-0">
+  <h1 class="text-4xl font-bold">MA crossover</h1>
+  <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">After a fast moving average crosses the slow one, wait for a pullback candle and enter when price trades beyond it. Scan a stock or a whole index live, or see how it would have gone.</p>
+</div>
+
+{% if not broker_ok %}
+<a href="/broker" class="mt-6 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-3.5 text-[15px] transition hover:border-marigold/60">
+  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-4 w-4') }}</span>
+  <span><strong class="font-semibold">Connect Kite to scan and backtest.</strong> <span class="text-ink-soft">Both read candles with your own Kite session.</span></span>
+</a>
+{% endif %}
+
+<nav class="mt-7 inline-flex rounded-full bg-white p-1 ring-1 ring-line" aria-label="Section">
+  {% for key, text in [('scanners', 'Live scanners'), ('backtest', 'Backtest')] %}
+  <a href="/ma?tab={{ key }}" class="rounded-full px-4 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if tab == key else 'text-ink-soft hover:text-ink' }}"
+     {% if tab == key %}aria-current="page"{% endif %}>{{ text }}{% if key == 'scanners' and scanners %} <span class="num opacity-70">{{ scanners|length }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+
+{% if tab == 'scanners' %}
+<form id="new-scanner" class="ma-form panel mt-5 shadow-soft" hx-post="/ma/scanners" hx-target="#ma-scanners" hx-swap="outerHTML">
+  <details class="group/new" {{ 'open' if not scanners }}>
+  <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
+    <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white transition group-open/new:rotate-45">{{ icon('plus', 'h-4 w-4') }}</span>
+    <span class="text-xl font-bold">New scanner</span>
+    <span class="ml-auto hidden text-sm text-ink-soft group-open/new:hidden sm:inline">{{ scanners|length }} of {{ max_scanners }} in use</span>
+  </summary>
+  <div class="px-6 pb-6 sm:px-7 sm:pb-7">
+    {% with tfs=live_tfs, prefix='sc-' %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
+    <p class="mt-3 text-[13px] text-ink-soft">Live, each stock's candles are read at every candle close, so the list size has a cap: 5 min up to 100 stocks, 10 min up to 200, 15 and 30 min up to 500, 1 hour and daily any list.</p>
+
+    <div class="mt-5 grid gap-5 sm:grid-cols-[1fr_140px_1.3fr]">
+      <div>
+        <label for="sc-stop" class="label">SL in messages</label>
+        <select id="sc-stop" name="stop" class="field">
+          {% for k, text in stops.items() %}<option value="{{ k }}">{{ text }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="sc-rr" class="label">Target at 1 :</label>
+        <input id="sc-rr" name="rr" type="number" min="0" max="20" step="0.1" value="2" class="field num">
+      </div>
+      <div>
+        <label for="sc-name" class="label">Name <span class="font-normal text-ink-soft">(optional)</span></label>
+        <input id="sc-name" name="name" maxlength="60" placeholder="e.g. Nifty 200 swing" class="field">
+      </div>
+    </div>
+    <label class="mt-4 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
+      <input type="checkbox" name="gap_alerts" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" checked>
+      <span><span class="text-[15px] font-semibold">Tell me about gap entries too</span>
+        <span class="block text-[13px] leading-snug text-ink-soft">When a session opens beyond a level set on an earlier day (likely on daily candles). Unticked, those setups are dropped without a message.</span></span>
+    </label>
+    <p class="mt-3 text-[13px] text-ink-soft">You'll get a message when a trigger candle closes (enter beyond ₹…, SL, target) and when its level is traded, within a minute or so.</p>
+
+    {% with hooks=[], hook_payload='', prefix='sc-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+
+    <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-sm text-ink-soft">Send to</span>
+        {% for ch in channels %}
+        <label class="{{ 'cursor-pointer' if ch.ready else 'cursor-not-allowed' }}" title="{{ '' if ch.ready else ch.label ~ ' isn’t set up yet' }}">
+          <input type="checkbox" name="channels" value="{{ ch.key }}" class="peer sr-only" {{ 'checked' if ch.ready else 'disabled' }}>
+          <span class="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-sm font-medium text-ink-soft transition peer-checked:border-peacock/30 peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold peer-disabled:border-dashed peer-disabled:text-ink-soft/50">
+            <svg class="tick h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>{{ ch.label }}
+          </span>
+        </label>
+        {% endfor %}
+        {% if channels|rejectattr('ready')|list %}
+        <a href="/notifications" class="ml-1 text-sm font-medium text-peacock underline decoration-peacock/30 underline-offset-4 hover:decoration-peacock">Set up more</a>
+        {% endif %}
+      </div>
+      <button class="btn-primary htmx-busy">{{ icon('plus', 'h-4 w-4') }} Start scanning</button>
+    </div>
+  </div>
+  </details>
+</form>
+
+{% include "partials/ma_scanners.html" %}
+
+{% else %}
+<form id="ma-backtest" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/backtest" hx-target="#ma-run" hx-swap="outerHTML">
+  {% with tfs=backtest_tfs, prefix='bt-' %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
+
+  <h2 class="mt-7 text-lg font-bold">Period</h2>
+  <div class="mt-2 flex flex-wrap items-end gap-3">
+    <div><label for="bt-start" class="label">From</label><input id="bt-start" name="start" type="date" value="{{ start_default }}" max="{{ today }}" class="field num w-auto" required
+           data-days='{{ default_days|tojson }}'></div>
+    <div><label for="bt-end" class="label">To</label><input id="bt-end" name="end" type="date" value="{{ today }}" max="{{ today }}" class="field num w-auto" required></div>
+    <p class="pb-2.5 text-[13px] text-ink-soft" data-ma-period-note>Long lists over long periods take minutes: Kite serves about 3 requests a second.</p>
+  </div>
+
+  <h2 class="mt-7 text-lg font-bold">Exits</h2>
+  <div class="mt-2 grid gap-5 sm:grid-cols-[1.4fr_1fr_1fr]">
+    <div>
+      <label for="bt-stop" class="label">Stop loss</label>
+      <select id="bt-stop" name="stop" class="field">
+        {% for k, text in stops.items() %}<option value="{{ k }}" {{ 'selected' if exits.stop == k }}>{{ text }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="bt-rr" class="label">Target at 1 :</label>
+      <input id="bt-rr" name="rr" type="number" min="0" max="20" step="0.1" value="{{ exits.rr }}" class="field num">
+    </div>
+    <div>
+      <label for="bt-book" class="label">Book at target (%)</label>
+      <input id="bt-book" name="book" type="number" min="0" max="100" step="5" value="{{ exits.book }}" class="field num">
+    </div>
+  </div>
+  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Risk (1R) is entry to SL. With the slow MA as SL, it's entry to the MA at entry, and the trade is closed when a candle closes beyond the MA. Book 100% for a plain target; less, and the rest runs on the trail and exits below. 0% means no target.</p>
+
+  <div class="mt-5 grid gap-5 sm:grid-cols-[1.4fr_1fr]">
+    <div>
+      <label for="bt-trail" class="label">Trail what's left</label>
+      <select id="bt-trail" name="trail" class="field">
+        {% for k, text in trails.items() %}<option value="{{ k }}" {{ 'selected' if exits.trail == k }}>{{ text }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="bt-fill" class="label">Entry on a gap</label>
+      <select id="bt-fill" name="fill" class="field">
+        {% for k, text in fills.items() %}<option value="{{ k }}" {{ 'selected' if exits.fill == k }}>{{ text }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="mt-4 grid gap-2 sm:grid-cols-2">
+    <label class="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
+      <input type="checkbox" name="breakeven" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if exits.breakeven }}>
+      <span><span class="text-[15px] font-semibold">Breakeven at 1R</span>
+        <span class="block text-[13px] leading-snug text-ink-soft">Once price has gone 1R your way, the SL moves to entry and the trail starts.</span></span>
+    </label>
+    <label class="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
+      <input type="checkbox" name="ma_exit" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if exits.ma_exit }}>
+      <span><span class="text-[15px] font-semibold">Full exit on a close beyond the slow MA</span>
+        <span class="block text-[13px] leading-snug text-ink-soft">A candle closing below it (above, for a sell) closes everything at that close.</span></span>
+    </label>
+  </div>
+  <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-line px-4 py-3" data-ma-intraday>
+    <label class="flex cursor-pointer items-center gap-2.5 text-[15px] font-semibold">
+      <input type="checkbox" name="square_off" value="1" class="h-4 w-4 rounded accent-peacock" {{ 'checked' if exits.square_off }}> Intraday: square off at
+    </label>
+    <input type="time" name="square_off_time" value="{{ exits.square_off_time }}" class="field w-auto py-1.5" aria-label="Square-off time">
+    <span class="w-full text-[13px] leading-snug text-ink-soft">What's still open is closed at the close of the last candle before this time; entries after it aren't taken. Not used on daily candles.</span>
+  </div>
+
+  <div class="mt-6 flex flex-wrap items-end justify-between gap-4 border-t border-line pt-5">
+    <div>
+      <label for="bt-risk" class="label">₹ risked per trade <span class="font-normal text-ink-soft">(optional)</span></label>
+      <input id="bt-risk" name="risk" type="number" min="1" step="1" value="{{ exits.risk }}" placeholder="e.g. 1000" class="field num w-44">
+    </div>
+    <button class="btn-primary htmx-busy">{{ icon('chart', 'h-4 w-4') }} Run backtest</button>
+  </div>
+</form>
+
+{% if run and run.status == 'running' %}
+  {% include "partials/ma_progress.html" %}
+{% elif run %}
+  {% include "partials/ma_result.html" %}
+{% else %}
+  <div id="ma-run"></div>
+{% endif %}
+{% endif %}
+{% endblock %}

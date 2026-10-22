@@ -77,7 +77,7 @@ def _throttle() -> None:
 
 def parse_ticks(msg: bytes) -> dict[int, dict]:
     """Kite's binary tick frame: a packet count, then length-prefixed packets of big-endian int32s.
-    Every packet starts token, last price (paise); full-mode packets for F&O carry OI at byte 48.
+    Every packet starts token, last price (paise); quote and full packets have the day's OHLC at byte 28, full ones for F&O OI at byte 48.
     A 1-byte frame is a heartbeat."""
     out: dict[int, dict] = {}
     if len(msg) < 2:
@@ -93,6 +93,9 @@ def parse_ticks(msg: bytes) -> dict[int, dict]:
             continue
         token, ltp = struct.unpack_from(">ii", packet, 0)
         tick = {"last_price": ltp / 100}
+        if len(packet) >= 44:  # quote and full packets carry the day's OHLC, as REST quotes do
+            o, h, lo, c = struct.unpack_from(">iiii", packet, 28)
+            tick["ohlc"] = {"open": o / 100, "high": h / 100, "low": lo / 100, "close": c / 100}
         if len(packet) >= 52:  # index packets are 28/32 bytes and carry no OI
             tick["oi"] = struct.unpack_from(">i", packet, 48)[0]
         out[token] = tick

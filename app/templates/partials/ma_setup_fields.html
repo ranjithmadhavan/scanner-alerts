@@ -1,0 +1,80 @@
+{# What to scan and how: stocks, candle size, the two averages, the pullback rule, sides.
+   Expects `setup` (saved or default values), `tfs` (candle sizes on offer) and `prefix` (unique ids per form). #}
+<fieldset>
+  <legend class="label">Stocks</legend>
+  <div class="inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which stocks">
+    {% for key, text in [('list', 'An index or F&O'), ('symbols', 'One stock or my list')] %}
+    <label class="cursor-pointer">
+      <input type="radio" name="universe_kind" value="{{ key }}" class="peer sr-only" data-universe-kind {{ 'checked' if setup.universe_kind == key }}>
+      <span class="inline-block rounded-full px-4 py-1.5 text-sm font-semibold text-ink-soft transition peer-checked:bg-white peer-checked:text-ink peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-marigold">{{ text }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  <div class="mt-3" data-universe-section="list" {{ 'hidden' if setup.universe_kind != 'list' }}>
+    <div class="flex flex-wrap gap-2">
+      {% for key, text in universes.items() %}
+      <label class="cursor-pointer">
+        <input type="radio" name="universe_list" value="{{ key }}" class="peer sr-only" {{ 'checked' if setup.universe_list == key }}>
+        <span class="inline-block rounded-full border border-line px-3.5 py-1.5 text-sm font-semibold text-ink-soft transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">{{ text }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <p class="mt-1.5 text-[13px] text-ink-soft">Nifty lists are NSE's, refreshed daily. F&O stocks are every stock with futures on NFO.</p>
+  </div>
+  <div class="mt-3" data-universe-section="symbols" {{ 'hidden' if setup.universe_kind != 'symbols' }}>
+    <label for="{{ prefix }}symbols" class="sr-only">Stocks</label>
+    <textarea id="{{ prefix }}symbols" name="symbols" rows="2" spellcheck="false" autocomplete="off" class="field uppercase placeholder:normal-case"
+              placeholder="INFY, or several: INFY, TCS, HDFCBANK">{{ setup.symbols }}</textarea>
+    <p class="mt-1.5 text-[13px] text-ink-soft">NSE symbols as Kite has them, separated by commas or new lines. Up to 500.</p>
+  </div>
+</fieldset>
+
+<div class="mt-5 grid gap-5 sm:grid-cols-[180px_1fr_1fr]">
+  <div>
+    <label for="{{ prefix }}tf" class="label">Candle</label>
+    <select id="{{ prefix }}tf" name="tf" class="field" data-ma-tf>
+      {% for t in tfs %}<option value="{{ t }}" {{ 'selected' if t == setup.tf }}>{{ tf_label(t) }}</option>{% endfor %}
+    </select>
+  </div>
+  {% for which, title in [('fast', 'Fast moving average'), ('slow', 'Slow moving average')] %}
+  <div>
+    <span class="label">{{ title }}</span>
+    <div class="flex gap-2">
+      <select name="{{ which }}_kind" aria-label="{{ title }} type" class="field w-auto shrink-0 pr-9">
+        {% for k, text in ma_kinds.items() %}<option value="{{ k }}" {{ 'selected' if setup[which ~ '_kind'] == k }}>{{ text }}</option>{% endfor %}
+      </select>
+      <input name="{{ which }}_len" type="number" min="1" max="400" step="1" required value="{{ setup[which ~ '_len'] }}"
+             aria-label="{{ title }} period" class="field num min-w-0">
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<fieldset class="mt-5">
+  <legend class="label">Pullback (trigger) candle</legend>
+  <div class="grid gap-2 sm:grid-cols-3">
+    {% for key, text in touches.items() %}
+    <label class="cursor-pointer">
+      <input type="radio" name="touch" value="{{ key }}" class="peer sr-only" {{ 'checked' if setup.touch == key }}>
+      <span class="flex h-full flex-col rounded-2xl border border-line px-4 py-3 transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">
+        <span class="text-[15px] font-semibold">{{ text }}</span>
+        <span class="mt-0.5 text-[13px] leading-snug text-ink-soft">
+          {%- if key == '' %}Every red candle after a bullish crossover (green after a bearish one)
+          {%- elif key == 'fast' %}Its low reaches the fast MA (its high, for a sell)
+          {%- else %}Its low reaches the slow MA (its high, for a sell){% endif -%}
+        </span>
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Each newer pullback candle replaces the last as the trigger. A trade beyond it (its high for a buy, its low for a sell) is the entry. The opposite crossover cancels a setup that hasn't been entered.</p>
+</fieldset>
+
+<div class="mt-4 inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which side">
+  {% for key, text in sides.items() %}
+  <label class="cursor-pointer">
+    <input type="radio" name="sides" value="{{ key }}" class="peer sr-only" {{ 'checked' if setup.sides == key }}>
+    <span class="inline-block rounded-full px-4 py-1.5 text-sm font-semibold text-ink-soft transition peer-checked:bg-white peer-checked:text-ink peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-marigold">{{ text }}</span>
+  </label>
+  {% endfor %}
+</div>

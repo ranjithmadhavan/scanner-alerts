@@ -744,7 +744,7 @@ def session_restored(username: str) -> None:
 # ---- scheduler + keep-alive ----------------------------------------------------
 
 # One worker thread runs every scan, whatever the number of alerts (max_instances=1 below).
-scheduler = BackgroundScheduler(timezone=IST, executors={"default": ThreadPoolExecutor(max_workers=2)})
+scheduler = BackgroundScheduler(timezone=IST, executors={"default": ThreadPoolExecutor(max_workers=4)})
 _stop = threading.Event()
 
 
@@ -765,10 +765,21 @@ def _add_bias_job() -> None:
     scheduler.add_job(_run_bias, IntervalTrigger(seconds=60), id="bias", max_instances=1, coalesce=True, replace_existing=True)
 
 
+def _add_ma_jobs() -> None:
+    # MA crossover scanners, on jobs of their own: reading a long list's candles takes minutes, and the quote
+    # checks for entries shouldn't wait on that (nor should price alerts).
+    from app import ma_scanner  # it uses this module's helpers, so it is imported here rather than at the top
+    scheduler.add_job(ma_scanner.run_candles, IntervalTrigger(seconds=30), id="ma-candles", max_instances=1, coalesce=True,
+                      replace_existing=True)
+    scheduler.add_job(ma_scanner.run_quotes, IntervalTrigger(seconds=30), id="ma-quotes", max_instances=1, coalesce=True,
+                      replace_existing=True)
+
+
 def start() -> None:
     interval = load_settings().scan_interval
     _add_scan_job(interval)
     _add_bias_job()
+    _add_ma_jobs()
     scheduler.start()
     threading.Thread(target=_keep_alive, name="keep-alive", daemon=True).start()
     log.info("scanner started, every %ss during market hours (IST)", interval)

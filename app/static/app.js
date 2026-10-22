@@ -777,3 +777,123 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     if (!busy && !(h && (h.getResponseHeader("HX-Redirect") || h.getResponseHeader("HX-Refresh")))) finish();
   });
 })();
+
+// ---- MA crossover: form toggles, the running total, and each trade on its stock's chart ----------
+(() => {
+  // Index or typed list; the square-off only applies to intraday candles; a new candle size resets the
+  // backtest's start to that size's usual period, until the date has been picked by hand.
+  function sync(form) {
+    const kind = form.querySelector("[data-universe-kind]:checked")?.value;
+    form.querySelectorAll("[data-universe-section]").forEach((el) => { el.hidden = el.dataset.universeSection !== kind; });
+    const tf = form.querySelector("[data-ma-tf]")?.value;
+    const intraday = form.querySelector("[data-ma-intraday]");
+    if (intraday) intraday.hidden = tf === "1d";
+  }
+  document.querySelectorAll(".ma-form").forEach((form) => {
+    sync(form);
+    form.addEventListener("change", (e) => {
+      sync(form);
+      const start = form.querySelector("[data-days]");
+      if (e.target === start) start.dataset.picked = "1";
+      if (e.target.matches("[data-ma-tf]") && start && !start.dataset.picked) {
+        const days = JSON.parse(start.dataset.days)[e.target.value];
+        const d = new Date(Date.now() - days * 864e5);
+        start.value = d.toISOString().slice(0, 10);
+      }
+    });
+  });
+
+  let data, chart, series, chartSymbol = "", lines = [], index = new Map();
+  const box = () => document.getElementById("ma-run");
+
+  function curve(root) {
+    const el = root.querySelector("#ma-curve");
+    if (!el || !data.curve.length) return;
+    const L = window.LightweightCharts;
+    const c = L.createChart(el, chartLook(L));
+    c.applyOptions({ localization: { priceFormatter: (v) => (v > 0 ? "+" : "") + v.toFixed(1) + "R" },
+      timeScale: { timeVisible: !data.daily, secondsVisible: false } });
+    const line = c.addBaselineSeries({ baseValue: { type: "price", price: 0 }, lineWidth: 2,
+      topLineColor: "#2E8B57", topFillColor1: "rgba(46,139,87,.18)", topFillColor2: "rgba(46,139,87,.02)",
+      bottomLineColor: "#C2475A", bottomFillColor1: "rgba(194,71,90,.02)", bottomFillColor2: "rgba(194,71,90,.18)" });
+    line.setData(data.curve);
+    c.timeScale().fitContent();
+  }
+
+  async function show(n) {
+    const t = data.trades[n];
+    if (!t) return;
+    const panel = document.getElementById("ma-trade");
+    const note = document.getElementById("ma-trade-note");
+    panel.hidden = false;
+    document.querySelectorAll("[data-ma-trade]").forEach((row) => row.toggleAttribute("data-selected", Number(row.dataset.maTrade) === n));
+    if (chartSymbol !== t.symbol) {
+      document.getElementById("ma-trade-title").textContent = t.symbol + " · loading…";
+      const r = await fetch("/ma/backtest/chart?symbol=" + encodeURIComponent(t.symbol));
+      const got = await r.json();
+      if (!r.ok) { document.getElementById("ma-trade-title").textContent = t.symbol; note.textContent = got.error; return; }
+      const L = window.LightweightCharts;
+      chart?.remove();
+      chart = L.createChart(document.getElementById("ma-trade-chart"), chartLook(L));
+      chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
+      series = chart.addCandlestickSeries(candleLook);
+      series.setData(got.candles);
+      const ma = (color, points) => chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false,
+        crosshairMarkerVisible: false }).setData(points);
+      ma("#E9A23B", got.fast);
+      ma("#0F5E5C", got.slow);
+      document.getElementById("ma-fast-label").textContent = got.fast_label;
+      document.getElementById("ma-slow-label").textContent = got.slow_label;
+      index = new Map(got.candles.map((c, i) => [String(c.time), i]));
+      // Every trade on this stock: an arrow at its entry, a dot at each exit.
+      const marks = [];
+      data.trades.filter((x) => x.symbol === t.symbol && x.price).forEach((x) => {
+        const buy = x.side === "buy";
+        marks.push({ time: x.entry, position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown",
+          color: buy ? "#2E8B57" : "#C2475A", text: (buy ? "Buy " : "Sell ") + x.price.toFixed(2) });
+        x.exits.forEach((f) => marks.push({ time: f.time, position: buy ? "aboveBar" : "belowBar", shape: "circle",
+          color: "#16373A", text: f.price.toFixed(2) }));
+      });
+      marks.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+      series.setMarkers(marks.filter((m) => index.has(String(m.time))));
+      chartSymbol = t.symbol;
+      lines = [];
+    }
+    document.getElementById("ma-trade-title").textContent = `${t.symbol} · ${t.side} trade`;
+    lines.forEach((l) => series.removePriceLine(l));
+    lines = [];
+    if (t.price) {
+      lines.push(series.createPriceLine({ price: t.price, color: "#16373A", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Entry" }));
+      lines.push(series.createPriceLine({ price: t.stop, color: "#C2475A", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "SL" }));
+      if (t.target !== null) lines.push(series.createPriceLine({ price: t.target, color: "#2E8B57", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Target" }));
+    }
+    const at = index.get(String(t.entry));
+    if (at !== undefined) {
+      const out = t.exits.length ? index.get(String(t.exits.at(-1).time)) ?? at : at;
+      chart.timeScale().setVisibleLogicalRange({ from: at - 50, to: Math.max(out, at) + 30 });
+    } else chart.timeScale().fitContent();
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function build(root) {
+    const source = root.querySelector("#ma-data");
+    if (!source) return;
+    data = JSON.parse(source.textContent);
+    chart = null; chartSymbol = "";
+    try { await loadChartLib(); } catch (e) { return; }
+    curve(root);
+  }
+
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-ma-trade]");
+    if (row && data) show(Number(row.dataset.maTrade));
+  });
+  document.addEventListener("keydown", (e) => {
+    const row = e.target.matches?.("[data-ma-trade]") ? e.target : null;
+    if (!row || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    show(Number(row.dataset.maTrade));
+  });
+  document.addEventListener("htmx:load", (e) => { if (e.detail.elt.id === "ma-run") build(e.detail.elt); });
+  if (box()) build(box());
+})();

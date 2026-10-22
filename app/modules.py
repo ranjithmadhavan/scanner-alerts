@@ -24,5 +24,6 @@ MODULES: dict[str, Module] = {
         Module("notifications", "Notifications", "/notifications", "Choose where alerts are delivered", "send"),
         Module("oi", "Nifty OI", "/oi", "Nifty option open interest through the day, and what it says", "chart"),
         Module("bias", "Fractal bias", "/bias", "Nifty 50 fractal sweeps through the day, and which way they lean", "compass"),
+        Module("ma", "MA crossover", "/ma", "Moving-average crossover scanners for a stock or a whole index, and backtests", "trend"),
     ]
 }

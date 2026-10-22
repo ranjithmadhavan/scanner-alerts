@@ -1,0 +1,54 @@
+{% from "partials/icons.html" import icon %}
+{# The person's saved scanners. Replaced whole after create, pause and delete. #}
+<section id="ma-scanners" class="mt-6 space-y-3">
+  {% if not scanners %}
+  <div class="rounded-3xl border border-dashed border-line px-6 py-12 text-center">
+    <p class="font-display text-xl font-bold">No scanners yet</p>
+    <p class="mx-auto mt-2 max-w-md text-ink-soft">Set one up above. Try it in the Backtest tab first to see how the rules would have done.</p>
+  </div>
+  {% endif %}
+  {% for sc in scanners %}
+  {% set on = sc.status == 'active' %}
+  <article class="panel px-6 py-5 {{ '' if on else 'opacity-75' }}">
+    <div class="flex flex-wrap items-start gap-3">
+      <div class="min-w-0 flex-1">
+        <p class="flex flex-wrap items-center gap-2">
+          <span class="font-display text-lg font-bold">{{ sc.name }}</span>
+          <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold {{ 'bg-rise-50 text-rise' if on else 'bg-canvas text-ink-soft' }}">{{ 'Watching' if on else 'Paused' }}</span>
+          {% if sc.error %}<span class="rounded-full bg-fall-50 px-2.5 py-0.5 text-xs font-semibold text-fall" title="{{ sc.error }}">{{ sc.error[:40] }}</span>{% endif %}
+        </p>
+        <p class="mt-1 text-[15px] text-ink-soft">{{ sc.describe }}
+          · {{ touches[sc.rules.touch]|lower }} · {{ sides[sc.rules.sides]|lower }}
+          · SL {{ 'trigger candle' if sc.stop == 'candle' else 'slow MA' }}{% if sc.rr %}, target 1:{{ '%g'|format(sc.rr) }}{% endif %}
+          {% if sc.gap_alerts %}· gap entries too{% endif %}</p>
+        <p class="mt-1 text-[13px] text-ink-soft">
+          {% if sc.evaluated_at %}Candles read up to {{ sc.evaluated_at|when }}{% else %}Waiting for its first candle close{% endif %}
+          {% if sc.quoted_at %}· prices checked {{ sc.quoted_at|when }}{% endif %}
+          · sends to {{ sc.sends_to|join(', ') if sc.sends_to else 'nowhere yet' }}
+          {% if sc.missing %}· <span title="{{ sc.missing|join(', ') }}">{{ sc.missing|length }} not on Kite</span>{% endif %}
+          {% if sc.failed %}· <span title="{{ sc.failed|join(', ') }}">{{ sc.failed|length }} without candles last time</span>{% endif %}
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-1">
+        <a href="/ma?backtest={{ sc.id }}" class="btn-quiet px-3 py-1.5 text-sm" title="Open the Backtest tab with these settings">Backtest this</a>
+        <button type="button" class="btn-quiet htmx-busy px-3 py-1.5 text-sm" hx-post="/ma/scanners/{{ sc.id }}/test" hx-swap="none" title="Send a sample setup message">Test</button>
+        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" hx-post="/ma/scanners/{{ sc.id }}/pause"
+                hx-target="#ma-scanners" hx-swap="outerHTML" title="{{ 'Pause' if on else 'Watch again' }}" aria-label="{{ 'Pause' if on else 'Watch again' }}">{{ icon('pause' if on else 'refresh', 'h-4 w-4') }}</button>
+        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" hx-post="/ma/scanners/{{ sc.id }}/delete"
+                hx-target="#ma-scanners" hx-swap="outerHTML" hx-confirm="Remove the scanner “{{ sc.name }}”?" title="Remove" aria-label="Remove">{{ icon('trash', 'h-4 w-4') }}</button>
+      </div>
+    </div>
+    {% if sc.waiting %}
+    <details class="group/w mt-3">
+      <summary class="cursor-pointer text-sm font-semibold text-peacock">{{ sc.waiting|length }} setup{{ 's' if sc.waiting|length != 1 }} waiting for entry</summary>
+      <div class="mt-2 flex flex-wrap gap-1.5">
+        {% for sym, w in sc.waiting %}
+        <span class="num rounded-full px-2.5 py-1 text-[13px] font-medium {{ 'bg-rise-50 text-rise' if w.side == 'buy' else 'bg-fall-50 text-fall' }}"
+              title="Trigger candle {{ w.trigger_at|ist }}">{{ sym }} {{ w.side }} {{ 'above' if w.side == 'buy' else 'below' }} {{ w.level|price }}</span>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>

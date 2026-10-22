@@ -8,7 +8,7 @@ from app.store import store
 
 
 def test_parse_symbols_and_describe():
-    assert universe.parse_symbols("infy, tcs\nNSE:SBIN  infy") == ["INFY", "TCS", "SBIN"]
+    assert universe.parse_symbols("infy, tcs\nNSE:SBIN,, infy\n nifty  50 ") == ["INFY", "TCS", "SBIN", "NIFTY 50"]
     assert universe.describe({"list": "nifty200"}) == "Nifty 200"
     assert universe.describe({"symbols": ["INFY"]}) == "INFY"
     assert universe.describe({"symbols": ["A", "B", "C", "D"]}) == "A, B and 2 more"
