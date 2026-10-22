@@ -21,15 +21,11 @@ Notifications, per person (bias_alerts/{username}), to Telegram and/or their own
 * new signals: every 5-minute check, each signal that wasn't in the previous count (gap flips aside).
 """
 
-import csv
-import io
 import json
 import logging
 from datetime import date, datetime, timedelta
 
-import httpx
-
-from app import brokers, config, fractals, notify, oi, webhooks
+from app import brokers, config, fractals, notify, oi, universe, webhooks
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.market import IST, MarketSettings, in_scan_window, load_settings as market_settings
 from app.store import store
@@ -48,15 +44,7 @@ EVERY = 5  # minutes between counts
 BIAS_EVERY = 15  # minutes between looks at the bias label
 TRIGGER_NAMES = {"reject": "Sweep", "confirm": "Sweep holds", "fail": "Break fails"}
 SETTLE = timedelta(seconds=10)  # let Kite finish the candle that just closed
-NIFTY50_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
-# NSE's list as of October 2026, used when the live one can't be had.
-NIFTY50 = [
-    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BSE", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
-    "BEL", "BHARTIARTL", "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM", "HCLTECH", "HDFCBANK",
-    "HDFCLIFE", "HINDALCO", "HINDUNILVR", "ICICIBANK", "ITC", "INFY", "INDIGO", "JSWSTEEL", "JIOFIN", "KOTAKBANK", "LT",
-    "M&M", "MARUTI", "MAXHEALTH", "NTPC", "NESTLEIND", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SHRIRAMFIN", "SBIN",
-    "SUNPHARMA", "TCS", "TATACONSUM", "TMPV", "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO",
-]
+NIFTY50 = universe.NIFTY50
 
 
 def load_settings() -> dict:
@@ -70,20 +58,7 @@ def save_settings(triggers: list[str], min_candles: int, trigger_tf: str = "5m",
 
 def stocks(today: date) -> list[str]:
     """Today's Nifty 50, from NSE once a day; the last list fetched (or the built-in one) if NSE won't answer."""
-    saved = store.get("settings", "nifty50") or {}
-    if saved.get("date") == today.isoformat():
-        return saved["symbols"]
-    try:
-        r = httpx.get(NIFTY50_URL, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        symbols = [row["Symbol"].strip() for row in csv.DictReader(io.StringIO(r.text)) if row.get("Symbol")]
-        if len(symbols) < 45:
-            raise ValueError(f"only {len(symbols)} symbols")
-    except (httpx.HTTPError, ValueError, KeyError) as e:
-        log.warning("Nifty 50 list from NSE failed (%s); using the last one", e)
-        return saved.get("symbols") or NIFTY50
-    store.put("settings", "nifty50", {"date": today.isoformat(), "symbols": symbols})
-    return symbols
+    return universe.symbols("nifty50", today)
 
 
 # ---- the signals of one stock ------------------------------------------------------
