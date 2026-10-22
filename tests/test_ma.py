@@ -234,6 +234,9 @@ def test_backtest_form_defaults_are_positional(web):
     form = page[page.index('id="ma-backtest"'):]
     checked = lambda name: re.search(rf'name="{name}" value="([^"]*)"[^>]*checked', form).group(1)
     assert '<option value="1d" selected>' in form
+    from app.market import now_ist
+    a_year_ago = (now_ist().date() - timedelta(days=365)).isoformat()
+    assert f'name="start" type="date" value="{a_year_ago}"' in form  # a year back by default
     assert 'name="fast_len" type="number" min="1" max="400" step="1" required value="10"' in form
     assert 'name="slow_len" type="number" min="1" max="400" step="1" required value="20"' in form
     assert form.count('<option value="ema" selected>') == 2

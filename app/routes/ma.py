@@ -18,7 +18,7 @@ guard = require("ma")
 
 MAX_SYMBOLS = 500
 # How far back a backtest starts by default, per candle size.
-DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "1d": 730}
+DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "1d": 365}
 SETUP_DEFAULTS = {"universe_kind": "list", "universe_list": "nifty50", "symbols": "", "tf": "15m", "fast_kind": "ema",
                   "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both", "once": True}
 # The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, half booked at 1:2,
