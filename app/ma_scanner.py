@@ -40,6 +40,9 @@ MAX_SCANNERS = 5
 MAX_LINES = 25  # stocks listed in one message
 KEEP_FIRED = 3000
 SETTLE = timedelta(seconds=10)  # let Kite finish the candle that just closed
+# Candles read, in multiples of what the averages need: with one entry per crossover, the crossover must be among
+# them (a trend older than this gives no setups). Still one request per stock.
+LOOKBACK = 5
 # The candle job and the quote job both save a scanner's state; each holds its scanner's lock to read, merge and save.
 _locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
@@ -74,17 +77,19 @@ _past: dict[tuple, list[Candle]] = {}  # (token, candle size, day, warm-up) -> c
 
 
 def candles_for(client, token: int, tf: str, rules: Rules, s: MarketSettings, now: datetime) -> list[Candle]:
-    """Completed candles, enough of them for the averages. Intraday, earlier sessions are fetched once a day."""
+    """Completed candles, enough of them for the averages and to see the last crossover. Intraday, earlier sessions
+    are fetched once a day."""
     day = now.astimezone(IST).date()
-    start = ma_backtest.warmup_start(tf, day, rules)
+    count = rules.warmup() * LOOKBACK
+    start = max(ma_backtest.warmup_start(tf, day, rules, count), day - timedelta(days=fractals.MAX_DAYS[tf] - 1))
     if tf == "1d":
         return ma_backtest.fetch(client, token, tf, start, day, s, now)
-    key = (token, tf, day, rules.warmup())
+    key = (token, tf, day, count)
     if key not in _past:
         for k in [k for k in _past if k[2] != day]:
             del _past[k]
         earlier = ma_backtest.fetch(client, token, tf, start, day - timedelta(days=1), s, now)
-        _past[key] = [c for c in earlier if c.start.astimezone(IST).date() < day][-rules.warmup() * 2:]
+        _past[key] = [c for c in earlier if c.start.astimezone(IST).date() < day][-count:]
     today = ma_backtest.fetch(client, token, tf, day, day, s, now)
     return _past[key] + [c for c in today if c.start.astimezone(IST).date() == day]
 

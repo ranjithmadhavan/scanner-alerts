@@ -33,7 +33,7 @@ def test_red_candle_after_bullish_crossover_is_broken_for_an_entry():
     candles = series(GREEN, GREEN, RED, (100, 101, 97, 99), (99, 103, 98.5, 102))
     fast = [1, 3, 3, 3, 3]
     slow = [2, 2, 2, 2, 2]
-    w = walk(candles, Rules(), fast, slow)
+    w = walk(candles, Rules(once=False), fast, slow)
     assert w.crossovers == [(1, "buy")]
     # Candle 2 is red: trigger at its high 102. Candle 3 is red too (high 101 doesn't break 102): it takes over
     # as the trigger at 101. Candle 4 trades 103 > 101: entry.
@@ -45,11 +45,11 @@ def test_red_candle_after_bullish_crossover_is_broken_for_an_entry():
 def test_crossover_candle_is_never_the_pullback_and_trend_counts_from_the_first_reading():
     candles = series(RED, RED, GREEN)
     # Already above at the start: an uptrend with no crossover seen; candle 0 is the first reading, 1 sets up.
-    w = walk(candles, Rules(), [3, 3, 3], [2, 2, 2])
+    w = walk(candles, Rules(once=False), [3, 3, 3], [2, 2, 2])
     assert w.crossovers == [] and [(e.setup.trigger, e.setup.crossed) for e in w.entries] == []
     assert w.pending.trigger == 1 and w.pending.crossed is None
     # Crossing on a red candle: that candle doesn't set up.
-    w = walk(series(GREEN, RED, (99.5, 100, 98, 99)), Rules(), [1, 3, 3], [2, 2, 2])
+    w = walk(series(GREEN, RED, (99.5, 100, 98, 99)), Rules(once=False), [1, 3, 3], [2, 2, 2])
     assert w.pending.trigger == 2
 
 
@@ -57,7 +57,7 @@ def test_opposite_crossover_cancels_and_starts_sells():
     candles = series(GREEN, RED, (99, 100, 97, 98), (98, 99, 96, 99.5), (99.5, 100, 95, 96))
     fast = [3, 3, 1, 1, 1]
     slow = [2, 2, 2, 2, 2]
-    w = walk(candles, Rules(), fast, slow)
+    w = walk(candles, Rules(once=False), fast, slow)
     # Candle 1 red sets a buy; candle 2 crosses down (cancels it); candle 3 green sets a sell at its low 96;
     # candle 4 trades 95: a sell entry.
     assert w.crossovers == [(2, "sell")]
@@ -66,16 +66,16 @@ def test_opposite_crossover_cancels_and_starts_sells():
 
 def test_gap_and_sides_and_reentry():
     candles = series(GREEN, RED, (104, 106, 103, 105), (105, 106, 101, 102), (102, 107, 101, 106))
-    w = walk(candles, Rules(), [3] * 5, [2] * 5)
+    w = walk(candles, Rules(once=False), [3] * 5, [2] * 5)
     # Candle 2 opens at 104, above the trigger high 102: a gap entry. It isn't a pullback itself (and is green).
     # Candle 3 is red: a new setup at 106, broken by candle 4.
     assert [(e.setup.trigger, e.index, e.gap) for e in w.entries] == [(1, 2, True), (3, 4, False)]
-    assert walk(candles, Rules(sides="sell"), [3] * 5, [2] * 5).entries == []
+    assert walk(candles, Rules(sides="sell", once=False), [3] * 5, [2] * 5).entries == []
 
 
 def test_entry_candle_does_not_set_up_the_next_trade():
     candles = series(GREEN, RED, (101, 103, 99, 100), (100, 100.5, 99, 100.2))
-    w = walk(candles, Rules(), [3] * 4, [2] * 4)
+    w = walk(candles, Rules(once=False), [3] * 4, [2] * 4)
     assert [e.index for e in w.entries] == [2] and w.pending is None
 
 
@@ -84,12 +84,12 @@ def test_touch_rule():
     fast = [3, 99, 99, 99]
     slow = [2, 96, 96, 96]
     # Candle 1 (low 98) touches the fast MA (99) but not the slow one (96); candle 2 (low 95) touches both.
-    assert walk(candles, Rules(touch="fast"), fast, slow).entries[0].setup.trigger == 2
-    w = walk(candles[:2], Rules(touch="fast"), fast[:2], slow[:2])
+    assert walk(candles, Rules(touch="fast", once=False), fast, slow).entries[0].setup.trigger == 2
+    w = walk(candles[:2], Rules(touch="fast", once=False), fast[:2], slow[:2])
     assert w.pending.trigger == 1
-    assert walk(candles[:2], Rules(touch="slow"), fast[:2], slow[:2]).pending is None
-    assert walk(candles, Rules(touch="slow"), fast, slow).pending is None and \
-        walk(candles, Rules(touch="slow"), fast, slow).entries[0].setup.trigger == 2
+    assert walk(candles[:2], Rules(touch="slow", once=False), fast[:2], slow[:2]).pending is None
+    assert walk(candles, Rules(touch="slow", once=False), fast, slow).pending is None and \
+        walk(candles, Rules(touch="slow", once=False), fast, slow).entries[0].setup.trigger == 2
 
 
 def _entry(candles, level=102, stop=98, index=2, gap=False, side="buy"):
@@ -199,7 +199,7 @@ def test_square_off():
 def test_one_position_at_a_time_and_stats():
     up = [(100 + i, 101 + i, 99 + i, 100.5 + i) for i in range(40)]
     candles = daily(*up)
-    rules = Rules("sma", 2, "sma", 5)
+    rules = Rules("sma", 2, "sma", 5, once=False)
     got, w = trades(candles, rules, Exits())
     assert got == [] and w.trend == "buy"
     # A pullback, a break, a run to target, then a second setup.
@@ -213,3 +213,25 @@ def test_one_position_at_a_time_and_stats():
     assert s["trades"] == 2 and s["win_rate"] == 100 and s["total_r"] == pytest.approx(4) and s["max_dd"] == 0
     s = stats([type("T", (), {"r": r, "pct": 0})() for r in (1, -1, -1, 2)])
     assert s["max_dd"] == 2 and s["profit_factor"] == pytest.approx(1.5)
+
+
+def test_one_entry_per_crossover():
+    # Crossover up on candle 1; red candle 2 sets up, candle 3 enters. Red candle 4 would set up again, but this
+    # crossover has given its entry. Candle 5 crosses down, candle 6 back up: candle 7 (red) sets up, 8 enters.
+    candles = series(GREEN, GREEN, RED, (99, 103, 98.5, 102.5), (102.5, 103, 100, 100.5), (100.5, 104, 100.2, 103.8),
+                     GREEN, RED, (99, 103, 98.5, 102.5), RED)
+    fast = [1, 3, 3, 3, 3, 1, 3, 3, 3, 3]
+    slow = [2] * 10
+    w = walk(candles, Rules(), fast, slow)
+    assert w.crossovers == [(1, "buy"), (5, "sell"), (6, "buy")]
+    assert [(e.setup.crossed, e.setup.trigger, e.index) for e in w.entries] == [(1, 2, 3), (6, 7, 8)]
+    assert w.pending is None  # candle 9 is red, but the second crossover has given its entry too
+    again = walk(candles, Rules(once=False), fast, slow)
+    assert [e.index for e in again.entries] == [3, 5, 8] and again.pending.trigger == 9
+
+
+def test_one_entry_waits_for_a_crossover_it_can_see():
+    # Already in an uptrend when the candles start: maybe its entry came earlier, so nothing is set up.
+    w = walk(series(GREEN, RED, (99, 103, 98.5, 102.5)), Rules(), [3, 3, 3], [2, 2, 2])
+    assert w.entries == [] and w.pending is None
+    assert len(walk(series(GREEN, RED, (99, 103, 98.5, 102.5)), Rules(once=False), [3, 3, 3], [2, 2, 2]).entries) == 1

@@ -79,8 +79,14 @@
     </label>
     {% endfor %}
   </div>
-  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Each newer pullback candle replaces the last as the trigger. A trade beyond it (its high for a buy, its low for a sell) is the entry. The opposite crossover cancels a setup that hasn't been entered.</p>
+  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Each newer pullback candle replaces the last as the trigger until one is entered: a trade beyond it (its high for a buy, its low for a sell). The opposite crossover cancels a setup that hasn't been entered.</p>
 </fieldset>
+
+<label class="mt-4 flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
+  <input type="checkbox" name="once" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if setup.once }}>
+  <span><span class="text-[15px] font-semibold">Only the first entry after each crossover</span>
+    <span class="block text-[13px] leading-snug text-ink-soft">Once a crossover has given its entry, nothing more until the next crossover, however that trade ends. Needs a crossover inside the candles read. Unticked, every later pullback in the same trend sets up another entry.</span></span>
+</label>
 
 <div class="mt-4 inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which side">
   {% for key, text in sides.items() %}

@@ -40,10 +40,10 @@ def chunks(tf: str, start: date, end: date) -> list[tuple[date, date]]:
     return out
 
 
-def warmup_start(tf: str, start: date, rules: Rules) -> date:
-    """How far before `start` to fetch so the slow average has settled by then."""
+def warmup_start(tf: str, start: date, rules: Rules, candles: int | None = None) -> date:
+    """How far before `start` to fetch so the slow average has settled by then (or to have `candles` candles)."""
     per_day = 1 if tf == "1d" else max(1, fractals.SESSION_MINUTES // fractals.minutes(tf))
-    trading_days = math.ceil(rules.warmup() / per_day)
+    trading_days = math.ceil((candles or rules.warmup()) / per_day)
     return start - timedelta(days=math.ceil(trading_days * 7 / 5) + 7)
 
 

@@ -104,7 +104,7 @@ def test_backtest_end_to_end(web, kite):
     assert "Backtest started on 1 stock" in r.headers["HX-Trigger"]
     run = wait("tara")
     assert run.status == "done" and run.done == 1
-    expected, _ = crossover.trades(kite.candles, crossover.Rules("sma", 2, "sma", 5), crossover.Exits(rr=2),
+    expected, _ = crossover.trades(kite.candles, crossover.Rules("sma", 2, "sma", 5, once=False), crossover.Exits(rr=2),
                                    0, next(i for i, c in enumerate(kite.candles) if c.start.date() >= date(2026, 8, 1)))
     assert [(t["entry_at"], t["status"], t["r"]) for t in run.trades] == \
         [(kite.candles[t.entry.index].start.isoformat(), t.status, t.r) for t in expected]
@@ -152,7 +152,8 @@ def test_scanner_create_limits_and_list(web):
 
 def _scanner(**more):
     sc = {"id": "s1", "user": "tara", "name": "Infy daily", "spec": {"symbols": ["INFY"]}, "tf": "1d",
-          "rules": {"fast_kind": "sma", "fast_len": 2, "slow_kind": "sma", "slow_len": 5, "touch": "", "sides": "both"},
+          "rules": {"fast_kind": "sma", "fast_len": 2, "slow_kind": "sma", "slow_len": 5, "touch": "", "sides": "both",
+                    "once": False},
           "stop": "candle", "rr": 2, "gap_alerts": False, "channels": ["telegram"], "webhooks": [], "status": "active",
           "created_at": "2026-09-01T09:00:00+05:30", "armed_at": "2026-09-29T16:00:00+05:30", "state": {}, "fired": [], **more}
     store.put("ma_scanners", sc["id"], sc)
@@ -237,7 +238,7 @@ def test_backtest_form_defaults_are_positional(web):
     assert 'name="slow_len" type="number" min="1" max="400" step="1" required value="20"' in form
     assert form.count('<option value="ema" selected>') == 2
     assert checked("touch") == "fast" and checked("sides") == "buy"
-    assert checked("breakeven") == "1" and checked("ma_exit") == "1"
+    assert checked("breakeven") == "1" and checked("ma_exit") == "1" and checked("once") == "1"
     assert not re.search(r'name="square_off" value="1"[^>]*checked', form)  # positional, not intraday
     assert 'name="risk" type="number" min="1" step="1" value="1000"' in form
     assert 'name="book" type="number" min="0" max="100" step="5" value="50"' in form  # half at the target, the rest runs
@@ -254,3 +255,19 @@ def test_stock_picker_suggests_nse_stocks(web, monkeypatch):
     assert [g["symbol"] for g in got] == ["INFY", "INFIBEAM"] and got[0]["name"] == "Infosys"  # NSE only
     assert web.get("/ma/symbols?q=nifty").json() == [{"symbol": "NIFTY 50", "name": "Nifty 50", "index": True}]
     assert web.get("/ma/symbols?q=").json() == []
+
+
+def test_scanner_sends_only_the_first_entry_after_a_crossover(kite, sent):
+    from app.market import load_settings
+    s = load_settings()
+    # Falling for 30 days, then climbing with a red pullback every six days: one crossover up, many pullbacks.
+    rows = [(130 - i, 131 - i, 129 - i, 129.5 - i) for i in range(30)]
+    rows += [(100.5 + i, 101 + i, 97 + i, 99.6 + i) if i % 6 == 3 else (100 + i, 101 + i, 99 + i, 100.5 + i) for i in range(36)]
+    kite.candles = daily(rows)
+    w = crossover.walk(kite.candles, crossover.Rules("sma", 2, "sma", 5, once=False))
+    assert len([c for c in w.crossovers if c[1] == "buy"]) == 1 and len(w.entries) >= 4
+    sc = _scanner(rules={**_scanner()["rules"], "once": True}, armed_at="2026-07-01T09:00:00+05:30")
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    sc = ma_scanner.evaluate(sc, kite, s, at, s.close_at(at))
+    entries = [x for x in sent if x[0].startswith("🚀")]
+    assert len(entries) == 1 and sc["state"] == {}  # the later pullbacks set nothing up

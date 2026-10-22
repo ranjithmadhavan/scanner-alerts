@@ -18,7 +18,7 @@
           {% if sc.error %}<span class="rounded-full bg-fall-50 px-2.5 py-0.5 text-xs font-semibold text-fall" title="{{ sc.error }}">{{ sc.error[:40] }}</span>{% endif %}
         </p>
         <p class="mt-1 text-[15px] text-ink-soft">{{ sc.describe }}
-          · {{ touches[sc.rules.touch]|lower }} · {{ sides[sc.rules.sides]|lower }}
+          · {{ touches[sc.rules.touch]|lower }} · {{ sides[sc.rules.sides]|lower }}{{ ' · first entry per crossover' if sc.rules.get('once', True) else ' · re-entries' }}
           · SL {{ 'trigger candle' if sc.stop == 'candle' else 'slow MA' }}{% if sc.rr %}, target 1:{{ '%g'|format(sc.rr) }}{% endif %}
           {% if sc.gap_alerts %}· gap entries too{% endif %}</p>
         <p class="mt-1 text-[13px] text-ink-soft">

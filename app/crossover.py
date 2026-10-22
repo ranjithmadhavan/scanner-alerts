@@ -9,11 +9,14 @@ slow one the trend is up and buys are looked for; below, sells. Until the opposi
 * the latest pullback candle is the *trigger candle*: each new one replaces the one before;
 * a later candle trading beyond it (above its high for a buy, below its low for a sell) is the entry.
   When that candle opens beyond the level, the entry came on a *gap*;
-* after an entry, the next pullback candle in the same trend sets up the next one. The opposite
-  crossover cancels a setup that hasn't been entered.
+* with `once` (the default), a crossover gives one entry: after it, nothing more is looked for until the
+  next crossover, however that trade ends. Without it, the next pullback candle in the same trend sets up
+  the next entry. The opposite crossover cancels a setup that hasn't been entered.
 
-The trend is read from where the averages stand once both exist, so a crossover from before the
-candles start still counts. Everything here is pure: it works on completed candles, oldest first.
+The trend is read from where the averages stand once both exist. With `once`, setups wait for a crossover
+inside the candles, since there is no telling whether an earlier one had already given its entry; without
+it, a crossover from before the candles start still counts. Everything here is pure: it works on completed
+candles, oldest first.
 """
 
 import math
@@ -69,6 +72,7 @@ class Rules:
     slow_len: int = 21
     touch: str = ""  # "", "fast" or "slow": the moving average a pullback candle must reach
     sides: str = "both"
+    once: bool = True  # one entry per crossover
 
     @property
     def label(self) -> str:
@@ -119,12 +123,13 @@ def walk(candles: list[Candle], rules: Rules, fast: list | None = None, slow: li
     out = Walk()
     crossed: int | None = None
     setup: Setup | None = None
+    used = False  # this crossover has given its entry
     for i, c in enumerate(candles):
         entered = False
         if setup and (c.high > setup.level if setup.side == "buy" else c.low < setup.level):
             gap = c.open > setup.level if setup.side == "buy" else c.open < setup.level
             out.entries.append(Entry(setup, i, gap))
-            setup, entered = None, True
+            setup, entered, used = None, True, True
         f, s = fast[i], slow[i]
         if f is None or s is None or f == s:
             continue
@@ -133,9 +138,9 @@ def walk(candles: list[Candle], rules: Rules, fast: list | None = None, slow: li
             if out.trend is not None:  # a real crossover, not the first reading
                 crossed = i
                 out.crossovers.append((i, now))
-            out.trend, setup = now, None
+            out.trend, setup, used = now, None, False
             continue  # the crossover candle is never the pullback
-        if entered or rules.sides not in ("both", now):
+        if entered or rules.sides not in ("both", now) or (rules.once and (used or crossed is None)):
             continue
         if now == "buy" and c.close < c.open and (touch_ma is None or (touch_ma[i] is not None and c.low <= touch_ma[i])):
             setup = Setup("buy", i, c.high, c.low, crossed)
