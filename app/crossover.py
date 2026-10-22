@@ -321,8 +321,10 @@ def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exi
 
 
 def stopped_out(t: Trade) -> bool:
-    """Did the trade end at its SL (the trigger candle's, or the slow MA when that is the SL) with nothing booked?"""
-    return t.status == "closed" and all(f.reason in ("stop", "slow_ma") for f in t.fills)
+    """Did the trade end at its SL (the trigger candle's, or the slow MA when that is the SL) with nothing booked,
+    at a loss? With the slow MA as SL, a close beyond it after a good run is the trade's way out, not a stop-out:
+    it doesn't earn a second entry, and neither does anything that ended in profit or at breakeven."""
+    return t.status == "closed" and all(f.reason in ("stop", "slow_ma") for f in t.fills) and t.r < 0
 
 
 def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int) -> list[Trade]:

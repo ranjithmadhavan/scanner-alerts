@@ -281,3 +281,24 @@ def test_second_chance_waiting_and_counted_from_before_the_start(monkeypatch):
     fast, slow = [1] + [3] * 7, [2] * 8
     got, _ = trades(full, Rules(second=True), Exits(rr=2), start=5)
     assert [t.entry.index for t in got] == [6]
+
+
+def test_slow_ma_exit_in_profit_is_not_a_stop_out(monkeypatch):
+    """RELIANCE, Nov-Dec 2025 in miniature: with the slow MA as SL, the first trade closes below the MA after a good
+    run. That is a profit, so the crossover is done: no second entry. The same exit at a loss is a stop-out."""
+    fast = [1, 3, 100, 100, 104, 110, 110, 110]
+    slow = [2, 2, 98, 98, 100, 109, 105, 105]
+    monkeypatch.setattr(Rules, "averages", lambda self, c: (fast, slow))
+    # Entry 102 on candle 3 (SL: the slow MA, 98). Candle 5 closes at 108.5, under the MA (109): out at +1.6R.
+    # Red candle 6 and its break on candle 7 would be a second entry.
+    won = series(GREEN, GREEN, RED, (99, 103, 98.5, 102.5), (102.5, 112, 102, 111.5), (111.5, 112, 108, 108.5),
+                 (108.5, 109, 107, 107.5), (107.5, 110, 107.2, 109.5))
+    got, _ = trades(won, Rules(second=True), Exits(stop="slow_ma", book=0))
+    assert [(t.entry.index, t.fills[-1].reason) for t in got] == [(3, "slow_ma")] and got[0].r > 0
+    assert [t.entry.index for t in trades(won, Rules(once=False), Exits(stop="slow_ma", book=0))[0]] == [3, 7]
+    # At a loss: candle 5 closes at 99.8 under the MA (101), -0.55R. The second entry comes on candle 7.
+    slow[:] = [2, 2, 98, 98, 100, 101, 95, 95]
+    lost = series(GREEN, GREEN, RED, (99, 103, 98.5, 102.5), (102.5, 103.5, 100.5, 101), (101, 101.5, 99.5, 99.8),
+                  (99.8, 100.5, 99, 99.2), (99.2, 101, 99, 100.8))
+    got, _ = trades(lost, Rules(second=True), Exits(stop="slow_ma", book=0))
+    assert [t.entry.index for t in got] == [3, 7] and got[0].r < 0
