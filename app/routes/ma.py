@@ -21,10 +21,10 @@ MAX_SYMBOLS = 500
 DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "1d": 730}
 SETUP_DEFAULTS = {"universe_kind": "list", "universe_list": "nifty50", "symbols": "", "tf": "15m", "fast_kind": "ema",
                   "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both"}
-# The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, breakeven at 1R,
-# out on a close beyond the slow MA, ₹1,000 risked per trade.
+# The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, half booked at 1:2,
+# breakeven at 1R, the rest out on a close beyond the slow MA, ₹1,000 risked per trade.
 BACKTEST_DEFAULTS = {**SETUP_DEFAULTS, "tf": "1d", "fast_len": 10, "slow_len": 20, "touch": "fast", "sides": "buy"}
-EXIT_DEFAULTS = {"stop": "candle", "rr": 2, "book": 100, "trail": "", "breakeven": True, "ma_exit": True, "fill": "open",
+EXIT_DEFAULTS = {"stop": "candle", "rr": 2, "book": 50, "trail": "", "breakeven": True, "ma_exit": True, "fill": "open",
                  "square_off": False, "square_off_time": "15:15", "risk": 1000}
 
 

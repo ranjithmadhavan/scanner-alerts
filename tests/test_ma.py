@@ -239,6 +239,7 @@ def test_backtest_form_defaults_are_positional(web):
     assert checked("breakeven") == "1" and checked("ma_exit") == "1"
     assert not re.search(r'name="square_off" value="1"[^>]*checked', form)  # positional, not intraday
     assert 'name="risk" type="number" min="1" step="1" value="1000"' in form
+    assert 'name="book" type="number" min="0" max="100" step="5" value="50"' in form  # half at the target, the rest runs
     # The live scanner form keeps its own defaults.
     scanners = web.get("/ma?tab=scanners").text
     assert '<option value="15m" selected>' in scanners
