@@ -99,6 +99,67 @@ BACKTESTS = RateLimit(0.5)
 TOO_MANY_PAUSE = 3.0  # seconds every call of a kind waits after Kite says "Too many requests"
 DUMPS_PAUSE = 60.0  # ...and before the next instrument list download, after a 429 on one
 TOO_MANY_RETRIES = 2
+LONG_WAIT = 30  # a Retry-After longer than this (seconds) is a block: stop sending until it ends, don't retry
+
+
+class KiteBlocked(KiteError):
+    """Kite (its Cloudflare front) has told this server to wait; nothing is sent until then."""
+
+
+# When Kite says "wait until", across restarts: {what: epoch seconds}. `what` is "instruments" for the list
+# downloads, or the host REST calls go to. Kept on disk next to the instrument lists, because a server that
+# restarts (a deploy, or --reload while developing) and asks again at once only makes the block longer.
+_waits: dict[str, float] = {}
+_waits_loaded = False
+_waits_lock = threading.Lock()
+
+
+def _waits_file() -> Path:
+    return INSTRUMENTS_DIR / "kite-wait.json"
+
+
+def blocked_until(what: str) -> float:
+    global _waits, _waits_loaded
+    with _waits_lock:
+        if not _waits_loaded:
+            try:
+                _waits = {k: float(v) for k, v in json.loads(_waits_file().read_text()).items()}
+            except (OSError, ValueError, AttributeError):
+                _waits = {}
+            _waits_loaded = True
+        return _waits.get(what, 0.0)
+
+
+def _retry_after(r: httpx.Response) -> float:
+    """Seconds Kite asked us to wait: its Retry-After header, kept between 1 minute and 6 hours (10 minutes if absent)."""
+    try:
+        return min(max(float(r.headers.get("retry-after", "")), 60.0), 6 * 3600.0)
+    except ValueError:
+        return 600.0
+
+
+def _block(what: str, seconds: float) -> float:
+    until = max(blocked_until(what), time.time() + seconds)
+    with _waits_lock:
+        _waits[what] = until
+        try:
+            INSTRUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+            _waits_file().write_text(json.dumps(_waits))
+        except OSError as e:
+            log.warning("couldn't save Kite's wait: %s", e)
+    log.warning("Kite asked us to wait %ds before more %s requests (until %s)", seconds, what, _clock(until))
+    return until
+
+
+def _clock(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, _IST).strftime("%-I:%M %p")
+
+
+def check_blocked(what: str) -> None:
+    """Raise KiteBlocked, without sending anything, while Kite's wait for `what` lasts."""
+    until = blocked_until(what)
+    if time.time() < until:
+        raise KiteBlocked(f"Kite asked this server to wait until {_clock(until)} before more requests. It will carry on then.")
 
 
 def parse_ticks(msg: bytes) -> dict[int, dict]:
@@ -148,7 +209,9 @@ class KiteClient:
 
     def _get(self, path: str, params: dict | None = None, limit: RateLimit | None = None) -> dict:
         limit = limit or OTHER
+        host = self.base.split("/")[2]
         for attempt in range(TOO_MANY_RETRIES + 1):
+            check_blocked(host)
             limit.wait()
             try:
                 r = httpx.get(self.base + path, headers=self.headers, params=params, timeout=15)
@@ -156,6 +219,10 @@ class KiteClient:
                 raise KiteError(f"Network error talking to Kite: {e}") from e
             if r.status_code != 429:
                 break
+            if _retry_after(r) > LONG_WAIT and r.headers.get("retry-after"):
+                # Blocked for a while: asking again before then only makes it longer.
+                _block(host, _retry_after(r))
+                check_blocked(host)
             # Too many requests anyway (another app on the account, or Kite being strict): hold every call of
             # this kind back for a moment, then try again.
             limit.pause(TOO_MANY_PAUSE * (attempt + 1))
@@ -354,12 +421,14 @@ def _download(exchange: str, force: bool = False) -> tuple[dict[str, Instrument]
     if not force and path.exists() and path.stat().st_mtime >= published_since():
         return parse_instruments(exchange, path.read_text()), True
     try:
+        check_blocked("instruments")
         DUMPS.wait()
         r = httpx.get(f"{INSTRUMENTS_URL}/{exchange}", timeout=30)
         if r.status_code == 429:
-            DUMPS.pause(DUMPS_PAUSE)  # Kite is strict with these: give it a full minute
+            DUMPS.pause(DUMPS_PAUSE)
+            _block("instruments", _retry_after(r))  # Kite's own Retry-After, which survives restarts
         r.raise_for_status()
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, KiteBlocked) as e:
         if not path.exists():
             raise
         log.warning("couldn't download %s instruments (%s); using the copy from %s", exchange, e,
@@ -386,6 +455,7 @@ def _reload(force: bool = False) -> None:
             log.warning("couldn't load %s instruments: %s", exchange, e)
     if not _by_exchange:
         _failed_at = time.monotonic()
+        check_blocked("instruments")  # say until when, if Kite has said
         raise KiteError("Couldn't load the instrument lists from Kite. Trying again in a few minutes.")
     _instruments = {k: i for exchange in EXCHANGES for k, i in _by_exchange.get(exchange, {}).items()}
     _loaded_at, _stale = time.time(), stale
@@ -406,11 +476,12 @@ def instruments() -> dict[str, Instrument]:
         # Once Kite has published the day's lists (or a failed download is due a retry), refresh in the background;
         # the lists we have are served meanwhile, so a search never waits on a download.
         due = _loaded_at < published_since() or (_stale and time.monotonic() - _tried_at >= _RETRY_AFTER)
-        if due and _refreshing.acquire(blocking=False):
+        if due and time.time() >= blocked_until("instruments") and _refreshing.acquire(blocking=False):
             threading.Thread(target=_reload_in_background, name="instruments", daemon=True).start()
         return _instruments
     with _instruments_lock:
         if not _instruments:
+            check_blocked("instruments")
             if time.monotonic() - _failed_at < _RETRY_AFTER:  # failed a moment ago: don't hit Kite on every request
                 raise KiteError("Kite's instrument lists couldn't be loaded. Trying again in a few minutes.")
             _reload()

@@ -15,8 +15,8 @@ NSE_CSV = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry
 
 
 class Resp:
-    def __init__(self, status, text=""):
-        self.status_code, self.text = status, text
+    def __init__(self, status, text="", headers=None):
+        self.status_code, self.text, self.headers = status, text, headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -55,13 +55,14 @@ def test_downloaded_once_then_read_from_disk_until_the_next_publish(lists, monke
 
 def test_a_refusal_is_not_retried_on_every_request(lists, monkeypatch):
     calls, answer, folder = lists
-    answer["status"] = 429
-    with pytest.raises(kite.KiteError, match="few minutes"):
+    answer["status"] = 429  # with no Retry-After: wait 10 minutes
+    with pytest.raises(kite.KiteError, match="wait until"):
         kite.instruments()
-    with pytest.raises(kite.KiteError, match="few minutes"):
+    with pytest.raises(kite.KiteError, match="wait until"):
         kite.instruments()  # a search keystroke a moment later doesn't ask Kite again
-    assert len(calls) == 1
+    assert len(calls) == 1 and kite.blocked_until("instruments") > time.time() + 500
     # After the wait it tries again.
+    monkeypatch.setattr(kite, "_waits", {})
     monkeypatch.setattr(kite, "_failed_at", time.monotonic() - kite._RETRY_AFTER)
     answer["status"] = 200
     assert "INFY" in kite.instruments() and len(calls) == 2
@@ -74,6 +75,7 @@ def test_a_refusal_falls_back_to_the_last_copy_on_disk(lists, monkeypatch):
     os.utime(folder / "NSE.csv", (old, old))
     answer["status"] = 429
     assert "INFY" in kite.instruments() and kite._stale  # yesterday's list, and it will try again later
+    monkeypatch.setattr(kite, "_waits", {})  # Kite's wait is over
     answer["status"] = 200
     assert kite.refresh_instruments() == {"NSE": 1} and not kite._stale and len(calls) == 2
 
@@ -117,3 +119,33 @@ def test_too_many_requests_is_retried_after_a_pause(monkeypatch):
         r.json = lambda: {"status": "error"}
     with pytest.raises(kite.KiteError, match="too many requests"):
         client.profile()
+
+
+def test_kites_retry_after_is_kept_across_restarts(lists, monkeypatch):
+    calls, answer, folder = lists
+    monkeypatch.setattr(kite.httpx, "get", lambda url, **kw: calls.append(url) or Resp(429, headers={"retry-after": "2330"}))
+    with pytest.raises(kite.KiteBlocked, match="wait until"):
+        kite.instruments()
+    assert len(calls) == 1 and (folder / "kite-wait.json").exists()
+    # A restart (or --reload): the wait is read back from disk and Kite isn't asked again, even after our own
+    # few-minute retry has passed.
+    monkeypatch.setattr(kite, "_waits_loaded", False)
+    monkeypatch.setattr(kite, "_failed_at", -kite._RETRY_AFTER)
+    with pytest.raises(kite.KiteBlocked):
+        kite.instruments()
+    assert len(calls) == 1
+    # Once the wait is over, it downloads again.
+    monkeypatch.setattr(kite, "_waits", {"instruments": time.time() - 1})
+    monkeypatch.setattr(kite.httpx, "get", lambda url, **kw: calls.append(url) or Resp(200, NSE_CSV))
+    assert "INFY" in kite.instruments() and len(calls) == 2
+
+
+def test_a_long_retry_after_on_api_calls_stops_them_until_then(monkeypatch):
+    sent = []
+    monkeypatch.setattr(kite.httpx, "get", lambda *a, **k: sent.append(a) or Resp(429, headers={"retry-after": "900"}))
+    client = kite.KiteClient("connect", api_key="k", access_token="t")
+    with pytest.raises(kite.KiteBlocked):
+        client.candles_range(1, "1d", date(2026, 10, 1), date(2026, 10, 2))
+    with pytest.raises(kite.KiteBlocked):
+        client.profile()  # same host: not even sent
+    assert len(sent) == 1 and kite.blocked_until("api.kite.trade") > time.time() + 800

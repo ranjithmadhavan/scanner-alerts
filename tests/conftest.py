@@ -21,3 +21,5 @@ def _kite_without_waiting(monkeypatch):
     monkeypatch.setattr(kite, "TOO_MANY_PAUSE", 0)
     monkeypatch.setattr(kite, "DUMPS_PAUSE", 0)
     monkeypatch.setattr(kite, "INSTRUMENTS_URL", "http://127.0.0.1:9/instruments")  # refused at once
+    monkeypatch.setattr(kite, "_waits", {})
+    monkeypatch.setattr(kite, "_waits_loaded", True)
