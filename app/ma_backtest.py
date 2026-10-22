@@ -19,20 +19,76 @@ from app import brokers, crossover, fractals, universe
 from app.crossover import Exits, Rules
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.market import IST, MarketSettings, load_settings, now_ist
-from app.scanner import SETTLE, candle_end
+from app import scanner
+from app.scanner import SETTLE
 from app.store import new_id
 
 log = logging.getLogger("ma.backtest")
 
-TIMEFRAMES = ["3m", "5m", "10m", "15m", "30m", "1h", "1d"]
+TIMEFRAMES = ["3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d"]
+# Candle sizes Kite doesn't serve, built from one it does: (source, minutes). They count from the open, as
+# TradingView draws NSE: 4 hours is 9:15-13:15, then 13:15 to the close.
+BUILT = {"4h": ("1h", 240)}
 MAX_REQUESTS = 1500  # ~9 minutes of Kite requests
 MAX_SHOWN = 500  # trades listed on the page (the CSV has all of them)
-CHART_SIDE = 400  # candles drawn either side of a trade
+
+
+def source(tf: str) -> str:
+    """The candle size Kite is asked for."""
+    return BUILT[tf][0] if tf in BUILT else tf
+
+
+def minutes(tf: str) -> int:
+    return BUILT[tf][1] if tf in BUILT else fractals.minutes(tf)
+
+
+def label(tf: str) -> str:
+    return f"{BUILT[tf][1] // 60} hour" if tf in BUILT else fractals.label(tf)
+
+
+def max_days(tf: str) -> int:
+    return fractals.MAX_DAYS[source(tf)]
+
+
+def candle_end(c: Candle, tf: str, s: MarketSettings) -> datetime:
+    if tf in BUILT:
+        return min(c.start + timedelta(minutes=BUILT[tf][1]), s.close_at(c.start.astimezone(IST)))
+    return scanner.candle_end(c, tf, s)
+
+
+def last_boundary(tf: str, s: MarketSettings, now: datetime) -> datetime | None:
+    """End of the most recent candle of this size that has completed by `now` (today only)."""
+    if tf not in BUILT:
+        return scanner.last_boundary(tf, s, now)
+    open_at, close_at, m = s.open_at(now), s.close_at(now), BUILT[tf][1]
+    if now < open_at:
+        return None
+    if now >= close_at:
+        return close_at
+    b = open_at + timedelta(minutes=m * int((now - open_at).total_seconds() // (m * 60)))
+    return b if b > open_at else None
+
+
+def group(candles: list[Candle], m: int, s: MarketSettings) -> list[Candle]:
+    """Put smaller candles together into ones of `m` minutes, counted from each day's open."""
+    out: list[Candle] = []
+    key = None
+    for c in candles:
+        start = c.start.astimezone(IST)
+        open_at = s.open_at(start)
+        k = (start.date(), int((start - open_at).total_seconds() // (m * 60)))
+        if k == key:
+            last = out[-1]
+            out[-1] = Candle(last.start, last.open, max(last.high, c.high), min(last.low, c.low), c.close)
+        else:
+            out.append(Candle(open_at + timedelta(minutes=m * k[1]), c.open, c.high, c.low, c.close))
+            key = k
+    return out
 
 
 def chunks(tf: str, start: date, end: date) -> list[tuple[date, date]]:
     """Date ranges no longer than Kite serves in one request for this candle size."""
-    step = fractals.MAX_DAYS[tf]
+    step = max_days(tf)
     out, at = [], start
     while at <= end:
         out.append((at, min(end, at + timedelta(days=step - 1))))
@@ -42,7 +98,7 @@ def chunks(tf: str, start: date, end: date) -> list[tuple[date, date]]:
 
 def warmup_start(tf: str, start: date, rules: Rules, candles: int | None = None) -> date:
     """How far before `start` to fetch so the slow average has settled by then (or to have `candles` candles)."""
-    per_day = 1 if tf == "1d" else max(1, fractals.SESSION_MINUTES // fractals.minutes(tf))
+    per_day = 1 if tf == "1d" else math.ceil(fractals.SESSION_MINUTES / minutes(tf))  # a short last candle counts
     trading_days = math.ceil((candles or rules.warmup()) / per_day)
     return start - timedelta(days=math.ceil(trading_days * 7 / 5) + 7)
 
@@ -50,7 +106,9 @@ def warmup_start(tf: str, start: date, rules: Rules, candles: int | None = None)
 def fetch(client, token: int, tf: str, start: date, end: date, s: MarketSettings, now: datetime) -> list[Candle]:
     out: list[Candle] = []
     for a, b in chunks(tf, start, end):
-        out += client.candles_range(token, tf, a, b)
+        out += client.candles_range(token, source(tf), a, b)
+    if tf in BUILT:
+        out = group(out, BUILT[tf][1], s)
     return [c for c in out if candle_end(c, tf, s) <= now - SETTLE]  # completed candles only
 
 
@@ -70,7 +128,7 @@ class Params:
 
     @property
     def minutes(self) -> int:
-        return 0 if self.tf == "1d" else fractals.minutes(self.tf)
+        return 0 if self.tf == "1d" else minutes(self.tf)
 
 
 @dataclass

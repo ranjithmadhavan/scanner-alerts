@@ -22,20 +22,21 @@ import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from app import config, crossover, fractals, ma_backtest, notify, universe, webhooks
+from app import config, crossover, ma_backtest, notify, universe, webhooks
 from app.crossover import Rules
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.market import IST, MarketSettings, in_scan_window, is_market_open, is_trading_day, load_settings, now_ist
-from app.scanner import _ensure_session, candle_end, last_boundary, session_notice
+from app.ma_backtest import candle_end, last_boundary
+from app.scanner import _ensure_session, session_notice
 from app.store import new_id, store
 
 log = logging.getLogger("ma.scanner")
 
 COL = "ma_scanners"
-TIMEFRAMES = ["5m", "10m", "15m", "30m", "1h", "1d"]
+TIMEFRAMES = ["5m", "10m", "15m", "30m", "1h", "4h", "1d"]
 # Stocks a scanner may watch on each candle size: Kite allows ~3 candle requests a second, and each stock
 # is one request per candle close.
-LIVE_LIMIT = {"5m": 100, "10m": 200, "15m": 500, "30m": 500, "1h": None, "1d": None}
+LIVE_LIMIT = {"5m": 100, "10m": 200, "15m": 500, "30m": 500, "1h": None, "4h": None, "1d": None}
 MAX_SCANNERS = 5
 MAX_LINES = 25  # stocks listed in one message
 KEEP_FIRED = 3000
@@ -50,7 +51,7 @@ _locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 def limit_problem(n: int, tf: str) -> str | None:
     cap = LIVE_LIMIT[tf]
     if cap is not None and n > cap:
-        return (f"{fractals.label(tf)} candles can be scanned live on up to {cap} stocks (this list has {n}). "
+        return (f"{ma_backtest.label(tf)} candles can be scanned live on up to {cap} stocks (this list has {n}). "
                 f"Pick a longer candle or a shorter list.")
     return None
 
@@ -81,7 +82,7 @@ def candles_for(client, token: int, tf: str, rules: Rules, s: MarketSettings, no
     are fetched once a day."""
     day = now.astimezone(IST).date()
     count = rules.warmup() * LOOKBACK
-    start = max(ma_backtest.warmup_start(tf, day, rules, count), day - timedelta(days=fractals.MAX_DAYS[tf] - 1))
+    start = max(ma_backtest.warmup_start(tf, day, rules, count), day - timedelta(days=ma_backtest.max_days(tf) - 1))
     if tf == "1d":
         return ma_backtest.fetch(client, token, tf, start, day, s, now)
     key = (token, tf, day, count)
@@ -122,7 +123,7 @@ def _line(sc: dict, item: dict) -> str:
 
 def describe(sc: dict) -> str:
     """'Nifty 200 · 9 EMA / 21 EMA on 15 min candles'"""
-    return f"{universe.describe(sc['spec'])} · {rules_of(sc).label} on {fractals.label(sc['tf']).lower()} candles"
+    return f"{universe.describe(sc['spec'])} · {rules_of(sc).label} on {ma_backtest.label(sc['tf']).lower()} candles"
 
 
 def message(sc: dict, kind: str, items: list[dict], now: datetime) -> tuple[str, str]:

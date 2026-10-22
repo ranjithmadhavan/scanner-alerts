@@ -274,3 +274,36 @@ def test_scanner_sends_only_the_first_entry_after_a_crossover(kite, sent):
     sc = ma_scanner.evaluate(sc, kite, s, at, s.close_at(at))
     entries = [x for x in sent if x[0].startswith("🚀")]
     assert len(entries) == 1 and sc["state"] == {}  # the later pullbacks set nothing up
+
+
+def test_four_hour_candles_are_built_from_hourly_ones():
+    from app.market import load_settings
+    s = load_settings()
+    day = datetime(2026, 9, 30, tzinfo=IST)
+    hours = [Candle(day.replace(hour=9, minute=15) + timedelta(hours=k), 100 + k, 102 + k, 99 + k, 101 + k) for k in range(7)]
+
+    class Hourly:
+        def candles_range(self, token, tf, start, end):
+            assert tf == "1h"  # Kite has no 4-hour candles
+            return hours
+
+    # Mid-afternoon: the 9:15-13:15 candle is done, the 13:15 one isn't.
+    got = ma_backtest.fetch(Hourly(), 1, "4h", day.date(), day.date(), s, day.replace(hour=14, minute=30))
+    assert [(c.start.strftime("%H:%M"), c.open, c.high, c.low, c.close) for c in got] == [("09:15", 100, 105, 99, 104)]
+    got = ma_backtest.fetch(Hourly(), 1, "4h", day.date(), day.date(), s, day.replace(hour=15, minute=31))
+    assert [(c.start.strftime("%H:%M"), c.open, c.high, c.low, c.close) for c in got] == \
+        [("09:15", 100, 105, 99, 104), ("13:15", 104, 108, 103, 107)]
+    assert ma_backtest.candle_end(got[1], "4h", s).strftime("%H:%M") == "15:30"
+    assert ma_backtest.last_boundary("4h", s, day.replace(hour=13, minute=0)) is None
+    assert ma_backtest.last_boundary("4h", s, day.replace(hour=14, minute=0)).strftime("%H:%M") == "13:15"
+    assert ma_backtest.last_boundary("4h", s, day.replace(hour=15, minute=40)).strftime("%H:%M") == "15:30"
+    assert ma_backtest.label("4h") == "4 hour"
+    # A year of 4-hour candles, plus the candles before it the averages need, is two hourly requests per stock.
+    assert ma_backtest.requests_needed(500, "4h", date(2025, 10, 22), date(2026, 10, 22), crossover.Rules()) == 1000
+
+
+def test_four_hour_is_offered(web):
+    assert '<option value="4h" >4 hour</option>' in web.get("/ma?tab=backtest").text
+    r = web.post("/ma/scanners", data={**SETUP, "tf": "4h", "universe_kind": "list", "universe_list": "nifty500",
+                                       "stop": "candle", "rr": "2"})
+    assert "Scanner saved" in r.headers["HX-Trigger"] and "on 4 hour candles" in r.text

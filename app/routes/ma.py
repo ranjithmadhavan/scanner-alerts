@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from app import brokers, crossover, fractals, ma_backtest, ma_scanner, notify, universe, webhooks
+from app import brokers, crossover, ma_backtest, ma_scanner, notify, universe, webhooks
 from app.crossover import Exits, Rules
 from app.kite import KiteAuthError, KiteError, instruments, search_instruments
 from app.market import now_ist, parse_hhmm
@@ -18,7 +18,7 @@ guard = require("ma")
 
 MAX_SYMBOLS = 500
 # How far back a backtest starts by default, per candle size.
-DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "1d": 365}
+DEFAULT_DAYS = {"3m": 30, "5m": 60, "10m": 90, "15m": 120, "30m": 180, "1h": 365, "4h": 365, "1d": 365}
 SETUP_DEFAULTS = {"universe_kind": "list", "universe_list": "nifty50", "symbols": "", "tf": "15m", "fast_kind": "ema",
                   "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both", "once": True}
 # The backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, half booked at 1:2,
@@ -31,7 +31,7 @@ EXIT_DEFAULTS = {"stop": "candle", "rr": 2, "book": 50, "trail": "", "breakeven"
 def _options() -> dict:
     return {"universes": universe.UNIVERSES, "ma_kinds": crossover.MA_KINDS, "touches": crossover.TOUCH,
             "sides": crossover.SIDES, "stops": crossover.STOPS, "trails": crossover.TRAILS, "fills": crossover.FILLS,
-            "tf_label": fractals.label, "live_limit": ma_scanner.LIVE_LIMIT, "default_days": DEFAULT_DAYS}
+            "tf_label": ma_backtest.label, "live_limit": ma_scanner.LIVE_LIMIT, "default_days": DEFAULT_DAYS}
 
 
 def _scanner_view(sc: dict) -> dict:
@@ -206,7 +206,7 @@ def _run_ctx(run: ma_backtest.Run) -> dict:
                "entry": ma_backtest.chart_time(run, t["entry_at"]),
                "exits": [{"time": ma_backtest.chart_time(run, f["at"]), "price": f["price"], "reason": f["reason"]} for f in t["exits"]]}
               for n, t in enumerate(rep["shown"])]
-    return {"rep": rep, "p": p, "spec_label": universe.describe(p.spec), "tf_name": fractals.label(p.tf),
+    return {"rep": rep, "p": p, "spec_label": universe.describe(p.spec), "tf_name": ma_backtest.label(p.tf),
             "chart_json": {"curve": curve, "trades": trades, "daily": p.tf == "1d"},
             "exit_names": crossover.EXIT_NAMES}
 
