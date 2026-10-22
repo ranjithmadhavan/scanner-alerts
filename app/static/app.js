@@ -859,7 +859,7 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
       chartSymbol = t.symbol;
       lines = [];
     }
-    document.getElementById("ma-trade-title").textContent = `${t.symbol} · ${t.side} trade`;
+    document.getElementById("ma-trade-title").textContent = `${t.symbol} · ${t.side} ${t.price ? "trade" : "setup, not taken"}`;
     lines.forEach((l) => series.removePriceLine(l));
     lines = [];
     if (t.price) {

@@ -45,7 +45,7 @@
   {% endif %}
   <p class="mt-2 text-[13px] text-ink-soft">
     {{ rep.open }} still open and {{ rep.skipped }} not taken aren't counted.
-    {% if rep.reasons %}Exits: {% for reason, n in rep.reasons %}{{ reason|lower }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}.{% endif %}
+    {% if rep.reasons %}How trades ended: {% for reason, n in rep.reasons %}{{ reason }} <span class="num">{{ '{:,}'.format(n) }}</span>{{ ', ' if not loop.last }}{% endfor %}.{% endif %}
   </p>
 
   <div class="mt-4 rounded-2xl border border-line p-2">
@@ -146,5 +146,5 @@
     {% if run.no_data %}Too little history for the averages: {{ run.no_data|join(', ') }}.{% endif %}
   </p>
   {% endif %}
-  <p class="mt-3 text-[13px] leading-relaxed text-ink-soft">One position per stock at a time: an entry while a trade is open is passed over. A gap entry is filled as chosen above. On the entry candle only what must have come after the entry counts (a close beyond the SL or target); after that, the SL is checked before the target, so a candle that trades both counts as the SL, and a gap through either fills at the open. Close-based exits (slow MA, fast-MA trail, square-off) are at that candle's close. Trails and breakeven move at each close. Times are the start of the candle. No costs or slippage. Nothing is saved; the latest run stays here until the app restarts.</p>
+  <p class="mt-3 text-[13px] leading-relaxed text-ink-soft">One position per stock at a time: an entry while a trade is open is passed over. A gap entry is filled as chosen above. The SL is checked before the target, so a candle that trades both counts as the SL; on the entry candle, trading beyond the SL counts as stopped (it can't be told whether that came before the entry), while the target counts only on a close beyond it. A gap through either fills at the open. Close-based exits (slow MA, fast-MA trail, square-off) are at that candle's close. Trails and breakeven move at each close. Times are the start of the candle. No costs or slippage. Nothing is saved; the latest run stays here until the app restarts.</p>
 </div>

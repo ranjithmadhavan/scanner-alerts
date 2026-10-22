@@ -242,9 +242,12 @@ def _last_before(candles: list[Candle], j: int, at: time, minutes: int) -> bool 
 def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int = 0) -> Trade:
     """Follow an entry through the candles. Prices are checked in this order on each candle: the stop (a gap
     through it fills at the open), then the target (a gap past it fills at the open), then the exits on a
-    close. A candle that trades both the stop and the target counts as the stop. On the entry candle itself
-    only what must have come after the entry counts: a close beyond the stop or the target. (Entered at the
-    open on a gap, the whole candle comes after.) Stops and trails move at each close, for the next candle."""
+    close. A candle that trades both the stop and the target counts as the stop. The entry candle is read the
+    same cautious way: trading beyond the stop counts as stopped even though the low (for a buy) may have come
+    before the entry, while the target counts only if the candle closed beyond it. (A candle-by-candle replay
+    can't tell; on a random walk this keeps results a little under zero rather than well above it.) Entered at
+    the open on a gap, the whole candle comes after the entry anyway. Stops and trails move at each close, for
+    the next candle."""
     buy, k = entry.side == "buy", entry.index
     sign = 1 if buy else -1
     c0 = candles[k]
@@ -272,8 +275,7 @@ def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exi
     for j in range(k, len(candles)):
         c = candles[j]
         whole = j > k or at_open  # the entire candle came after the entry
-        probe = (c.low if buy else c.high) if whole else c.close
-        if price_stop is not None and _beyond(probe, price_stop, buy):
+        if price_stop is not None and _beyond(c.low if buy else c.high, price_stop, buy):
             px = c.open if j > k and _beyond(c.open, price_stop, buy) else price_stop
             out(left, px, j, "stop" if price_stop == stop else "breakeven" if price_stop == price else "trail")
             break

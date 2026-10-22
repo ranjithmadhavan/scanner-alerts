@@ -113,14 +113,16 @@ def test_stop_target_and_both_in_one_candle():
     assert simulate(_entry(c), c, FLAT, FLAT, Exits()).r == pytest.approx(-1.5)
 
 
-def test_entry_candle_counts_only_what_came_after_the_entry():
-    # The entry candle's low (97) is under the stop but may have come before the entry; its close is above.
+def test_entry_candle_is_read_cautiously():
+    # The entry candle's low (97) is under the stop: it may have come before the entry, but it counts as stopped.
     c = series(GREEN, RED, (99, 103, 97, 101), (101, 101.5, 99, 100))
-    assert simulate(_entry(c), c, FLAT, FLAT, Exits()).status == "open"
-    # It closed under the stop, so the stop was hit after the entry.
-    c = series(GREEN, RED, (99, 103, 96, 97))
     t = simulate(_entry(c), c, FLAT, FLAT, Exits())
     assert t.r == pytest.approx(-1) and t.fills[0].index == 2
+    # Its high passing the target (110) doesn't count unless it closed there.
+    c = series(GREEN, RED, (99, 111, 99.5, 105), (105, 106, 104, 105.5))
+    assert simulate(_entry(c), c, FLAT, FLAT, Exits(rr=2)).status == "open"
+    c = series(GREEN, RED, (99, 111, 99.5, 110.5))
+    assert simulate(_entry(c), c, FLAT, FLAT, Exits(rr=2)).r == pytest.approx(2)
 
 
 def test_gap_fills():
