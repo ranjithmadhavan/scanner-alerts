@@ -173,7 +173,10 @@ def test_setup_then_entry_from_quotes_then_no_repeat_at_the_close(kite, sent):
     s = load_settings()
     sc = _scanner()
     after_close = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
-    assert ma_scanner.latest_close("1d", s, after_close) == s.close_at(after_close)
+    # At 3:31 the daily candle isn't read yet (yesterday's close is the latest); from 3:45 it is.
+    assert ma_scanner.latest_close("1d", s, after_close) == s.close_at(datetime(2026, 9, 29, tzinfo=IST))
+    assert ma_scanner.latest_close("1d", s, after_close.replace(minute=45)) == s.close_at(after_close)
+    assert ma_scanner.latest_close("15m", s, after_close) == s.close_at(after_close)  # intraday: at the close as before
     sc = ma_scanner.evaluate(sc, kite, s, after_close, s.close_at(after_close))
     assert sent[-1][0] == "📈 INFY: buy above 166.50"
     assert "INFY buy above ₹166.50 · SL ₹164.00 · target ₹171.50 (1:2)" in sent[-1][1]
@@ -390,3 +393,22 @@ def test_a_run_ends_when_the_stock_lists_cant_be_had(web, kite, monkeypatch):
         clock.sleep(0.05)
     for job in (ma_screen.current("tara"), ma_backtest.current("tara")):
         assert job.status == "failed" and "wait until 8:18 PM" in job.error
+
+
+def test_daily_scanners_are_read_at_3_45(kite, sent, monkeypatch):
+    from app import ma_screen
+    from app.market import load_settings
+    s = load_settings()
+    calls = []
+    monkeypatch.setattr(ma_scanner, "evaluate", lambda sc, client, s, now, upto: calls.append((now.strftime("%H:%M"), upto.strftime("%d %H:%M"))))
+    monkeypatch.setattr(ma_scanner, "_ensure_session", lambda u, n, now: kite)
+    _scanner(evaluated_at="2026-09-29T15:30:00+05:30")
+    # 3:31 and 3:44: nothing new (yesterday's candle is the latest read); 3:46: today's. (evaluate is stubbed, so
+    # the scanner isn't marked as read: 4:10 would read it again.) 4:20 is past the 45 minutes after the close.
+    for hh, mm in [(15, 31), (15, 44), (15, 46), (16, 10), (16, 20)]:
+        ma_scanner.run_candles(datetime(2026, 9, 30, hh, mm, tzinfo=IST))
+    assert calls == [("15:46", "30 15:30"), ("16:10", "30 15:30")]
+    # Scan now's default day switches at 3:45 too.
+    assert ma_screen.last_session(s, datetime(2026, 9, 30, 15, 40, tzinfo=IST)).isoformat() == "2026-09-29"
+    assert ma_screen.last_session(s, datetime(2026, 9, 30, 15, 45, tzinfo=IST)).isoformat() == "2026-09-30"
+    store.delete("ma_scanners", "s1")

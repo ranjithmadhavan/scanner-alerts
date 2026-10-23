@@ -41,6 +41,14 @@ MAX_SCANNERS = 5
 MAX_LINES = 25  # stocks listed in one message
 KEEP_FIRED = 3000
 SETTLE = timedelta(seconds=10)  # let Kite finish the candle that just closed
+# Daily candles are read 15 minutes after the close (3:45 PM), not at it: at 3:30 Kite's daily candle closes on
+# the last traded price, and it takes NSE's official close (a weighted average of the last half hour) a few
+# minutes later. A candle that only just closed red, or only just reached the MA, could otherwise be judged on
+# the wrong close.
+DAILY_READ_AFTER = timedelta(minutes=15)
+# The candle job keeps running this long after the close, for the daily read; missed altogether (the app down
+# then), the day is read at the next open instead.
+AFTER_CLOSE = timedelta(minutes=45)
 # Candles read, in multiples of what the averages need: with one entry per crossover, the crossover must be among
 # them (a trend older than this gives no setups). Still one request per stock.
 LOOKBACK = 5
@@ -68,8 +76,9 @@ def exits_of(sc: dict) -> crossover.Exits:
 
 
 def latest_close(tf: str, s: MarketSettings, now: datetime) -> datetime | None:
-    """When the most recent candle of this size that has settled closed: today's, or the last session's close."""
-    if is_trading_day(now) and (b := last_boundary(tf, s, now - SETTLE)):
+    """When the most recent candle of this size that has settled closed: today's, or the last session's close.
+    A daily candle counts as settled DAILY_READ_AFTER after the close."""
+    if is_trading_day(now) and (b := last_boundary(tf, s, now - (DAILY_READ_AFTER if tf == "1d" else SETTLE))):
         return b
     day = now - timedelta(days=1)
     for _ in range(10):
@@ -335,7 +344,7 @@ def _active() -> dict[str, list[dict]]:
 def run_candles(now: datetime | None = None) -> None:
     """Scheduler job: evaluate every scanner whose candle has closed since it was last evaluated."""
     s, now = load_settings(), now or now_ist()
-    if not in_scan_window(s, now):
+    if not (in_scan_window(s, now) or (is_trading_day(now) and s.close_at(now) <= now < s.close_at(now) + AFTER_CLOSE)):
         return
     for username, scanners in _active().items():
         due = [(sc, upto) for sc in scanners

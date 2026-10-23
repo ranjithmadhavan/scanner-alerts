@@ -27,9 +27,9 @@ GROUPS = {"triggered": "Triggered", "formed": "Trigger candle formed", "ready": 
 
 
 def last_session(s: MarketSettings, now: datetime) -> date:
-    """The latest trading day whose close has passed."""
+    """The latest trading day whose daily candle has its official close: from 3:45 PM (as live scanners read it), today."""
     day = now.astimezone(IST)
-    if not (is_trading_day(day) and day >= s.close_at(day)):
+    if not (is_trading_day(day) and day >= s.close_at(day) + ma_scanner.DAILY_READ_AFTER):
         day -= timedelta(days=1)
         while not is_trading_day(day):
             day -= timedelta(days=1)
