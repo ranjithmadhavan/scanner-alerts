@@ -205,8 +205,8 @@ def _record(symbol: str, t: crossover.Trade, candles: list[Candle]) -> dict:
 
 def _work(run: Run) -> None:
     p, s = run.params, load_settings()
-    known = instruments()
     try:
+        known = instruments()  # inside the try: if the lists can't be had, the run must still end, not hang
         client = brokers.client_for(run.user)
         for symbol in run.symbols:
             if run.stop.is_set():
@@ -237,6 +237,8 @@ def _work(run: Run) -> None:
             run.status = "done"
     except KiteAuthError:
         run.status, run.error = "failed", "Kite isn't connected or the session has expired. Log in on the Broker page and run it again."
+    except KiteError as e:
+        run.status, run.error = "failed", str(e)
     except Exception as e:
         log.exception("ma backtest %s failed", run.id)
         run.status, run.error = "failed", f"The backtest stopped: {e}"

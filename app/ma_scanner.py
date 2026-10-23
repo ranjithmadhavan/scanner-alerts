@@ -158,9 +158,40 @@ def hook_body(sc: dict, kind: str, items: list[dict], now: datetime, test: bool 
             "payload": json.loads(sc["webhook_payload"]) if sc.get("webhook_payload") else None}
 
 
+# ---- the signals feed: what the scanners found, per person per day ---------------------------
+FEED = "ma_signal_days"  # {user}:{date} -> {"user", "date", "items": [...]}
+FEED_DAYS = 7
+FEED_MAX = 2000  # items kept a day
+_feed_lock = threading.Lock()
+
+
+def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
+    """Add what was just sent to the person's feed for today (one document a day, so reading it is cheap)."""
+    day = now.astimezone(IST).date().isoformat()
+    doc_id = f"{sc['user']}:{day}"
+    new = [{"at": now.isoformat(), "kind": kind, "scanner_id": sc["id"], "scanner": sc["name"], "tf": sc["tf"],
+            **{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "trigger_at")}}
+           for i in items]
+    with _feed_lock:
+        doc = store.get(FEED, doc_id) or {"user": sc["user"], "date": day, "items": []}
+        store.put(FEED, doc_id, {**doc, "items": (doc["items"] + new)[-FEED_MAX:]})
+
+
+def feed(username: str, day: str) -> list[dict]:
+    """One day's signals, newest first."""
+    return sorted((store.get(FEED, f"{username}:{day}") or {}).get("items", []), key=lambda i: i["at"], reverse=True)
+
+
+def feed_days(username: str, today) -> list[str]:
+    """The days the feed can show: the last FEED_DAYS calendar days with anything in them, today first."""
+    days = [(today - timedelta(days=k)).isoformat() for k in range(FEED_DAYS)]
+    return [d for d in days if d == days[0] or store.get(FEED, f"{username}:{d}")]
+
+
 def send(sc: dict, kind: str, items: list[dict], now: datetime) -> dict:
     if not items:
         return {}
+    record(sc, kind, items, now)
     subject, body = message(sc, kind, items, now)
     results = notify.send(sc["user"], sc.get("channels", []), subject, body)
     if sc.get("webhooks"):

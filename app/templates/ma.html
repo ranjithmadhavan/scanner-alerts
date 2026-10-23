@@ -21,13 +21,15 @@
 {% endif %}
 
 <nav class="mt-7 inline-flex rounded-full bg-white p-1 ring-1 ring-line" aria-label="Section">
-  {% for key, text in [('scanners', 'Live scanners'), ('backtest', 'Backtest')] %}
+  {% for key, text in [('scanners', 'Live scanners'), ('screen', 'Scan now'), ('backtest', 'Backtest')] %}
   <a href="/ma?tab={{ key }}" class="rounded-full px-4 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if tab == key else 'text-ink-soft hover:text-ink' }}"
      {% if tab == key %}aria-current="page"{% endif %}>{{ text }}{% if key == 'scanners' and scanners %} <span class="num opacity-70">{{ scanners|length }}</span>{% endif %}</a>
   {% endfor %}
 </nav>
 
 {% if tab == 'scanners' %}
+{% include "partials/ma_feed.html" %}
+
 <form id="new-scanner" class="ma-form panel mt-5 shadow-soft" hx-post="/ma/scanners" hx-target="#ma-scanners" hx-swap="outerHTML">
   <details class="group/new" {{ 'open' if not scanners }}>
   <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
@@ -86,6 +88,37 @@
 </form>
 
 {% include "partials/ma_scanners.html" %}
+
+{% elif tab == 'screen' %}
+<form id="ma-screen-form" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/screen" hx-target="#ma-screen" hx-swap="outerHTML">
+  <p class="mb-5 max-w-2xl text-[15px] text-ink-soft">Which stocks, at a day's close, have just triggered, have just formed a trigger candle, or have one waiting for its entry. Run it after the close for the next day's list.</p>
+  {% with tfs=backtest_tfs, prefix='sn-', setup=bt_setup %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
+  <div class="mt-6 grid gap-5 sm:grid-cols-[180px_1.4fr_140px]">
+    <div>
+      <label for="sn-day" class="label">As of the close on</label>
+      <input id="sn-day" name="day" type="date" value="{{ screen_day }}" max="{{ today }}" class="field num" required>
+    </div>
+    <div>
+      <label for="sn-stop" class="label">SL to show</label>
+      <select id="sn-stop" name="stop" class="field">
+        {% for k, text in stops.items() %}<option value="{{ k }}" {{ 'selected' if exits.stop == k }}>{{ text }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="sn-rr" class="label">Target at 1 :</label>
+      <input id="sn-rr" name="rr" type="number" min="0" max="20" step="0.1" value="{{ exits.rr }}" class="field num">
+    </div>
+  </div>
+  {# For "Start a live scanner": every channel that's set up, and gap entries, as a new scanner would start. #}
+  {% for ch in channels if ch.ready %}<input type="hidden" name="channels" value="{{ ch.key }}">{% endfor %}
+  <input type="hidden" name="gap_alerts" value="1">
+  <div class="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-line pt-5">
+    <button type="button" class="btn-outline htmx-busy" hx-post="/ma/scanners" hx-include="#ma-screen-form" hx-swap="none"
+            title="Save these settings as a live scanner (it sends to every channel you've set up)">Start a live scanner with these settings</button>
+    <button class="btn-primary htmx-busy">{{ icon('refresh', 'h-4 w-4') }} Scan now</button>
+  </div>
+</form>
+{% if screen %}{% include "partials/ma_screen.html" %}{% else %}<div id="ma-screen"></div>{% endif %}
 
 {% else %}
 <form id="ma-backtest" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/backtest" hx-target="#ma-run" hx-swap="outerHTML">

@@ -60,7 +60,8 @@ class FakeKite:
 def kite(monkeypatch):
     fake = FakeKite(daily(ROWS))
     insts = {"INFY": INFY}
-    for mod in (ma_backtest, ma_scanner, routes, universe, kite_mod):
+    from app import ma_screen
+    for mod in (ma_backtest, ma_scanner, ma_screen, routes, universe, kite_mod):
         monkeypatch.setattr(mod, "instruments", lambda: insts)
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: fake)
     monkeypatch.setattr(universe.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("offline")))
@@ -320,3 +321,72 @@ def test_second_entry_needs_first_entry_only(web):
     assert "a second after a stop-out" in web.get("/ma?tab=scanners").text
     for sc in store.list("ma_scanners", user="tara"):
         store.delete("ma_scanners", sc["id"])
+
+
+def _screen_params(day, **rules):
+    from app import ma_screen
+    return ma_screen.Params({"symbols": ["INFY"]}, "1d", day, crossover.Rules("sma", 2, "sma", 5, once=False, **rules), "candle", 2)
+
+
+def test_screen_sorts_a_stock_into_triggered_formed_or_ready():
+    from app import ma_screen
+    formed = ma_screen.classify("INFY", daily(ROWS), _screen_params(date(2026, 9, 30)))
+    assert (formed["group"], formed["level"], formed["stop"], formed["target"]) == ("formed", 166.5, 164, 171.5)
+    assert formed["away"] == pytest.approx((166.5 - 164.5) / 164.5 * 100)
+    # The next day it trades through: triggered at the level.
+    triggered = ma_screen.classify("INFY", daily(ROWS + [BREAK[1]], DAYS + [BREAK[0]]), _screen_params(BREAK[0]))
+    assert (triggered["group"], triggered["price"], triggered["gap"]) == ("triggered", 166.5, False)
+    # The next day it stays under the level: still waiting.
+    quiet = (165, 166, 164.2, 165.5)
+    ready = ma_screen.classify("INFY", daily(ROWS + [quiet], DAYS + [BREAK[0]]), _screen_params(BREAK[0]))
+    assert (ready["group"], ready["trigger_at"]) == ("ready", "2026-09-30T00:00:00+05:30")
+    # A gap above the level: triggered on a gap, entered at the open.
+    gap = ma_screen.classify("INFY", daily(ROWS + [(168, 170, 167.5, 169)], DAYS + [BREAK[0]]), _screen_params(BREAK[0]))
+    assert (gap["group"], gap["gap"], gap["price"]) == ("triggered", True, 168)
+
+
+def test_screen_end_to_end(web, kite):
+    from app import ma_screen
+    page = web.get("/ma?tab=screen").text
+    assert "Scan now" in page and 'name="day" type="date"' in page
+    r = web.post("/ma/screen", data={**SETUP, "day": "2026-09-30", "stop": "candle", "rr": "2"})
+    assert "Scanning 1 stock as of 30 Sep" in r.headers["HX-Trigger"]
+    for _ in range(100):
+        if ma_screen.current("tara").status != "running":
+            break
+        clock.sleep(0.05)
+    screen = ma_screen.current("tara")
+    assert screen.status == "done" and [r["group"] for r in screen.rows] == ["formed"]
+    html = web.get("/ma/screen/status").text
+    assert "Trigger candle formed" in html and "INFY" in html and "1 stock with a setup" in html
+    chart = web.get("/ma/screen/chart?symbol=INFY").json()
+    assert chart["row"]["level"] == 166.5 and chart["trigger"] == "2026-09-30" and chart["candles"][-1]["time"] == "2026-09-30"
+
+
+def test_signals_feed_shows_what_the_scanners_sent(web, kite, sent):
+    from app.market import load_settings
+    s = load_settings()
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    ma_scanner.evaluate(_scanner(user="tara"), kite, s, at, s.close_at(at))
+    items = ma_scanner.feed("tara", "2026-09-30")  # newest first; earlier tests added to the same day
+    assert (items[0]["kind"], items[0]["symbol"], items[0]["level"], items[0]["scanner"]) == ("setup", "INFY", 166.5, "Infy daily")
+    assert items[0]["stop"] == 164 and items[0]["target"] == 171.5
+    html = web.get("/ma/signals?day=2026-09-30").text
+    assert "Signals" in html and "INFY" in html
+    store.delete("ma_scanners", "s1")
+
+
+def test_a_run_ends_when_the_stock_lists_cant_be_had(web, kite, monkeypatch):
+    from app import ma_screen
+    def down():
+        raise kite_mod.KiteBlocked("Kite asked this server to wait until 8:18 PM before more requests.")
+    for mod in (ma_backtest, ma_screen):
+        monkeypatch.setattr(mod, "instruments", down)
+    web.post("/ma/screen", data={**SETUP, "day": "2026-09-30", "stop": "candle", "rr": "2"})
+    web.post("/ma/backtest", data={**SETUP, "start": "2026-08-01", "end": "2026-09-30", "stop": "candle", "rr": "2", "book": "100"})
+    for _ in range(100):
+        if ma_screen.current("tara").status != "running" and ma_backtest.current("tara").status != "running":
+            break
+        clock.sleep(0.05)
+    for job in (ma_screen.current("tara"), ma_backtest.current("tara")):
+        assert job.status == "failed" and "wait until 8:18 PM" in job.error

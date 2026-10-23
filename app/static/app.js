@@ -1025,3 +1025,59 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     save();
   });
 })();
+
+// ---- MA crossover "Scan now": a stock's chart with both averages and its setup ------------------------
+(() => {
+  let chart, series;
+  async function show(symbol) {
+    const box = document.getElementById("ma-screen-chart-box");
+    if (!box) return;
+    box.hidden = false;
+    document.querySelectorAll("[data-screen-symbol]").forEach((row) => row.toggleAttribute("data-selected", row.dataset.screenSymbol === symbol));
+    const title = document.getElementById("ma-screen-title");
+    const note = document.getElementById("ma-screen-note");
+    title.textContent = symbol + " · loading…";
+    const r = await fetch("/ma/screen/chart?symbol=" + encodeURIComponent(symbol));
+    const got = await r.json();
+    if (!r.ok) { title.textContent = symbol; note.textContent = got.error; return; }
+    try { await loadChartLib(); } catch (e) { note.textContent = e.message; return; }
+    const L = window.LightweightCharts;
+    chart?.remove();
+    chart = L.createChart(document.getElementById("ma-screen-chart"), chartLook(L));
+    chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
+    series = chart.addCandlestickSeries(candleLook);
+    series.setData(got.candles);
+    const ma = (color, points) => chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false }).setData(points);
+    ma("#E9A23B", got.fast);
+    ma("#0F5E5C", got.slow);
+    document.getElementById("ma-screen-fast").textContent = got.fast_label;
+    document.getElementById("ma-screen-slow").textContent = got.slow_label;
+    const row = got.row;
+    title.textContent = row ? `${symbol} · ${row.side} ${row.at ? "triggered" : "setup"}` : symbol;
+    if (row) {
+      const buy = row.side === "buy";
+      const marks = [{ time: got.trigger, position: buy ? "aboveBar" : "belowBar", shape: "circle", color: "#E9A23B", text: "Trigger" }];
+      if (got.entry) marks.push({ time: got.entry, position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown",
+        color: buy ? "#2E8B57" : "#C2475A", text: (buy ? "Buy " : "Sell ") + row.price.toFixed(2) });
+      series.setMarkers(marks.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0)));
+      const line = (price, color, text) => price !== null && series.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: text });
+      line(row.level, "#16373A", buy ? "Enter above" : "Enter below");
+      line(row.stop, "#C2475A", "SL");
+      line(row.target, "#2E8B57", "Target");
+    }
+    // The last 60 candles, where the setup is; the rest is a scroll away.
+    chart.timeScale().setVisibleLogicalRange({ from: got.candles.length - 60, to: got.candles.length + 3 });
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-screen-symbol]");
+    if (row) show(row.dataset.screenSymbol);
+  });
+  document.addEventListener("keydown", (e) => {
+    const row = e.target.matches?.("[data-screen-symbol]") ? e.target : null;
+    if (!row || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    show(row.dataset.screenSymbol);
+  });
+})();

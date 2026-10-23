@@ -5,10 +5,10 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from app import brokers, crossover, ma_backtest, ma_scanner, notify, universe, webhooks
+from app import brokers, crossover, ma_backtest, ma_scanner, ma_screen, notify, universe, webhooks
 from app.crossover import Exits, Rules
 from app.kite import KiteAuthError, KiteError, instruments, refresh_instruments, search_instruments
-from app.market import now_ist, parse_hhmm
+from app.market import is_market_open, load_settings, now_ist, parse_hhmm
 from app.security import require
 from app.store import new_id, store
 from app.web import _company, fail, render, toast
@@ -53,10 +53,15 @@ def _ctx(user: dict, tab: str, from_id: str = "") -> dict:
                      symbols=", ".join(spec.get("symbols") or []), tf=sc["tf"], **{"once": True, "second": False, **sc["rules"]})
         exits.update(stop=sc.get("stop", "candle"), rr=sc.get("rr") or 2)
         tab = "backtest"
-    today = now_ist().date()
+    now = now_ist()
+    today = now.date()
     run = ma_backtest.current(username)
+    screen = ma_screen.current(username)
     return {
-        "tab": tab if tab in ("scanners", "backtest") else ("scanners" if scanners else "backtest"),
+        "tab": tab if tab in ("scanners", "screen", "backtest") else ("scanners" if scanners else "backtest"),
+        "screen": screen, **(_screen_ctx(screen) if screen and screen.status != "running" else {}),
+        "screen_day": ma_screen.last_session(load_settings(), now).isoformat(),
+        **_feed_ctx(username, ""),
         "scanners": [_scanner_view(s) for s in scanners], "max_scanners": ma_scanner.MAX_SCANNERS,
         "setup": dict(SETUP_DEFAULTS), "bt_setup": bt_setup, "exits": exits, "today": today.isoformat(),
         "start_default": (today - timedelta(days=DEFAULT_DAYS[bt_setup["tf"]])).isoformat(),
@@ -276,6 +281,88 @@ def trade_chart(symbol: str, user: dict = Depends(guard)):
         return JSONResponse({"error": "Kite isn't connected or the session has expired."}, status_code=400)
     except KiteError as e:
         return JSONResponse({"error": f"Couldn't get prices from Kite: {e}"}, status_code=400)
+
+
+# ---- scan now (end of day) ------------------------------------------------------------------
+
+def _screen_ctx(screen: ma_screen.Screen) -> dict:
+    p = screen.params
+    return {"sp": p, "screen_spec": universe.describe(p.spec), "screen_tf": ma_backtest.label(p.tf),
+            "groups": {k: screen.group(k) for k in ma_screen.GROUPS}, "group_names": ma_screen.GROUPS}
+
+
+def _screen_partial(screen: ma_screen.Screen) -> dict:
+    return {"screen": screen, **_options(), **(_screen_ctx(screen) if screen.status != "running" else {})}
+
+
+@router.post("/screen")
+async def screen_start(request: Request, user: dict = Depends(guard)):
+    form = await request.form()
+    try:
+        spec, tf, rules = _read_setup(form, ma_backtest.TIMEFRAMES)
+        try:
+            day = date.fromisoformat(form.get("day", ""))
+        except ValueError:
+            raise ValueError("Pick the day to scan as of.") from None
+        if day > now_ist().date():
+            raise ValueError("The day can't be in the future.")
+        stop = form.get("stop", "candle")
+        if stop not in crossover.STOPS:
+            raise ValueError("Pick the SL to show.")
+        if brokers.load(user["username"]).get("status") != "connected":
+            raise ValueError("Kite isn't connected. Log in on the Broker page first.")
+        screen = ma_screen.start(user["username"], ma_screen.Params(spec, tf, day, rules, stop, _rr(form.get("rr", "2"))))
+    except ValueError as e:
+        return fail(str(e))
+    return toast(render(request, "partials/ma_screen.html", _screen_partial(screen)),
+                 f"Scanning {screen.total} stock{'s' if screen.total != 1 else ''} as of {day:%-d %b}")
+
+
+@router.get("/screen/status")
+def screen_status(request: Request, user: dict = Depends(guard)):
+    screen = ma_screen.current(user["username"])
+    if not screen:
+        return HTMLResponse("")
+    return render(request, "partials/ma_screen.html", _screen_partial(screen))
+
+
+@router.post("/screen/cancel")
+def screen_cancel(user: dict = Depends(guard)):
+    ma_screen.cancel(user["username"])
+    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), "Stopping after the stock in progress")
+
+
+@router.get("/screen/chart")
+def screen_chart(symbol: str, user: dict = Depends(guard)):
+    screen = ma_screen.current(user["username"])
+    if not screen or screen.status == "running" or symbol not in screen.symbols:
+        return JSONResponse({"error": "That scan isn't available any more. Run it again."}, status_code=404)
+    try:
+        return JSONResponse(ma_screen.chart(screen, symbol))
+    except KiteAuthError:
+        return JSONResponse({"error": "Kite isn't connected or the session has expired."}, status_code=400)
+    except KiteError as e:
+        return JSONResponse({"error": f"Couldn't get prices from Kite: {e}"}, status_code=400)
+
+
+# ---- the signals feed --------------------------------------------------------------------------
+
+def _feed_ctx(username: str, day: str) -> dict:
+    now = now_ist()
+    days = ma_scanner.feed_days(username, now.date())
+    try:
+        day = date.fromisoformat(day).isoformat() if day else days[0]
+    except ValueError:
+        day = days[0]
+    if day not in days:  # an older day asked for by date
+        days.append(day)
+    return {"feed_day": day, "feed_days": days, "feed": ma_scanner.feed(username, day),
+            "feed_live": day == days[0] and is_market_open(load_settings(), now)}
+
+
+@router.get("/signals")
+def signals(request: Request, user: dict = Depends(guard), day: str = ""):
+    return render(request, "partials/ma_feed.html", {**_feed_ctx(user["username"], day), **_options()})
 
 
 # ---- live scanners --------------------------------------------------------------------------
