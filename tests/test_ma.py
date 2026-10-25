@@ -11,7 +11,7 @@ from app import brokers, config, crossover, ma_backtest, ma_scanner, notify, uni
 from app import kite as kite_mod
 from app.kite import Candle, Instrument
 from app.market import IST
-from app.routes import ma as routes
+from app.routes import indicators as routes
 from app.store import store
 
 INFY = Instrument("INFY", "INFOSYS", 408065, False)
@@ -117,7 +117,8 @@ def test_backtest_end_to_end(web, kite):
     csv = web.get("/ma/backtest/csv")
     assert csv.headers["content-type"].startswith("text/csv") and csv.text.startswith("symbol,side,status") and "rupees" in csv.text
     chart = web.get("/ma/backtest/chart?symbol=INFY").json()
-    assert chart["candles"][0]["time"] >= "2026-08-01" and chart["fast"] and chart["slow"] and chart["slow_label"] == "5 SMA"
+    assert chart["candles"][0]["time"] >= "2026-08-01" and chart["panel"] is None
+    assert [(o["label"], bool(o["points"])) for o in chart["overlays"]] == [("2 SMA", True), ("5 SMA", True)]
     assert web.get("/ma/backtest/chart?symbol=TCS").status_code == 404
     # The page shows the finished run too.
     assert "Download CSV" in web.get("/ma?tab=backtest").text
@@ -411,4 +412,84 @@ def test_daily_scanners_are_read_at_3_45(kite, sent, monkeypatch):
     # Scan now's default day switches at 3:45 too.
     assert ma_screen.last_session(s, datetime(2026, 9, 30, 15, 40, tzinfo=IST)).isoformat() == "2026-09-29"
     assert ma_screen.last_session(s, datetime(2026, 9, 30, 15, 45, tzinfo=IST)).isoformat() == "2026-09-30"
+    store.delete("ma_scanners", "s1")
+
+
+ADX_SETUP = {"universe_kind": "symbols", "symbols": "infy", "tf": "1d", "adx_len": "14", "atr_len": "14", "adx_min": "25",
+             "di_min": "25", "di_max": "20", "atr_mult": "1", "sides": "both"}
+
+
+def test_adx_trend_page_permissions_and_its_own_scanners(web, kite):
+    assert web.get("/adx").status_code == 403  # tara has only MA pullback
+    # The super admin sees both, under one heading in the sidebar.
+    web.post("/logout")
+    web.post("/login", data={"username": "boss", "password": "boss-pass-123"})
+    web.post("/admin/users", data={"username": "ravi", "name": "Ravi", "password": "ravi-pass-1", "modules": ["adx"]})
+    web.post("/logout")
+    web.post("/login", data={"username": "ravi", "password": "ravi-pass-1"})
+    store.put("brokers", "ravi", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    page = web.get("/adx?tab=scanners").text
+    assert "Indicator scanners" in page and "ADX trend" in page and 'name="adx_len"' in page and "MA pullback" not in page
+    assert web.get("/ma").status_code == 403
+    r = web.post("/adx/scanners", data={**ADX_SETUP, "stop": "candle", "rr": "2", "name": "Infy ADX"})
+    assert "Scanner saved" in r.headers["HX-Trigger"] and "Infy ADX" in r.text
+    sc = store.list("ma_scanners", user="ravi")[0]
+    assert sc["strategy"] == "adx" and sc["rules"]["adx_min"] == 25 and sc["rules"]["di_max"] == 20
+    assert ma_scanner.describe(sc) == "INFY · ADX 14 > 25 · DI 25 / 20 on daily candles"
+    # Bad thresholds are refused.
+    r = web.post("/adx/scanners", data={**ADX_SETUP, "di_max": "30", "stop": "candle", "rr": "2"})
+    assert "under the trending DI" in r.headers["HX-Trigger"]
+    store.delete("ma_scanners", sc["id"])
+
+
+def test_adx_backtest_and_scan_through_the_pages(web, kite):
+    web.post("/logout")
+    web.post("/login", data={"username": "boss", "password": "boss-pass-123"})
+    store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
+    assert "ADX trend" in web.get("/adx?tab=backtest").text and "Exit at the monthly expiry" in web.get("/adx?tab=backtest").text
+    r = web.post("/adx/backtest", data={**ADX_SETUP, "start": "2026-08-01", "end": "2026-09-30", "stop": "candle", "rr": "2",
+                                        "book": "50", "trend_exit": "1", "expiry_exit": "1", "fill": "open"})
+    assert "Backtest started on 1 stock" in r.headers["HX-Trigger"]
+    for _ in range(100):
+        if ma_backtest.current("boss", "adx").status != "running":
+            break
+        clock.sleep(0.05)
+    run = ma_backtest.current("boss", "adx")
+    assert run.status == "done" and run.params.strategy == "adx" and run.params.exits.trend_exit and run.params.exits.expiry_exit
+    assert ma_backtest.current("boss", "ma") is None or ma_backtest.current("boss", "ma") is not run  # kept apart from MA runs
+    html = web.get("/adx/backtest/status").text
+    assert "Backtest with real Kite prices" in html and "SL 1 ATR (14) past the signal candle" in html
+    chart = web.get("/adx/backtest/chart?symbol=INFY").json()
+    assert chart["overlays"] == [] and [ln["label"] for ln in chart["panel"]["lines"]] == ["ADX", "+DI", "−DI"]
+    assert chart["panel"]["levels"] == [20, 25]
+    r = web.post("/adx/screen", data={**ADX_SETUP, "day": "2026-09-30", "stop": "candle", "rr": "2"})
+    assert "Scanning 1 stock" in r.headers["HX-Trigger"]
+    from app import ma_screen
+    for _ in range(100):
+        if ma_screen.current("boss", "adx").status != "running":
+            break
+        clock.sleep(0.05)
+    assert ma_screen.current("boss", "adx").status == "done"
+    assert "Signal candle formed" in web.get("/adx/screen/status").text
+
+
+def test_live_adx_scanner_sends_a_signal_candle_setup(kite, sent, monkeypatch):
+    from app import adx
+    from app.market import load_settings
+    s = load_settings()
+    n = len(ROWS)
+    # Quiet throughout, then the last candle (30 Sep, high 166.5, low 164) meets all three: a fresh signal candle.
+    monkeypatch.setattr(adx, "indicators", lambda c, a, b: {
+        "adx": [20.0] * (len(c) - 1) + [30.0], "pdi": [20.0] * (len(c) - 1) + [30.0], "mdi": [18.0] * (len(c) - 1) + [10.0],
+        "atr": [2.0] * len(c)})
+    sc = _scanner(strategy="adx", name="Infy ADX", rules={"adx_len": 14, "atr_len": 14, "adx_min": 25, "di_min": 25, "di_max": 20,
+                                                            "atr_mult": 1, "sides": "both"})
+    at = datetime(2026, 9, 30, 15, 46, tzinfo=IST)
+    sc = ma_scanner.evaluate(sc, kite, s, at, s.close_at(at))
+    assert sent[-1][0] == "📈 INFY: buy above 166.50" and "Signal candle closed" in sent[-1][1]
+    assert "INFY buy above ₹166.50 · SL ₹162.00 · target ₹175.50 (1:2)" in sent[-1][1]
+    assert sc["state"]["INFY"]["candle_stop"] == 162 and n == len(ROWS)
+    items = ma_scanner.feed("tara", "2026-09-30", "adx")
+    assert items[0]["strategy"] == "adx" and items[0]["scanner"] == "Infy ADX"
+    assert all(i.get("strategy", "ma") == "ma" for i in ma_scanner.feed("tara", "2026-09-30", "ma"))
     store.delete("ma_scanners", "s1")

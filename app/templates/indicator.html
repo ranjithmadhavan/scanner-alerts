@@ -1,14 +1,15 @@
 {% extends "base.html" %}
-{% block title %}MA crossover{% endblock %}
+{% block title %}{{ strategy.name }}{% endblock %}
 {% block width %}max-w-6xl{% endblock %}
 {% block content %}
-<div class="flex flex-wrap items-end justify-between gap-4">
+<div class="flex flex-wrap items-end justify-between gap-4" data-indicator-base="{{ base }}">
   <div class="min-w-0">
-    <h1 class="text-4xl font-bold">MA crossover</h1>
-    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">After a fast moving average crosses the slow one, wait for a pullback candle and enter when price trades beyond it. Scan a stock or a whole index live, or see how it would have gone.</p>
+    <p class="text-sm font-medium text-ink-soft">Indicator scanners</p>
+    <h1 class="text-4xl font-bold">{{ strategy.name }}</h1>
+    <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">{{ strategy.blurb }} Scan a stock or a whole index live, or see how it would have gone.</p>
   </div>
   {% if is_admin %}
-  <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="/ma/lists/refresh" hx-swap="none"
+  <button type="button" class="btn-outline htmx-busy shrink-0" hx-post="{{ base }}/lists/refresh" hx-swap="none"
           title="Stock lists refresh on their own once a day: Kite's after 8:30 AM, NSE's Nifty lists the first time they're needed. This downloads them all now.">{{ icon('refresh', 'h-4 w-4') }} Refresh stock lists</button>
   {% endif %}
 </div>
@@ -22,7 +23,7 @@
 
 <nav class="mt-7 inline-flex rounded-full bg-white p-1 ring-1 ring-line" aria-label="Section">
   {% for key, text in [('scanners', 'Live scanners'), ('screen', 'Scan now'), ('backtest', 'Backtest')] %}
-  <a href="/ma?tab={{ key }}" class="rounded-full px-4 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if tab == key else 'text-ink-soft hover:text-ink' }}"
+  <a href="{{ base }}?tab={{ key }}" class="rounded-full px-4 py-1.5 text-sm font-semibold transition {{ 'bg-ink text-white' if tab == key else 'text-ink-soft hover:text-ink' }}"
      {% if tab == key %}aria-current="page"{% endif %}>{{ text }}{% if key == 'scanners' and scanners %} <span class="num opacity-70">{{ scanners|length }}</span>{% endif %}</a>
   {% endfor %}
 </nav>
@@ -30,7 +31,7 @@
 {% if tab == 'scanners' %}
 {% include "partials/ma_feed.html" %}
 
-<form id="new-scanner" class="ma-form panel mt-5 shadow-soft" hx-post="/ma/scanners" hx-target="#ma-scanners" hx-swap="outerHTML">
+<form id="new-scanner" class="ma-form panel mt-5 shadow-soft" hx-post="{{ base }}/scanners" hx-target="#ma-scanners" hx-swap="outerHTML">
   <details class="group/new" {{ 'open' if not scanners }}>
   <summary class="flex cursor-pointer items-center gap-3 rounded-3xl px-6 py-5 transition hover:bg-canvas/50 sm:px-7">
     <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white transition group-open/new:rotate-45">{{ icon('plus', 'h-4 w-4') }}</span>
@@ -62,7 +63,7 @@
       <span><span class="text-[15px] font-semibold">Tell me about gap entries too</span>
         <span class="block text-[13px] leading-snug text-ink-soft">When a session opens beyond a level set on an earlier day (likely on daily candles). Unticked, those setups are dropped without a message.</span></span>
     </label>
-    <p class="mt-3 text-[13px] text-ink-soft">You'll get a message when a trigger candle closes (enter beyond ₹…, SL, target) and when its level is traded, within a minute or so.</p>
+    <p class="mt-3 text-[13px] text-ink-soft">You'll get a message when a {{ strategy.setup_word|lower }} closes (enter beyond ₹…, SL, target) and when its level is traded, within a minute or so.</p>
 
     {% with hooks=[], hook_payload='', prefix='sc-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
 
@@ -90,8 +91,8 @@
 {% include "partials/ma_scanners.html" %}
 
 {% elif tab == 'screen' %}
-<form id="ma-screen-form" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/screen" hx-target="#ma-screen" hx-swap="outerHTML">
-  <p class="mb-5 max-w-2xl text-[15px] text-ink-soft">Which stocks, at a day's close, have just triggered, have just formed a trigger candle, or have one waiting for its entry. Run it after the close for the next day's list.</p>
+<form id="ma-screen-form" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="{{ base }}/screen" hx-target="#ma-screen" hx-swap="outerHTML">
+  <p class="mb-5 max-w-2xl text-[15px] text-ink-soft">Which stocks, at a day's close, have just triggered, have just formed a {{ strategy.setup_word|lower }}, or have one waiting for its entry. Run it after the close for the next day's list.</p>
   {% with tfs=backtest_tfs, prefix='sn-', setup=bt_setup %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
   <div class="mt-6 grid gap-5 sm:grid-cols-[180px_1.4fr_140px]">
     <div>
@@ -113,7 +114,7 @@
   {% for ch in channels if ch.ready %}<input type="hidden" name="channels" value="{{ ch.key }}">{% endfor %}
   <input type="hidden" name="gap_alerts" value="1">
   <div class="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-line pt-5">
-    <button type="button" class="btn-outline htmx-busy" hx-post="/ma/scanners" hx-include="#ma-screen-form" hx-swap="none"
+    <button type="button" class="btn-outline htmx-busy" hx-post="{{ base }}/scanners" hx-include="#ma-screen-form" hx-swap="none"
             title="Save these settings as a live scanner (it sends to every channel you've set up)">Start a live scanner with these settings</button>
     <button class="btn-primary htmx-busy">{{ icon('refresh', 'h-4 w-4') }} Scan now</button>
   </div>
@@ -121,7 +122,7 @@
 {% if screen %}{% include "partials/ma_screen.html" %}{% else %}<div id="ma-screen"></div>{% endif %}
 
 {% else %}
-<form id="ma-backtest" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="/ma/backtest" hx-target="#ma-run" hx-swap="outerHTML">
+<form id="ma-backtest" class="ma-form panel mt-5 p-6 shadow-soft sm:p-7" hx-post="{{ base }}/backtest" hx-target="#ma-run" hx-swap="outerHTML">
   {% with tfs=backtest_tfs, prefix='bt-', setup=bt_setup %}{% include "partials/ma_setup_fields.html" %}{% endwith %}
 
   <h2 class="mt-7 text-lg font-bold">Period</h2>
@@ -149,7 +150,7 @@
       <input id="bt-book" name="book" type="number" min="0" max="100" step="5" value="{{ exits.book }}" class="field num">
     </div>
   </div>
-  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Risk (1R) is entry to SL. With the slow MA as SL, it's entry to the MA at entry, and the trade is closed when a candle closes beyond the MA. Book 100% for a plain target; less, and the rest runs on the trail and exits below. 0% means no target.</p>
+  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Risk (1R) is entry to SL.{% if strategy.key == 'ma' %} With the slow MA as SL, it's entry to the MA at entry, and the trade is closed when a candle closes beyond the MA.{% endif %} Book 100% for a plain target; less, and the rest runs on the trail and exits below. 0% means no target.</p>
 
   <div class="mt-5 grid gap-5 sm:grid-cols-[1.4fr_1fr]">
     <div>
@@ -171,11 +172,13 @@
       <span><span class="text-[15px] font-semibold">Breakeven at 1R</span>
         <span class="block text-[13px] leading-snug text-ink-soft">Once price has gone 1R your way, the SL moves to entry and the trail starts.</span></span>
     </label>
+    {% for name, (title, help) in own_exits.items() %}
     <label class="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-line px-4 py-3">
-      <input type="checkbox" name="ma_exit" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if exits.ma_exit }}>
-      <span><span class="text-[15px] font-semibold">Full exit on a close beyond the slow MA</span>
-        <span class="block text-[13px] leading-snug text-ink-soft">A candle closing below it (above, for a sell) closes everything at that close.</span></span>
+      <input type="checkbox" name="{{ name }}" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if exits[name] }}>
+      <span><span class="text-[15px] font-semibold">{{ title }}</span>
+        <span class="block text-[13px] leading-snug text-ink-soft">{{ help }}</span></span>
     </label>
+    {% endfor %}
   </div>
   <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-line px-4 py-3" data-ma-intraday>
     <label class="flex cursor-pointer items-center gap-2.5 text-[15px] font-semibold">

@@ -1,11 +1,11 @@
 {# A backtest in progress: polls itself until the run is done, then the results replace it. #}
 {% set pct = (run.done / run.total * 100) if run.total else 0 %}
-<div id="ma-run" class="panel mt-5 px-6 py-5" hx-get="/ma/backtest/status" hx-trigger="every 1500ms" hx-swap="outerHTML" aria-live="polite">
+<div id="ma-run" class="panel mt-5 px-6 py-5" hx-get="{{ base }}/backtest/status" hx-trigger="every 1500ms" hx-swap="outerHTML" aria-live="polite">
   <div class="flex flex-wrap items-center gap-3">
     <span class="spinner" aria-hidden="true"></span>
     <p class="text-[15px]"><span class="font-semibold">Backtesting {{ run.total }} stock{{ 's' if run.total != 1 }}</span>
       <span class="num text-ink-soft">· {{ run.done }} done · {{ run.trades|length }} trade{{ 's' if run.trades|length != 1 }} so far</span></p>
-    <button type="button" class="btn-quiet ml-auto px-3 py-1.5 text-sm" hx-post="/ma/backtest/cancel" hx-swap="none">Cancel</button>
+    <button type="button" class="btn-quiet ml-auto px-3 py-1.5 text-sm" hx-post="{{ base }}/backtest/cancel" hx-swap="none">Cancel</button>
   </div>
   <div class="mt-3 h-2 overflow-hidden rounded-full bg-canvas" role="progressbar" aria-valuemin="0" aria-valuemax="{{ run.total }}" aria-valuenow="{{ run.done }}">
     <div class="h-full rounded-full bg-peacock transition-[width] duration-700" style="width: {{ '%.1f'|format(pct) }}%"></div>

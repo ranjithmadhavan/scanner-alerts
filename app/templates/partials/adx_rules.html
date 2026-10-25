@@ -1,0 +1,40 @@
+{# ADX trend's own fields: candle, the ADX/DMI and ATR periods, the three thresholds and the ATR multiple for the SL. #}
+<div class="mt-5 grid gap-5 sm:grid-cols-[180px_1fr_1fr_1fr]">
+  <div>
+    <label for="{{ prefix }}tf" class="label">Candle</label>
+    <select id="{{ prefix }}tf" name="tf" class="field" data-ma-tf>
+      {% for t in tfs %}<option value="{{ t }}" {{ 'selected' if t == setup.tf }}>{{ tf_label(t) }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="{{ prefix }}adx-len" class="label">ADX / DMI period</label>
+    <input id="{{ prefix }}adx-len" name="adx_len" type="number" min="2" max="100" step="1" required value="{{ setup.adx_len }}" class="field num">
+  </div>
+  <div>
+    <label for="{{ prefix }}atr-len" class="label">ATR period</label>
+    <input id="{{ prefix }}atr-len" name="atr_len" type="number" min="1" max="100" step="1" required value="{{ setup.atr_len }}" class="field num">
+  </div>
+  <div>
+    <label for="{{ prefix }}atr-mult" class="label">SL: ATRs past the candle</label>
+    <input id="{{ prefix }}atr-mult" name="atr_mult" type="number" min="0" max="10" step="0.1" required value="{{ setup.atr_mult }}" class="field num">
+  </div>
+</div>
+
+<fieldset class="mt-5">
+  <legend class="label">Signal candle: all three on its close</legend>
+  <div class="grid gap-2 sm:grid-cols-3">
+    <label class="flex items-center gap-2 rounded-2xl border border-line px-4 py-3">
+      <span class="text-[15px] font-semibold">ADX above</span>
+      <input name="adx_min" type="number" min="1" max="100" step="0.5" required value="{{ setup.adx_min }}" aria-label="ADX above" class="field num ml-auto w-20 py-1.5">
+    </label>
+    <label class="flex items-center gap-2 rounded-2xl border border-line px-4 py-3">
+      <span class="text-[15px] font-semibold">Trending DI above</span>
+      <input name="di_min" type="number" min="1" max="100" step="0.5" required value="{{ setup.di_min }}" aria-label="Trending DI above" class="field num ml-auto w-20 py-1.5">
+    </label>
+    <label class="flex items-center gap-2 rounded-2xl border border-line px-4 py-3">
+      <span class="text-[15px] font-semibold">Other DI below</span>
+      <input name="di_max" type="number" min="0" max="100" step="0.5" required value="{{ setup.di_max }}" aria-label="Other DI below" class="field num ml-auto w-20 py-1.5">
+    </label>
+  </div>
+  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Up: +DI over the trending level and −DI under the other; down, the mirror. While all three keep holding, each newer candle becomes the signal candle; the entry is a trade beyond its high (up) or low (down), the SL its other end plus the ATRs above. One trade per trending phase: after an entry, nothing more until the conditions have failed and come back. A phase already under way when the candles start gives no setup.</p>
+</fieldset>

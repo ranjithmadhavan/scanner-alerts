@@ -1,4 +1,4 @@
-{# A finished (or cancelled, or failed) MA crossover backtest. #}
+{# A finished (or cancelled, or failed) backtest of an indicator strategy. #}
 {% set s = rep.stats %}
 {% set fmt = '%-d %b %Y' if p.tf == '1d' else '%-d %b, %-I:%M %p' %}
 {% macro signed(v, digits=2) -%}{{ '+' if v > 0 else '−' if v < 0 else '' }}{{ ('%.' ~ digits ~ 'f')|format(v|abs) }}{%- endmacro %}
@@ -8,7 +8,7 @@
       <p class="text-sm font-medium text-ink-soft">Backtest with real Kite prices · {{ p.start.strftime('%-d %b %Y') }} to {{ p.end.strftime('%-d %b %Y') }}</p>
       <p class="mt-1 font-display text-xl font-bold">{{ spec_label }}: {{ s.trades }} closed trade{{ 's' if s.trades != 1 }}</p>
     </div>
-    {% if run.trades %}<a href="/ma/backtest/csv" class="btn-outline shrink-0 px-4 py-2 text-sm">Download CSV</a>{% endif %}
+    {% if run.trades %}<a href="{{ base }}/backtest/csv" class="btn-outline shrink-0 px-4 py-2 text-sm">Download CSV</a>{% endif %}
   </div>
 
   {% if run.status == 'failed' %}
@@ -19,12 +19,14 @@
 
   <p class="mt-3 flex flex-wrap gap-2 text-sm">
     <span class="rounded-full bg-peacock-50 px-2.5 py-0.5 font-medium text-peacock">{{ p.rules.label }} on {{ tf_name|lower }} candles</span>
-    <span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">{{ touches[p.rules.touch] }} · {{ sides[p.rules.sides]|lower }} · {{ ('first entry per crossover' ~ (', a second after a stop-out' if p.rules.second else '')) if p.rules.once else 're-entries in the same trend' }}</span>
-    <span class="rounded-full bg-fall-50 px-2.5 py-0.5 font-medium text-fall">SL: {{ stops[p.exits.stop]|lower }}</span>
+    <span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">{{ p.rules.summary }}</span>
+    <span class="rounded-full bg-fall-50 px-2.5 py-0.5 font-medium text-fall">SL: {{ stops[p.exits.stop] }}</span>
     {% if p.exits.book %}<span class="rounded-full bg-rise-50 px-2.5 py-0.5 font-medium text-rise">{{ p.exits.book }}% at 1:{{ '%g'|format(p.exits.rr) }}</span>{% endif %}
     {% if p.exits.trail %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Trail: {{ trails[p.exits.trail]|lower }}</span>{% endif %}
     {% if p.exits.breakeven %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Breakeven at 1R</span>{% endif %}
     {% if p.exits.ma_exit %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Exit on a close beyond the slow MA</span>{% endif %}
+    {% if p.exits.trend_exit %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Exit when the trend ends</span>{% endif %}
+    {% if p.exits.expiry_exit %}<span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Exit at the monthly expiry</span>{% endif %}
     <span class="rounded-full bg-canvas px-2.5 py-0.5 font-medium text-ink-soft">Gap entries: {{ fills[p.exits.fill]|lower }}</span>
     {% if p.exits.square_off %}<span class="rounded-full bg-marigold-50 px-2.5 py-0.5 font-medium text-marigold-dark">Intraday: squared off at {{ p.exits.square_off.strftime('%-I:%M %p') }}</span>{% endif %}
   </p>
@@ -58,10 +60,10 @@
   <div id="ma-trade" class="mt-4 rounded-2xl border border-line p-2" hidden>
     <p class="flex flex-wrap items-center gap-x-3 px-2 pt-1 text-sm">
       <span id="ma-trade-title" class="font-semibold"></span>
-      <span class="text-ink-soft"><span class="inline-block h-0.5 w-4 bg-marigold align-middle"></span> <span id="ma-fast-label"></span>
-        <span class="ml-2 inline-block h-0.5 w-4 bg-peacock align-middle"></span> <span id="ma-slow-label"></span></span>
+      <span id="ma-trade-legend" class="text-ink-soft"></span>
     </p>
     <div id="ma-trade-chart" class="h-[380px] w-full"></div>
+    <div id="ma-trade-panel" class="h-[150px] w-full border-t border-line" hidden></div>
     <p id="ma-trade-note" class="px-2 pb-1 pt-2 text-[13px] text-ink-soft">Arrows mark entries; circles mark exits. The selected trade's entry, SL and target are drawn across.</p>
   </div>
   <script type="application/json" id="ma-data">{{ chart_json|tojson }}</script>
@@ -146,5 +148,5 @@
     {% if run.no_data %}Too little history for the averages: {{ run.no_data|join(', ') }}.{% endif %}
   </p>
   {% endif %}
-  <p class="mt-3 text-[13px] leading-relaxed text-ink-soft">One position per stock at a time: an entry while a trade is open is passed over.{% if p.rules.once %} Each crossover gives one entry at most, taken or not (a skipped gap still uses it){% if p.rules.second %}, plus a second if the first ended at its SL with nothing booked{% endif %}.{% endif %} A gap entry is filled as chosen above. The SL is checked before the target, so a candle that trades both counts as the SL; on the entry candle, trading beyond the SL counts as stopped (it can't be told whether that came before the entry), while the target counts only on a close beyond it. A gap through either fills at the open. Close-based exits (slow MA, fast-MA trail, square-off) are at that candle's close. Trails and breakeven move at each close. Times are the start of the candle. No costs or slippage. Nothing is saved; the latest run stays here until the app restarts.</p>
+  <p class="mt-3 text-[13px] leading-relaxed text-ink-soft">One position per stock at a time: an entry while a trade is open is passed over.{% if p.rules.once %} Each {{ 'trending phase' if strategy.key == 'adx' else 'crossover' }} gives one entry at most, taken or not (a skipped gap still uses it){% if p.rules.second %}, plus a second if the first ended at its SL with nothing booked{% endif %}.{% endif %} A gap entry is filled as chosen above. The SL is checked before the target, so a candle that trades both counts as the SL; on the entry candle, trading beyond the SL counts as stopped (it can't be told whether that came before the entry), while the target counts only on a close beyond it. A gap through either fills at the open. Close-based exits (slow MA, fast-MA trail, square-off) are at that candle's close. Trails and breakeven move at each close. Times are the start of the candle. No costs or slippage. Nothing is saved; the latest run stays here until the app restarts.</p>
 </div>

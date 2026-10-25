@@ -20,6 +20,7 @@ candles, oldest first.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import time, timedelta
 
@@ -80,6 +81,13 @@ class Rules:
         """'9 EMA / 21 SMA'"""
         return f"{self.fast_len} {MA_KINDS[self.fast_kind]} / {self.slow_len} {MA_KINDS[self.slow_kind]}"
 
+    @property
+    def summary(self) -> str:
+        """'Must touch the fast MA · buys only · first entry per crossover, a second after a stop-out'"""
+        entries = ("first entry per crossover" + (", a second after a stop-out" if self.second else "")) if self.once \
+            else "re-entries in the same trend"
+        return f"{TOUCH[self.touch]} · {SIDES[self.sides].lower()} · {entries}"
+
     def warmup(self) -> int:
         """Candles to read before the first one that matters, so an EMA has settled."""
         return max(self.fast_len, self.slow_len) * 3 + 10
@@ -87,6 +95,17 @@ class Rules:
     def averages(self, candles: list[Candle]) -> tuple[list[float | None], list[float | None]]:
         closes = [c.close for c in candles]
         return average(self.fast_kind, closes, self.fast_len), average(self.slow_kind, closes, self.slow_len)
+
+    def prepare(self, candles: list[Candle]) -> "Prepared":
+        fast, slow = self.averages(candles)
+        return Prepared(walk(candles, self, fast, slow), fast, slow)
+
+    def series(self, candles: list[Candle]) -> dict:
+        """What a chart draws besides the candles: both averages over them."""
+        fast, slow = self.averages(candles)
+        return {"overlays": [{"label": f"{self.fast_len} {MA_KINDS[self.fast_kind]}", "color": "#E9A23B", "values": fast},
+                             {"label": f"{self.slow_len} {MA_KINDS[self.slow_kind]}", "color": "#0F5E5C", "values": slow}],
+                "panel": None}
 
 
 @dataclass(frozen=True)
@@ -110,7 +129,7 @@ class Entry:
 
 
 @dataclass
-class Walk:
+class Walk:  # what a strategy's walk over the candles found (crossovers: when each trending phase began)
     entries: list[Entry] = field(default_factory=list)
     crossovers: list[tuple[int, str]] = field(default_factory=list)  # (candle index, "buy" | "sell")
     pending: Setup | None = None  # waiting for its entry after the last candle
@@ -164,6 +183,8 @@ class Exits:
     ma_exit: bool = False  # exit everything when a candle closes beyond the slow MA
     fill: str = "open"  # key of FILLS: where a gap entry fills
     square_off: time | None = None  # intraday: close what is left at the last candle before this time
+    trend_exit: bool = False  # close what is left when the strategy's trend ends (ADX trend)
+    expiry_exit: bool = False  # close what is left at the monthly expiry's close (ADX trend)
 
 
 @dataclass(frozen=True)
@@ -175,7 +196,8 @@ class Fill:
 
 
 EXIT_NAMES = {"stop": "SL", "breakeven": "Breakeven", "trail": "Trailing SL", "target": "Target", "slow_ma": "Closed beyond slow MA",
-              "ma_exit": "Closed beyond slow MA", "fast_ma": "Closed beyond fast MA", "square_off": "Squared off"}
+              "ma_exit": "Closed beyond slow MA", "fast_ma": "Closed beyond fast MA", "square_off": "Squared off",
+              "trend_end": "Trend ended", "expiry": "Expiry close"}
 
 
 @dataclass
@@ -246,7 +268,8 @@ def _last_before(candles: list[Candle], j: int, at: time, minutes: int) -> bool 
     return True if (c.start + timedelta(minutes=minutes)).time() >= at else None
 
 
-def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int = 0) -> Trade:
+def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int = 0,
+             ends: Callable[[int, "Entry", Exits], str | None] | None = None) -> Trade:
     """Follow an entry through the candles. Prices are checked in this order on each candle: the stop (a gap
     through it fills at the open), then the target (a gap past it fills at the open), then the exits on a
     close. A candle that trades both the stop and the target counts as the stop. The entry candle is read the
@@ -298,6 +321,8 @@ def simulate(entry: Entry, candles: list[Candle], fast: list, slow: list, x: Exi
             reason = "slow_ma" if x.stop == "slow_ma" else "ma_exit"
         elif x.trail == "fast_ma" and armed and fast[j] is not None and _beyond(c.close, fast[j], buy):
             reason = "fast_ma"
+        elif ends and (own := ends(j, entry, x)):  # the strategy's own exits on a close
+            reason = own
         elif intraday:
             last = _last_before(candles, j, x.square_off, minutes)
             if last is None:
@@ -327,7 +352,18 @@ def stopped_out(t: Trade) -> bool:
     return t.status == "closed" and all(f.reason in ("stop", "slow_ma") for f in t.fills) and t.r < 0
 
 
-def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int) -> list[Trade]:
+@dataclass
+class Prepared:
+    """A strategy's reading of some candles: its walk, the two averages the MA exits read (all None for a strategy
+    without them), and its own exits on a close, if any."""
+    walk: Walk
+    fast: list
+    slow: list
+    ends: Callable[[int, Entry, Exits], str | None] | None = None
+
+
+def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: Exits, minutes: int,
+                    ends=None) -> list[Trade]:
     """One position at a time, from the first candle: a crossover's first entry, and a second only once the first
     has been stopped out. Never a third."""
     out: list[Trade] = []
@@ -337,7 +373,7 @@ def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: E
         before = per.get(e.setup.crossed, [])
         if e.index < free_from or len(before) >= 2 or (before and not stopped_out(before[-1])):
             continue
-        t = simulate(e, candles, fast, slow, x, minutes)
+        t = simulate(e, candles, fast, slow, x, minutes, ends)
         out.append(t)
         per.setdefault(e.setup.crossed, []).append(t)
         if t.status == "open":
@@ -347,15 +383,15 @@ def _second_chances(w: Walk, candles: list[Candle], fast: list, slow: list, x: E
     return out
 
 
-def scan(candles: list[Candle], rules: Rules, x: Exits) -> tuple[list[Entry], Setup | None, list, list]:
+def scan(candles: list[Candle], rules, x: Exits) -> tuple[list[Entry], Setup | None, list, list]:
     """For a live scanner: the entries to report and the setup still waiting for its entry, with both averages.
     With a second chance, the first entry is followed as a trade (with `x`) to know whether it was stopped out,
-    and nothing is set up while it is still running."""
-    fast, slow = rules.averages(candles)
-    w = walk(candles, rules, fast, slow)
+    and nothing is set up while it is still running. `rules` is any strategy's (MA crossover, ADX trend)."""
+    p = rules.prepare(candles)
+    w, fast, slow = p.walk, p.fast, p.slow
     if not (rules.once and rules.second):
         return w.entries, w.pending, fast, slow
-    taken = _second_chances(w, candles, fast, slow, x, 0)
+    taken = _second_chances(w, candles, fast, slow, x, 0, p.ends)
     pending = w.pending
     if pending:
         before = [t for t in taken if t.entry.setup.crossed == pending.crossed]
@@ -364,20 +400,20 @@ def scan(candles: list[Candle], rules: Rules, x: Exits) -> tuple[list[Entry], Se
     return [t.entry for t in taken], pending, fast, slow
 
 
-def trades(candles: list[Candle], rules: Rules, x: Exits, minutes: int = 0, start: int = 0) -> tuple[list[Trade], Walk]:
+def trades(candles: list[Candle], rules, x: Exits, minutes: int = 0, start: int = 0) -> tuple[list[Trade], Walk]:
     """Every entry from candle `start` on, one position at a time: an entry while a trade is still open is
     passed over, and an open trade at the end blocks everything after it. With a second chance after a stop-out,
-    trades before `start` are followed too, since they decide what is allowed after it."""
-    fast, slow = rules.averages(candles)
-    w = walk(candles, rules, fast, slow)
+    trades before `start` are followed too, since they decide what is allowed after it. `rules` is any strategy's."""
+    p = rules.prepare(candles)
+    w, fast, slow = p.walk, p.fast, p.slow
     if rules.once and rules.second:
-        return [t for t in _second_chances(w, candles, fast, slow, x, minutes) if t.entry.index >= start], w
+        return [t for t in _second_chances(w, candles, fast, slow, x, minutes, p.ends) if t.entry.index >= start], w
     out: list[Trade] = []
     free_from = start
     for e in w.entries:
         if e.index < free_from:
             continue
-        t = simulate(e, candles, fast, slow, x, minutes)
+        t = simulate(e, candles, fast, slow, x, minutes, p.ends)
         out.append(t)
         if t.status == "open":
             break

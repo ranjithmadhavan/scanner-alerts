@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 
 from app import config, crossover, ma_backtest, notify, universe, webhooks
 from app.crossover import Rules
+from app.strategies import STRATEGIES, rules_from
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.market import IST, MarketSettings, in_scan_window, is_market_open, is_trading_day, load_settings, now_ist
 from app.ma_backtest import candle_end, last_boundary
@@ -64,8 +65,12 @@ def limit_problem(n: int, tf: str) -> str | None:
     return None
 
 
-def rules_of(sc: dict) -> Rules:
-    return Rules(**sc["rules"])
+def strategy_of(sc: dict) -> str:
+    return sc.get("strategy", "ma")  # scanners saved before ADX trend existed are MA crossover ones
+
+
+def rules_of(sc: dict):
+    return rules_from(strategy_of(sc), sc["rules"])
 
 
 def exits_of(sc: dict) -> crossover.Exits:
@@ -146,11 +151,11 @@ def message(sc: dict, kind: str, items: list[dict], now: datetime) -> tuple[str,
     first = items[0]
     if kind == "setup":
         subject = (f"📈 {first['symbol']}: {first['side']} {'above' if first['side'] == 'buy' else 'below'} {first['level']:,.2f}"
-                   if len(items) == 1 else f"📈 {len(items)} new MA setups · {sc['name']}")
-        intro = "Trigger candle closed. Enter on a trade beyond the level:"
+                   if len(items) == 1 else f"📈 {len(items)} new {STRATEGIES[strategy_of(sc)].name} setups · {sc['name']}")
+        intro = f"{STRATEGIES[strategy_of(sc)].setup_word} closed. Enter on a trade beyond the level:"
     else:
         subject = (f"🚀 {first['symbol']} {first['side']} triggered at {first['level']:,.2f}{' (gap)' if first.get('gap') else ''}"
-                   if len(items) == 1 else f"🚀 {len(items)} MA entries triggered · {sc['name']}")
+                   if len(items) == 1 else f"🚀 {len(items)} {STRATEGIES[strategy_of(sc)].name} entries triggered · {sc['name']}")
         intro = "Entry level traded:"
     lines = [f"{sc['name']}: {describe(sc)}", intro] + [_line(sc, i) for i in items[:MAX_LINES]]
     if len(items) > MAX_LINES:
@@ -161,7 +166,8 @@ def message(sc: dict, kind: str, items: list[dict], now: datetime) -> tuple[str,
 
 def hook_body(sc: dict, kind: str, items: list[dict], now: datetime, test: bool = False) -> dict:
     return {"event": "ma_setups" if kind == "setup" else "ma_entries", "test": test, "scanner_id": sc["id"],
-            "scanner": sc["name"], "timeframe": sc["tf"], "averages": rules_of(sc).label, "time": now.isoformat(),
+            "scanner": sc["name"], "strategy": strategy_of(sc), "timeframe": sc["tf"], "averages": rules_of(sc).label,
+            "time": now.isoformat(),
             "signals": [{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "trigger_at")}
                         for i in items],
             "payload": json.loads(sc["webhook_payload"]) if sc.get("webhook_payload") else None}
@@ -179,6 +185,7 @@ def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
     day = now.astimezone(IST).date().isoformat()
     doc_id = f"{sc['user']}:{day}"
     new = [{"at": now.isoformat(), "kind": kind, "scanner_id": sc["id"], "scanner": sc["name"], "tf": sc["tf"],
+            "strategy": strategy_of(sc),
             **{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "trigger_at")}}
            for i in items]
     with _feed_lock:
@@ -186,9 +193,12 @@ def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
         store.put(FEED, doc_id, {**doc, "items": (doc["items"] + new)[-FEED_MAX:]})
 
 
-def feed(username: str, day: str) -> list[dict]:
-    """One day's signals, newest first."""
-    return sorted((store.get(FEED, f"{username}:{day}") or {}).get("items", []), key=lambda i: i["at"], reverse=True)
+def feed(username: str, day: str, strategy: str | None = None) -> list[dict]:
+    """One day's signals, newest first (only one strategy's, if given)."""
+    items = (store.get(FEED, f"{username}:{day}") or {}).get("items", [])
+    if strategy:
+        items = [i for i in items if i.get("strategy", "ma") == strategy]
+    return sorted(items, key=lambda i: i["at"], reverse=True)
 
 
 def feed_days(username: str, today) -> list[str]:

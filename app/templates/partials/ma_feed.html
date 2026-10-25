@@ -1,20 +1,20 @@
 {# What the live scanners found, newest first. Refreshes itself every 30 seconds while the market is open (today only). #}
 <section id="ma-feed" class="panel mt-5 overflow-hidden"
-         {% if feed_live %}hx-get="/ma/signals?day={{ feed_day }}" hx-trigger="every 30s" hx-swap="outerHTML"{% endif %}>
+         {% if feed_live %}hx-get="{{ base }}/signals?day={{ feed_day }}" hx-trigger="every 30s" hx-swap="outerHTML"{% endif %}>
   <div class="flex flex-wrap items-center gap-3 px-6 pb-3 pt-5">
     <h2 class="text-xl font-bold">Signals</h2>
     {% if feed_live %}<span class="flex items-center gap-1.5 text-sm text-ink-soft"><span class="h-2 w-2 rounded-full bg-rise breathe"></span> live</span>{% endif %}
     <span class="num text-sm text-ink-soft">{{ feed|length }} signal{{ 's' if feed|length != 1 }}</span>
     {% if feed_days|length > 1 %}
     <select name="day" class="field ml-auto w-auto py-1.5 pr-9 text-sm" aria-label="Day"
-            hx-get="/ma/signals" hx-target="#ma-feed" hx-swap="outerHTML" hx-trigger="change">
+            hx-get="{{ base }}/signals" hx-target="#ma-feed" hx-swap="outerHTML" hx-trigger="change">
       {% for d in feed_days %}<option value="{{ d }}" {{ 'selected' if d == feed_day }}>{{ 'Today' if loop.first else d }}</option>{% endfor %}
     </select>
     {% endif %}
   </div>
   {% if not feed %}
   <p class="border-t border-line px-6 py-6 text-[15px] text-ink-soft">
-    {%- if feed_day == feed_days[0] %}Nothing yet today. Setups show here when a trigger candle closes, entries when the level trades: the same moment the message goes out.
+    {%- if feed_day == feed_days[0] %}Nothing yet today. Setups show here when a {{ strategy.setup_word|lower }} closes, entries when the level trades: the same moment the message goes out.
     {%- else %}Nothing on this day.{% endif -%}
   </p>
   {% else %}

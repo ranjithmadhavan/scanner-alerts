@@ -18,8 +18,8 @@
           {% if sc.error %}<span class="rounded-full bg-fall-50 px-2.5 py-0.5 text-xs font-semibold text-fall" title="{{ sc.error }}">{{ sc.error[:40] }}</span>{% endif %}
         </p>
         <p class="mt-1 text-[15px] text-ink-soft">{{ sc.describe }}
-          · {{ touches[sc.rules.touch]|lower }} · {{ sides[sc.rules.sides]|lower }}{{ (' · first entry per crossover' ~ (', a second after a stop-out' if sc.rules.get('second') else '')) if sc.rules.get('once', True) else ' · re-entries' }}
-          · SL {{ 'trigger candle' if sc.stop == 'candle' else 'slow MA' }}{% if sc.rr %}, target 1:{{ '%g'|format(sc.rr) }}{% endif %}
+          · {{ sc.summary|lower }}
+          {% if strategy.key == 'ma' %}· SL {{ 'trigger candle' if sc.stop == 'candle' else 'slow MA' }}{% endif %}{% if sc.rr %} · target 1:{{ '%g'|format(sc.rr) }}{% endif %}
           {% if sc.gap_alerts %}· gap entries too{% endif %}</p>
         <p class="mt-1 text-[13px] text-ink-soft">
           {% if sc.evaluated_at %}Candles read up to {{ sc.evaluated_at|when }}{% else %}Waiting for its first candle close{% endif %}
@@ -30,11 +30,11 @@
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-1">
-        <a href="/ma?backtest={{ sc.id }}" class="btn-quiet px-3 py-1.5 text-sm" title="Open the Backtest tab with these settings">Backtest this</a>
-        <button type="button" class="btn-quiet htmx-busy px-3 py-1.5 text-sm" hx-post="/ma/scanners/{{ sc.id }}/test" hx-swap="none" title="Send a sample setup message">Test</button>
-        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" hx-post="/ma/scanners/{{ sc.id }}/pause"
+        <a href="{{ base }}?backtest={{ sc.id }}" class="btn-quiet px-3 py-1.5 text-sm" title="Open the Backtest tab with these settings">Backtest this</a>
+        <button type="button" class="btn-quiet htmx-busy px-3 py-1.5 text-sm" hx-post="{{ base }}/scanners/{{ sc.id }}/test" hx-swap="none" title="Send a sample setup message">Test</button>
+        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" hx-post="{{ base }}/scanners/{{ sc.id }}/pause"
                 hx-target="#ma-scanners" hx-swap="outerHTML" title="{{ 'Pause' if on else 'Watch again' }}" aria-label="{{ 'Pause' if on else 'Watch again' }}">{{ icon('pause' if on else 'refresh', 'h-4 w-4') }}</button>
-        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" hx-post="/ma/scanners/{{ sc.id }}/delete"
+        <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" hx-post="{{ base }}/scanners/{{ sc.id }}/delete"
                 hx-target="#ma-scanners" hx-swap="outerHTML" hx-confirm="Remove the scanner “{{ sc.name }}”?" title="Remove" aria-label="Remove">{{ icon('trash', 'h-4 w-4') }}</button>
       </div>
     </div>
@@ -44,7 +44,7 @@
       <div class="mt-2 flex flex-wrap gap-1.5">
         {% for sym, w in sc.waiting %}
         <span class="num rounded-full px-2.5 py-1 text-[13px] font-medium {{ 'bg-rise-50 text-rise' if w.side == 'buy' else 'bg-fall-50 text-fall' }}"
-              title="Trigger candle {{ w.trigger_at|ist }}">{{ sym }} {{ w.side }} {{ 'above' if w.side == 'buy' else 'below' }} {{ w.level|price }}</span>
+              title="{{ strategy.setup_word }} {{ w.trigger_at|ist }}">{{ sym }} {{ w.side }} {{ 'above' if w.side == 'buy' else 'below' }} {{ w.level|price }}</span>
         {% endfor %}
       </div>
     </details>

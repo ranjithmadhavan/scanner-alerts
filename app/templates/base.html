@@ -30,6 +30,8 @@
 
     <nav class="mt-10 space-y-1" aria-label="Main">
       {% for m in nav %}
+        {% if m.group and (loop.first or loop.previtem.group != m.group) %}<p class="px-3 pb-1 pt-5 text-sm font-medium text-white/40">{{ m.group }}</p>{% endif %}
+        {% if not m.group and not loop.first and loop.previtem.group %}<div class="pt-4"></div>{% endif %}
         {% set here = path.startswith(m.path) %}
         <a href="{{ m.path }}" {{ 'aria-current="page"' if here }} class="nav-link">
           {% if here %}<span class="nav-pill" aria-hidden="true"></span>{% endif %}<span class="nav-text"><span class="nav-icon">{{ icon(m.icon) }}</span><span>{{ m.label }}</span></span>

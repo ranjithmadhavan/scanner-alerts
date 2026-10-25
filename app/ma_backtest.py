@@ -135,6 +135,7 @@ class Params:
     rules: Rules
     exits: Exits
     risk: float | None = None  # ₹ risked per trade, for money figures
+    strategy: str = "ma"  # key of app.strategies.STRATEGIES
 
     @property
     def minutes(self) -> int:
@@ -164,28 +165,28 @@ class Run:
         return len(self.symbols)
 
 
-_runs: dict[str, Run] = {}
+_runs: dict[tuple[str, str], Run] = {}  # (person, strategy) -> their latest run
 _lock = threading.Lock()
 
 
-def current(username: str) -> Run | None:
-    return _runs.get(username)
+def current(username: str, strategy: str = "ma") -> Run | None:
+    return _runs.get((username, strategy))
 
 
 def start(username: str, p: Params) -> Run:
     """Start a run in the background. Raises ValueError if one is already running for this person."""
     symbols = universe.resolve(p.spec, now_ist().date())
     with _lock:
-        if (r := _runs.get(username)) and r.status == "running":
+        if (r := _runs.get((username, p.strategy))) and r.status == "running":
             raise ValueError("A backtest is already running. Wait for it or cancel it first.")
         run = Run(new_id(), username, p, symbols, now_ist())
-        _runs[username] = run
+        _runs[(username, p.strategy)] = run
     threading.Thread(target=_work, args=(run,), name=f"ma-backtest-{username}", daemon=True).start()
     return run
 
 
-def cancel(username: str) -> None:
-    if r := _runs.get(username):
+def cancel(username: str, strategy: str = "ma") -> None:
+    if r := _runs.get((username, strategy)):
         r.stop.set()
 
 
@@ -301,7 +302,8 @@ def to_csv(run: Run) -> str:
 
 
 def chart(run: Run, symbol: str) -> dict:
-    """Candles of one stock over the run, with both averages and every trade on it. Cached per run."""
+    """Candles of one stock over the run, with what the strategy draws (averages, or an ADX panel) and every trade
+    on it. Cached per run."""
     if symbol in run.chart_cache:
         return run.chart_cache[symbol]
     p, s = run.params, load_settings()
@@ -310,24 +312,31 @@ def chart(run: Run, symbol: str) -> dict:
         raise KiteError(f"{symbol} isn't on Kite's NSE list")
     candles = fetch(brokers.client_for(run.user), inst.token, p.tf, warmup_start(p.tf, p.start, p.rules), p.end, s, now_ist(),
                     kite.BACKTESTS)
-    fast, slow = p.rules.averages(candles)
     first = next((i for i, c in enumerate(candles) if c.start.astimezone(IST).date() >= p.start), 0)
-    daily = p.tf == "1d"
-
-    def t(c: Candle):
-        return c.start.astimezone(IST).date().isoformat() if daily else int(c.start.timestamp()) + 19800
-
-    data = {
-        "daily": daily,
-        "candles": [{"time": t(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close} for c in candles[first:]],
-        "fast": [{"time": t(c), "value": round(v, 4)} for c, v in zip(candles[first:], fast[first:]) if v is not None],
-        "slow": [{"time": t(c), "value": round(v, 4)} for c, v in zip(candles[first:], slow[first:]) if v is not None],
-        "fast_label": f"{p.rules.fast_len} {crossover.MA_KINDS[p.rules.fast_kind]}",
-        "slow_label": f"{p.rules.slow_len} {crossover.MA_KINDS[p.rules.slow_kind]}",
-    }
+    data = chart_data(p.rules, candles, first, p.tf == "1d")
     run.chart_cache.clear()  # one stock at a time is plenty
     run.chart_cache[symbol] = data
     return data
+
+
+def chart_data(rules, candles: list[Candle], first: int, daily: bool) -> dict:
+    """Candles from `first` on, as the charts take them, with the strategy's lines: over the candles (moving
+    averages), and in a panel underneath (ADX and the DIs, with their thresholds)."""
+    def t(c: Candle):
+        return c.start.astimezone(IST).date().isoformat() if daily else int(c.start.timestamp()) + 19800
+
+    def points(values: list) -> list[dict]:
+        return [{"time": t(c), "value": round(v, 4)} for c, v in zip(candles[first:], values[first:]) if v is not None]
+
+    s = rules.series(candles)
+    panel = s["panel"]
+    return {
+        "daily": daily,
+        "candles": [{"time": t(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close} for c in candles[first:]],
+        "overlays": [{"label": o["label"], "color": o["color"], "points": points(o["values"])} for o in s["overlays"]],
+        "panel": panel and {"label": panel["label"], "levels": panel["levels"],
+                            "lines": [{"label": ln["label"], "color": ln["color"], "points": points(ln["values"])} for ln in panel["lines"]]},
+    }
 
 
 def chart_time(run: Run, iso: str):

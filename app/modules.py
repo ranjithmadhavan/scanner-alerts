@@ -14,6 +14,7 @@ class Module:
     path: str
     description: str
     icon: str  # name of an inline SVG in templates/partials/icons.html
+    group: str = ""  # shown under this heading in the sidebar, with the others of the group
 
 
 MODULES: dict[str, Module] = {
@@ -24,6 +25,9 @@ MODULES: dict[str, Module] = {
         Module("notifications", "Notifications", "/notifications", "Choose where alerts are delivered", "send"),
         Module("oi", "Nifty OI", "/oi", "Nifty option open interest through the day, and what it says", "chart"),
         Module("bias", "Fractal bias", "/bias", "Nifty 50 fractal sweeps through the day, and which way they lean", "compass"),
-        Module("ma", "MA crossover", "/ma", "Moving-average crossover scanners for a stock or a whole index, and backtests", "trend"),
+        Module("ma", "MA pullback", "/ma", "Moving-average crossover and pullback: live scanners, Scan now and backtests", "trend",
+               "Indicator scanners"),
+        Module("adx", "ADX trend", "/adx", "ADX/DMI trend with an ATR stop: live scanners, Scan now and backtests", "gauge",
+               "Indicator scanners"),
     ]
 }

@@ -778,6 +778,42 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
   });
 })();
 
+// Indicator scanner pages (MA pullback at /ma, ADX trend at /adx) share the scripts below; each page says its base.
+const maBase = () => document.querySelector("[data-indicator-base]")?.dataset.indicatorBase || "/ma";
+
+// A strategy's own lines on a stock's chart: overlays on the candles (moving averages), and a panel underneath
+// (ADX with +DI and -DI, and the thresholds) that scrolls and zooms with the candles. Fills the legend. Returns the
+// panel chart (to remove with the main one), or null.
+function strategyLines(L, chart, got, legend, panelBox) {
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const lines = [...got.overlays, ...(got.panel ? got.panel.lines : [])];
+  legend.innerHTML = lines.map((l) => `<span class="mr-3 inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-4" style="background:${l.color}"></span>${esc(l.label)}</span>`).join("");
+  got.overlays.forEach((o) => chart.addLineSeries({ color: o.color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false,
+    crosshairMarkerVisible: false }).setData(o.points));
+  panelBox.hidden = !got.panel;
+  if (!got.panel) return null;
+  chart.applyOptions({ timeScale: { visible: false } });  // the panel's time axis serves both
+  const below = L.createChart(panelBox, chartLook(L));
+  below.applyOptions({ localization: { priceFormatter: (v) => v.toFixed(0) }, layout: { attributionLogo: false },
+    timeScale: { timeVisible: !got.daily, secondsVisible: false } });
+  // Every candle gets a point (blank where a line has no value yet), so both charts count bars alike.
+  const times = got.candles.map((c) => c.time);
+  got.panel.lines.forEach((ln, i) => {
+    const byTime = new Map(ln.points.map((p) => [String(p.time), p.value]));
+    const line = below.addLineSeries({ color: ln.color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, crosshairMarkerRadius: 3 });
+    line.setData(times.map((t) => (byTime.has(String(t)) ? { time: t, value: byTime.get(String(t)) } : { time: t })));
+    if (i === 0) got.panel.levels.forEach((price) => line.createPriceLine({ price, color: "#B8AFA2", lineWidth: 1, lineStyle: 2, axisLabelVisible: true }));
+  });
+  const follow = (from, to) => from.timeScale().subscribeVisibleLogicalRangeChange((range) => { if (range) to.timeScale().setVisibleLogicalRange(range); });
+  follow(chart, below);
+  follow(below, chart);
+  requestAnimationFrame(() => {  // same axis width on both, so the bars line up
+    const width = Math.max(chart.priceScale("right").width(), below.priceScale("right").width());
+    [chart, below].forEach((c) => c.applyOptions({ rightPriceScale: { minimumWidth: width } }));
+  });
+  return below;
+}
+
 // ---- MA crossover: form toggles, the running total, and each trade on its stock's chart ----------
 (() => {
   // Index or typed list; the square-off only applies to intraday candles; a new candle size resets the
@@ -789,7 +825,8 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     const intraday = form.querySelector("[data-ma-intraday]");
     if (intraday) intraday.hidden = tf === "1d";
     const second = form.querySelector("[data-ma-second]");  // a second chance only makes sense with one entry per crossover
-    if (second) second.disabled = !form.querySelector("[data-ma-once]").checked;
+    const once = form.querySelector("[data-ma-once]");
+    if (second && once) second.disabled = !once.checked;
   }
   document.querySelectorAll(".ma-form").forEach((form) => {
     sync(form);
@@ -805,7 +842,7 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     });
   });
 
-  let data, chart, series, chartSymbol = "", lines = [], index = new Map();
+  let data, chart, below, series, chartSymbol = "", lines = [], index = new Map();
   const box = () => document.getElementById("ma-run");
 
   function curve(root) {
@@ -831,21 +868,17 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     document.querySelectorAll("[data-ma-trade]").forEach((row) => row.toggleAttribute("data-selected", Number(row.dataset.maTrade) === n));
     if (chartSymbol !== t.symbol) {
       document.getElementById("ma-trade-title").textContent = t.symbol + " · loading…";
-      const r = await fetch("/ma/backtest/chart?symbol=" + encodeURIComponent(t.symbol));
+      const r = await fetch(maBase() + "/backtest/chart?symbol=" + encodeURIComponent(t.symbol));
       const got = await r.json();
       if (!r.ok) { document.getElementById("ma-trade-title").textContent = t.symbol; note.textContent = got.error; return; }
       const L = window.LightweightCharts;
       chart?.remove();
+      below?.remove();
       chart = L.createChart(document.getElementById("ma-trade-chart"), chartLook(L));
       chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
       series = chart.addCandlestickSeries(candleLook);
       series.setData(got.candles);
-      const ma = (color, points) => chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false,
-        crosshairMarkerVisible: false }).setData(points);
-      ma("#E9A23B", got.fast);
-      ma("#0F5E5C", got.slow);
-      document.getElementById("ma-fast-label").textContent = got.fast_label;
-      document.getElementById("ma-slow-label").textContent = got.slow_label;
+      below = strategyLines(L, chart, got, document.getElementById("ma-trade-legend"), document.getElementById("ma-trade-panel"));
       index = new Map(got.candles.map((c, i) => [String(c.time), i]));
       // Every trade on this stock: an arrow at its entry, a dot at each exit.
       const marks = [];
@@ -881,7 +914,7 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     const source = root.querySelector("#ma-data");
     if (!source) return;
     data = JSON.parse(source.textContent);
-    chart = null; chartSymbol = "";
+    chart = null; below = null; chartSymbol = "";
     try { await loadChartLib(); } catch (e) { return; }
     curve(root);
   }
@@ -971,7 +1004,7 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
       request?.abort();
       request = new AbortController();
       try {
-        const r = await fetch("/ma/symbols?q=" + encodeURIComponent(query), { signal: request.signal });
+        const r = await fetch(maBase() + "/symbols?q=" + encodeURIComponent(query), { signal: request.signal });
         const got = await r.json();
         if (document.activeElement !== input || input.value.trim() !== query) return;  // picked or typed on meanwhile
         if (!r.ok) { list.innerHTML = `<p class="px-3 py-2.5 text-sm text-fall">${esc(got.error)}</p>`; list.hidden = false; return; }
@@ -1026,9 +1059,9 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
   });
 })();
 
-// ---- MA crossover "Scan now": a stock's chart with both averages and its setup ------------------------
+// ---- Indicator scanners "Scan now": a stock's chart with the strategy's lines and its setup ------------------
 (() => {
-  let chart, series;
+  let chart, below, series;
   async function show(symbol) {
     const box = document.getElementById("ma-screen-chart-box");
     if (!box) return;
@@ -1037,22 +1070,18 @@ document.querySelectorAll("nav.overflow-x-auto").forEach((strip) => {
     const title = document.getElementById("ma-screen-title");
     const note = document.getElementById("ma-screen-note");
     title.textContent = symbol + " · loading…";
-    const r = await fetch("/ma/screen/chart?symbol=" + encodeURIComponent(symbol));
+    const r = await fetch(maBase() + "/screen/chart?symbol=" + encodeURIComponent(symbol));
     const got = await r.json();
     if (!r.ok) { title.textContent = symbol; note.textContent = got.error; return; }
     try { await loadChartLib(); } catch (e) { note.textContent = e.message; return; }
     const L = window.LightweightCharts;
     chart?.remove();
+    below?.remove();
     chart = L.createChart(document.getElementById("ma-screen-chart"), chartLook(L));
     chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
     series = chart.addCandlestickSeries(candleLook);
     series.setData(got.candles);
-    const ma = (color, points) => chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false,
-      crosshairMarkerVisible: false }).setData(points);
-    ma("#E9A23B", got.fast);
-    ma("#0F5E5C", got.slow);
-    document.getElementById("ma-screen-fast").textContent = got.fast_label;
-    document.getElementById("ma-screen-slow").textContent = got.slow_label;
+    below = strategyLines(L, chart, got, document.getElementById("ma-screen-legend"), document.getElementById("ma-screen-panel"));
     const row = got.row;
     title.textContent = row ? `${symbol} · ${row.side} ${row.at ? "triggered" : "setup"}` : symbol;
     if (row) {

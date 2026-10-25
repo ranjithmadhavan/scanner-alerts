@@ -1,5 +1,5 @@
-{# What to scan and how: stocks, candle size, the two averages, the pullback rule, sides.
-   Expects `setup` (saved or default values), `tfs` (candle sizes on offer) and `prefix` (unique ids per form). #}
+{# What to scan and how: stocks, then the strategy's own fields (candle size and its rules), then sides.
+   Expects `setup` (saved or default values), `tfs` (candle sizes on offer), `prefix` (unique ids per form) and `strategy`. #}
 <fieldset>
   <legend class="label">Stocks</legend>
   <div class="inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which stocks">
@@ -41,59 +41,7 @@
   </div>
 </fieldset>
 
-<div class="mt-5 grid gap-5 sm:grid-cols-[180px_1fr_1fr]">
-  <div>
-    <label for="{{ prefix }}tf" class="label">Candle</label>
-    <select id="{{ prefix }}tf" name="tf" class="field" data-ma-tf>
-      {% for t in tfs %}<option value="{{ t }}" {{ 'selected' if t == setup.tf }}>{{ tf_label(t) }}</option>{% endfor %}
-    </select>
-  </div>
-  {% for which, title in [('fast', 'Fast moving average'), ('slow', 'Slow moving average')] %}
-  <div>
-    <span class="label">{{ title }}</span>
-    <div class="flex gap-2">
-      <select name="{{ which }}_kind" aria-label="{{ title }} type" class="field w-auto shrink-0 pr-9">
-        {% for k, text in ma_kinds.items() %}<option value="{{ k }}" {{ 'selected' if setup[which ~ '_kind'] == k }}>{{ text }}</option>{% endfor %}
-      </select>
-      <input name="{{ which }}_len" type="number" min="1" max="400" step="1" required value="{{ setup[which ~ '_len'] }}"
-             aria-label="{{ title }} period" class="field num min-w-0">
-    </div>
-  </div>
-  {% endfor %}
-</div>
-
-<fieldset class="mt-5">
-  <legend class="label">Pullback (trigger) candle</legend>
-  <div class="grid gap-2 sm:grid-cols-3">
-    {% for key, text in touches.items() %}
-    <label class="cursor-pointer">
-      <input type="radio" name="touch" value="{{ key }}" class="peer sr-only" {{ 'checked' if setup.touch == key }}>
-      <span class="flex h-full flex-col rounded-2xl border border-line px-4 py-3 transition peer-checked:border-peacock peer-checked:bg-peacock-50 peer-focus-visible:ring-2 peer-focus-visible:ring-marigold hover:border-peacock/40">
-        <span class="text-[15px] font-semibold">{{ text }}</span>
-        <span class="mt-0.5 text-[13px] leading-snug text-ink-soft">
-          {%- if key == '' %}Every red candle after a bullish crossover (green after a bearish one)
-          {%- elif key == 'fast' %}Its low reaches the fast MA (its high, for a sell)
-          {%- else %}Its low reaches the slow MA (its high, for a sell){% endif -%}
-        </span>
-      </span>
-    </label>
-    {% endfor %}
-  </div>
-  <p class="mt-1.5 text-[13px] leading-snug text-ink-soft">Each newer pullback candle replaces the last as the trigger until one is entered: a trade beyond it (its high for a buy, its low for a sell). The opposite crossover cancels a setup that hasn't been entered.</p>
-</fieldset>
-
-<div class="mt-4 rounded-2xl border border-line px-4 py-3">
-  <label class="flex cursor-pointer items-start gap-2.5">
-    <input type="checkbox" name="once" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" data-ma-once {{ 'checked' if setup.once }}>
-    <span><span class="text-[15px] font-semibold">Only the first entry after each crossover</span>
-      <span class="block text-[13px] leading-snug text-ink-soft">Once a crossover has given its entry, nothing more until the next crossover, however that trade ends. Needs a crossover inside the candles read. Unticked, every later pullback in the same trend sets up another entry.</span></span>
-  </label>
-  <label class="ml-6 mt-2.5 flex cursor-pointer items-start gap-2.5 border-t border-line pt-2.5 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
-    <input type="checkbox" name="second" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" data-ma-second {{ 'checked' if setup.second }} {{ 'disabled' if not setup.once }}>
-    <span><span class="text-[15px] font-semibold">…and a second entry if the first is stopped out</span>
-      <span class="block text-[13px] leading-snug text-ink-soft">If the first trade hits its SL while the crossover still stands, the next pullback can give one more entry (never a third). A first trade that booked anything, or ended any other way, doesn't. Live scanners follow the first trade with their own SL and target to know.</span></span>
-  </label>
-</div>
+{% include "partials/" ~ strategy.key ~ "_rules.html" %}
 
 <div class="mt-4 inline-flex rounded-full bg-canvas p-1" role="radiogroup" aria-label="Which side">
   {% for key, text in sides.items() %}
