@@ -152,6 +152,39 @@ def test_scanner_create_limits_and_list(web):
     assert store.list("ma_scanners", user="tara") == []
 
 
+def test_scanner_edit(web):
+    web.post("/ma/scanners", data={**SETUP, "stop": "candle", "rr": "2", "once": "1", "second": "1", "name": "Infy daily"})
+    sc = store.list("ma_scanners", user="tara")[0]
+    store.update("ma_scanners", sc["id"], {"state": {"INFY": {"level": 1}}, "evaluated_at": "2026-09-30T15:30:00+05:30"})
+    # The form opens with the scanner's settings and saves back to it.
+    page = web.get("/ma?edit=" + sc["id"]).text
+    assert "Edit “Infy daily”" in page and f'hx-post="/ma/scanners/{sc["id"]}"' in page and "Save changes" in page
+    assert 'value="Infy daily"' in page and '<option value="1d" selected>' in page and 'name="symbols" value="INFY" data-picker-value' in page
+    # Only the name and target: it keeps watching what it was.
+    r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "3", "once": "1", "second": "1", "name": "Infy 1:3"})
+    assert "Scanner updated." in r.headers["HX-Trigger"] and "Infy 1:3" in r.text
+    got = store.get("ma_scanners", sc["id"])
+    assert got["rr"] == 3 and got["state"] == {"INFY": {"level": 1}} and got["armed_at"] == sc["armed_at"]
+    # Other rules (every signal, not just fresh ones): what it waited on is dropped and it starts afresh.
+    r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "3", "name": "Infy 1:3"})
+    assert "waiting setups were dropped" in r.headers["HX-Trigger"]
+    got = store.get("ma_scanners", sc["id"])
+    assert got["rules"]["once"] is False and got["state"] == {} and got["evaluated_at"] == "" and got["status"] == "active"
+    assert len(store.list("ma_scanners", user="tara")) == 1
+    store.delete("ma_scanners", sc["id"])
+
+
+def test_a_read_started_before_an_edit_is_dropped(kite, sent):
+    from app.market import load_settings
+    s = load_settings()
+    before = _scanner()  # what the candle job read the scanner as
+    _scanner(armed_at="2026-10-01T10:00:00+05:30")  # then it was edited and re-armed
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    ma_scanner.evaluate(before, kite, s, at, s.close_at(at))
+    assert sent == [] and store.get("ma_scanners", "s1")["state"] == {}
+    store.delete("ma_scanners", "s1")
+
+
 def _scanner(**more):
     sc = {"id": "s1", "user": "tara", "name": "Infy daily", "spec": {"symbols": ["INFY"]}, "tf": "1d",
           "rules": {"fast_kind": "sma", "fast_len": 2, "slow_kind": "sma", "slow_len": 5, "touch": "", "sides": "both",

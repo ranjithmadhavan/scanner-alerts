@@ -137,19 +137,32 @@ def _scanner_view(sc: dict) -> dict:
             "sends_to": [notify.CHANNELS[c] for c in sc.get("channels", [])] + (["webhooks"] if sc.get("webhooks") else [])}
 
 
-def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "") -> dict:
+def _setup_of(sc: dict) -> dict:
+    """A saved scanner's stocks, candle size and rules, as the setup fields take them."""
+    spec = sc["spec"]
+    return {"universe_kind": "list" if spec.get("list") else "symbols", "universe_list": spec.get("list") or "nifty50",
+            "symbols": ", ".join(spec.get("symbols") or []), "tf": sc["tf"], **asdict(ma_scanner.rules_of(sc))}
+
+
+NEW_SCANNER = {"stop": "candle", "rr": 2, "name": "", "gap_alerts": True, "channels": None, "webhooks": [], "webhook_payload": ""}
+
+
+def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "", edit_id: str = "") -> dict:
     username = user["username"]
     f = STRATEGY_FORMS[strat.key]
     contacts = notify.load_contacts(username)
     scanners = _mine(strat, username)
-    bt_setup, exits = {**UNIVERSE_DEFAULTS, **f.backtest}, dict(f.exits)
+    setup, bt_setup, exits = {**UNIVERSE_DEFAULTS, **f.setup}, {**UNIVERSE_DEFAULTS, **f.backtest}, dict(f.exits)
     # "Backtest this": the form starts from a saved scanner's settings.
     if from_id and (sc := next((s for s in scanners if s["id"] == from_id), None)):
-        spec = sc["spec"]
-        bt_setup.update(universe_kind="list" if spec.get("list") else "symbols", universe_list=spec.get("list") or "nifty50",
-                        symbols=", ".join(spec.get("symbols") or []), tf=sc["tf"], **asdict(ma_scanner.rules_of(sc)))
+        bt_setup.update(_setup_of(sc))
         exits.update(stop=sc.get("stop", "candle"), rr=sc.get("rr") or 2)
         tab = "backtest"
+    # "Edit": the scanner form holds a saved scanner's settings and saves back to it. channels None: every ready one.
+    editing, form_sc = None, NEW_SCANNER
+    if edit_id and (sc := next((s for s in scanners if s["id"] == edit_id), None)):
+        editing, form_sc, tab = sc, {**NEW_SCANNER, **sc}, "scanners"
+        setup.update(_setup_of(sc))
     now = now_ist()
     today = now.date()
     run = ma_backtest.current(username, strat.key)
@@ -160,7 +173,7 @@ def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "") -> dict:
         "screen_day": ma_screen.last_session(load_settings(), now).isoformat(),
         **_feed_ctx(strat, username, ""),
         "scanners": [_scanner_view(s) for s in scanners], "max_scanners": ma_scanner.MAX_SCANNERS,
-        "setup": {**UNIVERSE_DEFAULTS, **f.setup}, "bt_setup": bt_setup, "exits": exits, "today": today.isoformat(),
+        "setup": setup, "editing": editing, "form_sc": form_sc, "bt_setup": bt_setup, "exits": exits, "today": today.isoformat(),
         "start_default": (today - timedelta(days=DEFAULT_DAYS[bt_setup["tf"]])).isoformat(),
         "live_tfs": ma_scanner.TIMEFRAMES, "backtest_tfs": ma_backtest.TIMEFRAMES,
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
@@ -405,34 +418,57 @@ def _list(strat: Strategy, request: Request, user: dict):
     return render(request, "partials/ma_scanners.html", _ctx(strat, user, "scanners"))
 
 
+def _read_scanner(strat: Strategy, form) -> dict:
+    """A scanner's settings from its form, as saved. Raises ValueError with something to show."""
+    spec, tf, rules = _read_setup(strat, form, ma_scanner.TIMEFRAMES)
+    if problem := ma_scanner.limit_problem(len(universe.resolve(spec, now_ist().date())), tf):
+        raise ValueError(problem)
+    stop = _stop(strat, form)
+    rr = _rr(form.get("rr", "2"))
+    hooks, error = webhooks.parse_urls(form.get("webhooks", ""))
+    if error:
+        raise ValueError(error)
+    payload, error = webhooks.parse_payload(form.get("webhook_payload", ""))
+    if error:
+        raise ValueError(error)
+    channels = form.getlist("channels")
+    name = (form.get("name") or "").strip()[:60] or f"{universe.describe(spec)} {rules.label}"
+    return {"name": name, "spec": spec, "tf": tf, "rules": asdict(rules), "stop": stop, "rr": rr,
+            "gap_alerts": bool(form.get("gap_alerts")), "channels": [c for c in notify.CHANNELS if c in channels],
+            "webhooks": hooks, "webhook_payload": payload}
+
+
 async def create(strat: Strategy, request: Request, user: dict):
     form = await request.form()
     username = user["username"]
     try:
         if len(_mine(strat, username)) >= ma_scanner.MAX_SCANNERS:
             raise ValueError(f"You can keep up to {ma_scanner.MAX_SCANNERS} {strat.name} scanners. Remove one first.")
-        spec, tf, rules = _read_setup(strat, form, ma_scanner.TIMEFRAMES)
-        if problem := ma_scanner.limit_problem(len(universe.resolve(spec, now_ist().date())), tf):
-            raise ValueError(problem)
-        stop = _stop(strat, form)
-        rr = _rr(form.get("rr", "2"))
-        hooks, error = webhooks.parse_urls(form.get("webhooks", ""))
-        if error:
-            raise ValueError(error)
-        payload, error = webhooks.parse_payload(form.get("webhook_payload", ""))
-        if error:
-            raise ValueError(error)
+        settings = _read_scanner(strat, form)
     except ValueError as e:
         return fail(str(e))
-    channels = form.getlist("channels")
-    name = (form.get("name") or "").strip()[:60] or f"{universe.describe(spec)} {rules.label}"
     now = now_ist()
-    sc = {"id": new_id(), "user": username, "strategy": strat.key, "name": name, "spec": spec, "tf": tf,
-          "rules": asdict(rules), "stop": stop, "rr": rr, "gap_alerts": bool(form.get("gap_alerts")),
-          "channels": [c for c in notify.CHANNELS if c in channels], "webhooks": hooks, "webhook_payload": payload,
+    sc = {"id": new_id(), "user": username, "strategy": strat.key, **settings,
           "status": "active", "created_at": now.isoformat(), "armed_at": now.isoformat(), "state": {}, "fired": []}
     store.put(ma_scanner.COL, sc["id"], sc)
-    msg = "Scanner saved. It reads the candles at the next candle close." + ("" if sc["channels"] or hooks else " It has nowhere to send yet.")
+    msg = "Scanner saved. It reads the candles at the next candle close." + ("" if sc["channels"] or sc["webhooks"] else " It has nowhere to send yet.")
+    return toast(_list(strat, request, user), msg)
+
+
+async def update(strat: Strategy, request: Request, scanner_id: str, user: dict):
+    if not (sc := _own(scanner_id, user)):
+        return fail("That scanner is gone.")
+    try:
+        settings = _read_scanner(strat, await request.form())
+    except ValueError as e:
+        return fail(str(e))
+    msg = "Scanner updated."
+    # Other stocks, candles or rules: what it was waiting on no longer applies, and it starts afresh, as after a pause.
+    if any(settings[k] != sc.get(k) for k in ("spec", "tf", "rules")):
+        settings.update(armed_at=now_ist().isoformat(), state={}, evaluated_at="")
+        msg += " Its waiting setups were dropped; it reads the candles again at the next candle close."
+    with ma_scanner.lock(scanner_id):  # not while the quote job is changing what it waits on
+        store.update(ma_scanner.COL, scanner_id, settings)
     return toast(_list(strat, request, user), msg)
 
 
@@ -481,8 +517,8 @@ def router_for(key: str) -> APIRouter:
     guard = require(key)
 
     @router.get("")
-    def page_(request: Request, user: dict = Depends(guard), tab: str = "", backtest: str = ""):
-        return render(request, "indicator.html", _ctx(strat, user, tab, backtest))
+    def page_(request: Request, user: dict = Depends(guard), tab: str = "", backtest: str = "", edit: str = ""):
+        return render(request, "indicator.html", _ctx(strat, user, tab, backtest, edit))
 
     @router.post("/lists/refresh")
     def refresh_(user: dict = Depends(guard)):
@@ -538,6 +574,10 @@ def router_for(key: str) -> APIRouter:
     @router.post("/scanners")
     async def create_(request: Request, user: dict = Depends(guard)):
         return await create(strat, request, user)
+
+    @router.post("/scanners/{scanner_id}")
+    async def update_(request: Request, scanner_id: str, user: dict = Depends(guard)):
+        return await update(strat, request, scanner_id, user)
 
     @router.post("/scanners/{scanner_id}/pause")
     def pause_(request: Request, scanner_id: str, user: dict = Depends(guard)):

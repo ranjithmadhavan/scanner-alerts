@@ -57,6 +57,11 @@ LOOKBACK = 5
 _locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
+def lock(scanner_id: str) -> threading.Lock:
+    """The scanner's lock, for saving changes to it from elsewhere (an edit)."""
+    return _locks[scanner_id]
+
+
 def limit_problem(n: int, tf: str) -> str | None:
     cap = LIVE_LIMIT[tf]
     if cap is not None and n > cap:
@@ -285,9 +290,12 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
                 setups.append({"symbol": symbol, "side": p.side, "level": p.level, "stop": stop, "target": target,
                                "trigger_at": item["trigger_at"]})
     with _locks[sc["id"]]:
+        latest = store.get(COL, sc["id"]) or {}
+        if latest and latest.get("armed_at") != sc.get("armed_at"):
+            return latest  # edited or resumed while the candles were being read: this read is of what it was
         # The quote job may have reported entries while the candles were being read: don't report them twice,
         # and don't put their levels back on watch.
-        fired = (store.get(COL, sc["id"]) or {}).get("fired", [])
+        fired = latest.get("fired", [])
         done = set(fired)
         entries = [e for e in entries if e["key"] not in done]
         state = {sym: it for sym, it in state.items() if f"{sym}:{it['trigger_at']}:entry" not in done}
