@@ -3,7 +3,9 @@
 A scanner watches a list of stocks (or one) on one candle size for the setups in app.crossover, and sends:
 * *setup*: a trigger candle has just closed, with the level to enter at, its SL and target;
 * *entry*: price traded beyond that level. On a gap (a session opening beyond a level set on an earlier
-  day), only if the scanner asks for gap entries.
+  day), only if the scanner asks for gap entries. A scanner can instead wait for a 5-minute candle to close
+  beyond the level (`confirm`): a poke through it that closes back inside isn't an entry, and after a gap open
+  price has to come back inside and close beyond it afresh.
 
 Two scheduler jobs do the work, so neither holds the other up:
 * at each candle close of the scanner's timeframe (daily: just after the close), every stock's candles are
@@ -12,6 +14,10 @@ Two scheduler jobs do the work, so neither holds the other up:
 * every tick, one quote request covers every stock waiting on a level, so an entry is reported within a
   tick of happening rather than at the next candle close. Anything a quote missed (a quick spike) is
   still caught at the candle close, from the candles.
+
+Waiting for a 5-minute close, a quote or a candle that reaches the level only marks it *touched*; a third job,
+just after each 5-minute close, reads today's 5-minute candles for the touched stocks (usually a few) and
+reports those that closed beyond it.
 
 The setups waiting on a level are saved on the scanner (`state`), so a restart picks up where it was.
 """
@@ -85,6 +91,29 @@ def exits_of(sc: dict) -> crossover.Exits:
                            fill="open" if sc.get("gap_alerts") else "skip")
 
 
+# When the entry message goes out: as soon as price trades beyond the level, or once a 5-minute candle has closed
+# beyond it.
+CONFIRMS = {"": "As soon as price trades beyond the level", "close5": "When a 5-min candle closes beyond the level"}
+CONFIRM_TF = "5m"
+
+
+def confirming(sc: dict) -> bool:
+    return sc.get("confirm") == "close5"
+
+
+def confirmation(side: str, level: float, candles: list[Candle], gap: bool) -> Candle | None:
+    """The candle that confirms an entry: the first to close beyond the level after one closed inside it (the
+    trigger candle did). After a gap open, nothing counts until a candle has closed back inside."""
+    inside = not gap
+    for c in candles:
+        if (c.close > level) if side == "buy" else (c.close < level):
+            if inside:
+                return c
+        else:
+            inside = True
+    return None
+
+
 def latest_close(tf: str, s: MarketSettings, now: datetime) -> datetime | None:
     """When the most recent candle of this size that has settled closed: today's, or the last session's close.
     A daily candle counts as settled DAILY_READ_AFTER after the close."""
@@ -139,6 +168,9 @@ def _line(sc: dict, item: dict) -> str:
         what = f"{head} {above} ₹{item['level']:,.2f}"
     elif item.get("gap"):
         what = f"{head}: opened at ₹{item['price']:,.2f}, {above} ₹{item['level']:,.2f} (gap)"
+    elif item.get("confirmed"):
+        at = datetime.fromisoformat(item["confirmed"]).astimezone(IST)
+        what = f"{head}: 5-min candle closed at ₹{item['price']:,.2f} ({at:%-I:%M %p}), {above} ₹{item['level']:,.2f}"
     else:
         what = f"{head}: broke ₹{item['level']:,.2f}, now ₹{item['price']:,.2f}"
     stop = item.get("stop")
@@ -157,7 +189,13 @@ def message(sc: dict, kind: str, items: list[dict], now: datetime) -> tuple[str,
     if kind == "setup":
         subject = (f"📈 {first['symbol']}: {first['side']} {'above' if first['side'] == 'buy' else 'below'} {first['level']:,.2f}"
                    if len(items) == 1 else f"📈 {len(items)} new {STRATEGIES[strategy_of(sc)].name} setups · {sc['name']}")
-        intro = f"{STRATEGIES[strategy_of(sc)].setup_word} closed. Enter on a trade beyond the level:"
+        on = "a 5-min close" if confirming(sc) else "a trade"
+        intro = f"{STRATEGIES[strategy_of(sc)].setup_word} closed. Enter on {on} beyond the level:"
+    elif first.get("confirmed"):
+        subject = (f"🚀 {first['symbol']} {first['side']} confirmed: 5-min close {first['price']:,.2f} "
+                   f"{'above' if first['side'] == 'buy' else 'below'} {first['level']:,.2f}"
+                   if len(items) == 1 else f"🚀 {len(items)} {STRATEGIES[strategy_of(sc)].name} entries confirmed · {sc['name']}")
+        intro = "A 5-min candle closed beyond the entry level:"
     else:
         subject = (f"🚀 {first['symbol']} {first['side']} triggered at {first['level']:,.2f}{' (gap)' if first.get('gap') else ''}"
                    if len(items) == 1 else f"🚀 {len(items)} {STRATEGIES[strategy_of(sc)].name} entries triggered · {sc['name']}")
@@ -173,7 +211,7 @@ def hook_body(sc: dict, kind: str, items: list[dict], now: datetime, test: bool 
     return {"event": "ma_setups" if kind == "setup" else "ma_entries", "test": test, "scanner_id": sc["id"],
             "scanner": sc["name"], "strategy": strategy_of(sc), "timeframe": sc["tf"], "averages": rules_of(sc).label,
             "time": now.isoformat(),
-            "signals": [{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "trigger_at")}
+            "signals": [{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "confirmed", "trigger_at")}
                         for i in items],
             "payload": json.loads(sc["webhook_payload"]) if sc.get("webhook_payload") else None}
 
@@ -191,7 +229,7 @@ def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
     doc_id = f"{sc['user']}:{day}"
     new = [{"at": now.isoformat(), "kind": kind, "scanner_id": sc["id"], "scanner": sc["name"], "tf": sc["tf"],
             "strategy": strategy_of(sc),
-            **{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "trigger_at")}}
+            **{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "confirmed", "trigger_at")}}
            for i in items]
     with _feed_lock:
         doc = store.get(FEED, doc_id) or {"user": sc["user"], "date": day, "items": []}
@@ -264,9 +302,22 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
         if not candles:
             continue
         found, pending, fast, slow = crossover.scan(candles, rules, exits_of(sc))
-        for e in found:
+
+        def watch(p: crossover.Setup) -> dict:
+            return {"side": p.side, "level": p.level, "candle_stop": p.stop, "slow": slow[p.trigger],
+                    "trigger_at": candles[p.trigger].start.isoformat(), "token": inst.token}
+
+        for n, e in enumerate(found):
             key = f"{symbol}:{candles[e.setup.trigger].start.isoformat()}:entry"
-            if candle_end(candles[e.index], tf, s) <= cutoff or key in seen:
+            if key in seen:
+                continue
+            if confirming(sc) and not (e.gap and not sc.get("gap_alerts")):
+                # Traded beyond the level, but only a 5-min close beyond it is an entry (check_confirms). The latest
+                # such level stays on watch until a newer setup or the trend turning replaces it.
+                if n == len(found) - 1 and not pending and not crossover.turned(candles, rules, e.index):
+                    state[symbol] = {**watch(e.setup), "touched": True}
+                continue
+            if candle_end(candles[e.index], tf, s) <= cutoff:
                 continue
             seen.add(key)
             new_keys.append(key)
@@ -279,9 +330,7 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
                             "trigger_at": candles[e.setup.trigger].start.isoformat()})
         if p := pending:
             trigger = candles[p.trigger]
-            item = {"side": p.side, "level": p.level, "candle_stop": p.stop, "slow": slow[p.trigger],
-                    "trigger_at": trigger.start.isoformat(), "token": inst.token}
-            state[symbol] = item
+            state[symbol] = item = watch(p)
             key = f"{symbol}:{item['trigger_at']}:setup"
             if candle_end(trigger, tf, s) > cutoff and key not in seen:
                 seen.add(key)
@@ -299,6 +348,9 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
         done = set(fired)
         entries = [e for e in entries if e["key"] not in done]
         state = {sym: it for sym, it in state.items() if f"{sym}:{it['trigger_at']}:entry" not in done}
+        for sym, it in state.items():  # a level the quotes saw reached stays touched
+            if (was := (latest.get("state") or {}).get(sym)) and was["trigger_at"] == it["trigger_at"] and was.get("touched"):
+                it["touched"] = True
         changes = {"state": state, "evaluated_at": upto.isoformat(), "checked_at": now.isoformat(),
                    "fired": (fired + [k for k in new_keys if k not in done])[-KEEP_FIRED:],
                    "missing": missing, "failed": failed, "error": ""}
@@ -328,13 +380,21 @@ def _quoted(sc: dict, got: dict, now: datetime) -> tuple[dict, list[dict]]:
     fired, state, entries = list(sc.get("fired", [])), dict(waiting), []
     for symbol, item in waiting.items():
         q = got.get(f"NSE:{symbol}") or {}
-        ltp, day_open = q.get("last_price"), (q.get("ohlc") or {}).get("open")
+        ohlc = q.get("ohlc") or {}
+        ltp, day_open = q.get("last_price"), ohlc.get("open")
         if not ltp:
             continue
         buy = item["side"] == "buy"
+        earlier_day = datetime.fromisoformat(item["trigger_at"]).astimezone(IST).date() < today
+        if confirming(sc):
+            # Not an entry yet, only a level for check_confirms to look at. One set on an earlier day may have been
+            # reached between quotes, so the day's high (low) counts too.
+            far = ohlc.get("high") if buy else ohlc.get("low")
+            if any(p and (p > item["level"] if buy else p < item["level"]) for p in (ltp, far if earlier_day else None)):
+                state[symbol] = {**item, "touched": True}
+            continue
         if not (ltp > item["level"] if buy else ltp < item["level"]):
             continue
-        earlier_day = datetime.fromisoformat(item["trigger_at"]).astimezone(IST).date() < today
         gap = bool(earlier_day and day_open and (day_open > item["level"] if buy else day_open < item["level"]))
         del state[symbol]
         key = f"{symbol}:{item['trigger_at']}:entry"
@@ -350,6 +410,62 @@ def _quoted(sc: dict, got: dict, now: datetime) -> tuple[dict, list[dict]]:
     changes = {"state": state, "fired": fired[-KEEP_FIRED:], "quoted_at": now.isoformat()}
     store.update(COL, sc["id"], changes)
     return {**sc, **changes}, entries
+
+
+def check_confirms(sc: dict, client, s: MarketSettings, now: datetime) -> dict:
+    """At each 5-min close: read today's 5-min candles for every level price has reached, and report those where
+    one has closed beyond it. Each read is of the whole day, so a level touched late is judged on all of it."""
+    upto = last_boundary(CONFIRM_TF, s, now - SETTLE)
+    touched = {sym: it for sym, it in (sc.get("state") or {}).items() if it.get("touched")}
+    if not upto or not touched or upto.isoformat() <= (sc.get("confirmed_upto") or ""):
+        return sc
+    today = now.astimezone(IST).date()
+    read = {}  # symbol -> (the candle that confirmed it or None, opened on a gap)
+    for symbol, item in touched.items():
+        trigger = datetime.fromisoformat(item["trigger_at"])
+        after = candle_end(Candle(trigger, 0, 0, 0, 0), sc["tf"], s)
+        try:
+            candles = [c for c in ma_backtest.fetch(client, item["token"], CONFIRM_TF, today, today, s, now)
+                       if c.start >= after and candle_end(c, CONFIRM_TF, s) <= upto]
+        except KiteAuthError:
+            raise
+        except KiteError as e:
+            log.warning("ma %s: %s 5-min candles failed: %s", sc["id"], symbol, e)
+            continue
+        if not candles:
+            continue
+        buy = item["side"] == "buy"
+        gap = trigger.astimezone(IST).date() < today and (candles[0].open > item["level"] if buy else candles[0].open < item["level"])
+        read[symbol] = (confirmation(item["side"], item["level"], candles, gap), gap)
+    entries = []
+    with _locks[sc["id"]]:
+        latest = store.get(COL, sc["id"]) or {}
+        if latest.get("armed_at") != sc.get("armed_at"):
+            return latest  # edited, resumed or removed meanwhile
+        state, fired = dict(latest.get("state") or {}), list(latest.get("fired", []))
+        for symbol, (c, gap) in read.items():
+            item = state.get(symbol)
+            if not item or item["trigger_at"] != touched[symbol]["trigger_at"]:
+                continue  # replaced by a newer setup meanwhile
+            dropped = gap and not sc.get("gap_alerts")
+            if not (c or dropped):
+                continue
+            del state[symbol]
+            key = f"{symbol}:{item['trigger_at']}:entry"
+            if key in fired:
+                continue
+            fired.append(key)
+            if dropped:
+                continue
+            stop, target = plan(sc, item["side"], c.close, item["candle_stop"], item.get("slow"))
+            entries.append({"symbol": symbol, "side": item["side"], "level": item["level"], "stop": stop, "target": target,
+                            "price": c.close, "gap": False, "confirmed": candle_end(c, CONFIRM_TF, s).isoformat(),
+                            "trigger_at": item["trigger_at"]})
+        changes = {"state": state, "fired": fired[-KEEP_FIRED:], "confirmed_upto": upto.isoformat()}
+        store.update(COL, sc["id"], changes)
+    sc = {**latest, **changes}
+    send(sc, "entry", entries, now)
+    return sc
 
 
 def _active() -> dict[str, list[dict]]:
@@ -405,3 +521,27 @@ def run_quotes(now: datetime | None = None) -> None:
                 log.warning("ma %s quotes failed: %s", sc["id"], e)
             except Exception:
                 log.exception("ma scanner %s quotes failed", sc["id"])
+
+
+def run_confirms(now: datetime | None = None) -> None:
+    """Scheduler job: after each 5-min close (the last one too), look for confirmed entries on the scanners that
+    wait for one."""
+    s, now = load_settings(), now or now_ist()
+    if not in_scan_window(s, now):
+        return
+    for username, scanners in _active().items():
+        touched = [sc for sc in scanners if confirming(sc) and any(it.get("touched") for it in (sc.get("state") or {}).values())]
+        if not touched:
+            continue
+        client = _ensure_session(username, len(scanners), now)
+        if not client:
+            continue
+        for sc in touched:
+            try:
+                check_confirms(sc, client, s, now)
+            except KiteAuthError:
+                break  # the candle job tells the user
+            except KiteError as e:
+                log.warning("ma %s 5-min check failed: %s", sc["id"], e)
+            except Exception:
+                log.exception("ma scanner %s 5-min check failed", sc["id"])

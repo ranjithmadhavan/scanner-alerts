@@ -20,6 +20,7 @@
         <p class="mt-1 text-[15px] text-ink-soft">{{ sc.describe }}
           · {{ sc.summary|lower }}
           {% if strategy.key == 'ma' %}· SL {{ 'trigger candle' if sc.stop == 'candle' else 'slow MA' }}{% endif %}{% if sc.rr %} · target 1:{{ '%g'|format(sc.rr) }}{% endif %}
+          {% if sc.confirm %}· entry on a 5-min close{% endif %}
           {% if sc.gap_alerts %}· gap entries too{% endif %}</p>
         <p class="mt-1 text-[13px] text-ink-soft">
           {% if sc.evaluated_at %}Candles read up to {{ sc.evaluated_at|when }}{% else %}Waiting for its first candle close{% endif %}
@@ -45,7 +46,7 @@
       <div class="mt-2 flex flex-wrap gap-1.5">
         {% for sym, w in sc.waiting %}
         <span class="num rounded-full px-2.5 py-1 text-[13px] font-medium {{ 'bg-rise-50 text-rise' if w.side == 'buy' else 'bg-fall-50 text-fall' }}"
-              title="{{ strategy.setup_word }} {{ w.trigger_at|ist }}">{{ sym }} {{ w.side }} {{ 'above' if w.side == 'buy' else 'below' }} {{ w.level|price }}</span>
+              title="{{ strategy.setup_word }} {{ w.trigger_at|ist }}{{ ' · level reached, waiting for a 5-min close beyond it' if w.touched }}">{{ sym }} {{ w.side }} {{ 'above' if w.side == 'buy' else 'below' }} {{ w.level|price }}{{ ' · reached' if w.touched }}</span>
         {% endfor %}
       </div>
     </details>

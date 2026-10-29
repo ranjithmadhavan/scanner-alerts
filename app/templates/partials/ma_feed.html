@@ -39,7 +39,7 @@
             {% if g.kind == 'setup' %}<span class="rounded-full bg-peacock-50 px-2 py-0.5 text-xs font-semibold text-peacock">Setup</span>
               <span class="{{ 'text-rise' if g.side == 'buy' else 'text-fall' }} font-semibold">{{ g.side|capitalize }} {{ 'above' if g.side == 'buy' else 'below' }}</span>
             {% else %}<span class="rounded-full {{ 'bg-rise-50 text-rise' if g.side == 'buy' else 'bg-fall-50 text-fall' }} px-2 py-0.5 text-xs font-semibold">Entry{{ ' · gap' if g.gap }}</span>
-              <span class="text-ink-soft">{{ 'opened at' if g.gap else 'now' }} ₹{{ g.price|price }}</span>{% endif %}
+              <span class="text-ink-soft">{{ 'opened at' if g.gap else '5-min close' if g.confirmed else 'now' }} ₹{{ g.price|price }}</span>{% endif %}
           </td>
           <td class="py-2 pr-3 text-right">₹{{ g.level|price }}</td>
           <td class="py-2 pr-3 text-right">{% if g.stop is not none %}<span class="text-fall">₹{{ g.stop|price }}</span>{% endif %}

@@ -119,7 +119,7 @@ def _options(strat: Strategy) -> dict:
     f = STRATEGY_FORMS[strat.key]
     return {"strategy": strat, "universes": universe.UNIVERSES, "ma_kinds": crossover.MA_KINDS, "touches": crossover.TOUCH,
             "sides": crossover.SIDES, "stops": f.stops, "trails": f.trails, "own_exits": f.own_exits, "fills": crossover.FILLS,
-            "tf_label": ma_backtest.label, "live_limit": ma_scanner.LIVE_LIMIT, "default_days": DEFAULT_DAYS,
+            "confirms": ma_scanner.CONFIRMS, "tf_label": ma_backtest.label, "live_limit": ma_scanner.LIVE_LIMIT, "default_days": DEFAULT_DAYS,
             "base": f"/{strat.key}"}
 
 
@@ -144,7 +144,7 @@ def _setup_of(sc: dict) -> dict:
             "symbols": ", ".join(spec.get("symbols") or []), "tf": sc["tf"], **asdict(ma_scanner.rules_of(sc))}
 
 
-NEW_SCANNER = {"stop": "candle", "rr": 2, "name": "", "gap_alerts": True, "channels": None, "webhooks": [], "webhook_payload": ""}
+NEW_SCANNER = {"stop": "candle", "rr": 2, "name": "", "gap_alerts": True, "confirm": "", "channels": None, "webhooks": [], "webhook_payload": ""}
 
 
 def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "", edit_id: str = "") -> dict:
@@ -434,7 +434,8 @@ def _read_scanner(strat: Strategy, form) -> dict:
     channels = form.getlist("channels")
     name = (form.get("name") or "").strip()[:60] or f"{universe.describe(spec)} {rules.label}"
     return {"name": name, "spec": spec, "tf": tf, "rules": asdict(rules), "stop": stop, "rr": rr,
-            "gap_alerts": bool(form.get("gap_alerts")), "channels": [c for c in notify.CHANNELS if c in channels],
+            "gap_alerts": bool(form.get("gap_alerts")), "confirm": form.get("confirm") if form.get("confirm") in ma_scanner.CONFIRMS else "",
+            "channels": [c for c in notify.CHANNELS if c in channels],
             "webhooks": hooks, "webhook_payload": payload}
 
 

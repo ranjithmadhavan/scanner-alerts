@@ -42,6 +42,7 @@ class FakeKite:
     def __init__(self, candles):
         self.candles = candles
         self.quotes = {}
+        self.five = []  # 5-min candles, for scanners that wait for a 5-min close
         self.requests = 0
 
     def profile(self):
@@ -49,6 +50,8 @@ class FakeKite:
 
     def candles_range(self, token, tf, start, end):
         self.requests += 1
+        if tf == "5m":
+            return [c for c in self.five if start <= c.start.date() <= end]
         assert tf == "1d"
         return [c for c in self.candles if start <= c.start.date() <= end]
 
@@ -165,6 +168,12 @@ def test_scanner_edit(web):
     assert "Scanner updated." in r.headers["HX-Trigger"] and "Infy 1:3" in r.text
     got = store.get("ma_scanners", sc["id"])
     assert got["rr"] == 3 and got["state"] == {"INFY": {"level": 1}} and got["armed_at"] == sc["armed_at"]
+    assert got["confirm"] == "" and '<option value="close5" >' in page
+    # Entry on a 5-min close: also kept watching, since the levels are the same.
+    r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "3", "once": "1", "second": "1", "name": "Infy 1:3",
+                                                  "confirm": "close5"})
+    assert "entry on a 5-min close" in r.text and store.get("ma_scanners", sc["id"])["confirm"] == "close5"
+    assert '<option value="close5" selected>' in web.get("/ma?edit=" + sc["id"]).text
     # Other rules (every signal, not just fresh ones): what it waited on is dropped and it starts afresh.
     r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "3", "name": "Infy 1:3"})
     assert "waiting setups were dropped" in r.headers["HX-Trigger"]
@@ -248,6 +257,83 @@ def test_gap_entries_follow_the_setting(kite, sent):
             assert "opened at ₹169.00, above ₹166.50 (gap) · SL ₹164.00 · target ₹179.00" in sent[-1][1]
         else:
             assert [x[0] for x in sent] == ["📈 INFY: buy above 166.50"]
+
+
+def five(*rows, start=datetime(2026, 10, 1, 9, 15, tzinfo=IST)):
+    return [Candle(start + timedelta(minutes=5 * k), *r) for k, r in enumerate(rows)]
+
+
+def test_confirmation_needs_a_close_beyond_after_one_inside():
+    poke, inside, beyond = (100, 102, 99, 100.5), (100.5, 101, 99, 99.5), (99.5, 102, 99, 101.5)
+    assert ma_scanner.confirmation("buy", 101, five(poke, inside), gap=False) is None
+    assert ma_scanner.confirmation("buy", 101, five(poke, inside, beyond), gap=False).close == 101.5
+    # After a gap open, closing beyond doesn't count until a candle has closed back inside.
+    assert ma_scanner.confirmation("buy", 101, five(beyond, beyond), gap=True) is None
+    assert ma_scanner.confirmation("buy", 101, five(beyond, inside, beyond), gap=True).start.minute == 25
+    assert ma_scanner.confirmation("sell", 99.6, five(poke, inside), gap=False).close == 99.5
+
+
+def test_entry_on_a_5_min_close_waits_past_a_poke(kite, sent):
+    from app.market import load_settings
+    s = load_settings()
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    sc = ma_scanner.evaluate(_scanner(confirm="close5"), kite, s, at, s.close_at(at))
+    assert "Enter on a 5-min close beyond the level" in sent[-1][1]
+    # The price trades through: no message yet, the level is only marked as reached.
+    kite.quotes = {"NSE:INFY": {"last_price": 166.9, "ohlc": {"open": 165.0, "high": 166.9, "low": 164.9}}}
+    sc = ma_scanner.check_quotes(sc, kite, s, datetime(2026, 10, 1, 9, 24, tzinfo=IST))
+    assert len(sent) == 1 and sc["state"]["INFY"]["touched"]
+    # 9:20 pokes above 166.50 but closes back inside: still waiting. 9:25 closes above: the entry, at that close.
+    kite.five = five((165, 165.5, 164.9, 165.2), (165.2, 166.9, 165.1, 166.0), (166.0, 167.3, 165.9, 167.2))
+    sc = ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 25, 15, tzinfo=IST))
+    assert len(sent) == 1 and sc["state"]["INFY"]["touched"]
+    sc = ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 30, 15, tzinfo=IST))
+    assert sent[-1][0] == "🚀 INFY buy confirmed: 5-min close 167.20 above 166.50"
+    assert "5-min candle closed at ₹167.20 (9:30 AM), above ₹166.50 · SL ₹164.00 · target ₹173.60 (1:2)" in sent[-1][1]
+    assert sc["state"] == {} and "INFY:2026-09-30T00:00:00+05:30:entry" in sc["fired"]
+    assert {"symbol": "INFY", "price": 167.2, "confirmed": "2026-10-01T09:30:00+05:30"}.items() <= next(
+        i for i in ma_scanner.feed("tara", "2026-10-01") if i.get("confirmed")).items()
+    # Not again: not at the next 5-min close, nor from the day's candle at the close.
+    n = len(sent)
+    ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 35, 15, tzinfo=IST))
+    kite.candles = daily(ROWS + [BREAK[1]], DAYS + [BREAK[0]])
+    oct1 = datetime(2026, 10, 1, 15, 31, tzinfo=IST)
+    ma_scanner.evaluate(store.get("ma_scanners", "s1"), kite, s, oct1, s.close_at(oct1))
+    assert len(sent) == n
+
+
+def test_a_level_traded_but_never_closed_beyond_stays_on_watch(kite, sent):
+    """The day's candle traded through the level, the quotes missed it, and no 5-min close came: no entry."""
+    from app.market import load_settings
+    s = load_settings()
+    kite.candles = daily(ROWS + [BREAK[1]], DAYS + [BREAK[0]])
+    oct1 = datetime(2026, 10, 1, 15, 31, tzinfo=IST)
+    sc = ma_scanner.evaluate(_scanner(confirm="close5"), kite, s, oct1, s.close_at(oct1))
+    assert not any(x[0].startswith("🚀") for x in sent)
+    assert sc["state"]["INFY"] == {**sc["state"]["INFY"], "level": 166.5, "touched": True}
+
+
+def test_gap_entries_on_a_5_min_close(kite, sent):
+    from app.market import load_settings
+    s = load_settings()
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    # Opens at 169 above 166.50 and closes above it; then back inside at 9:20; then a fresh close above at 9:25.
+    kite.five = five((169, 170, 168.5, 169.5), (169.5, 169.6, 166, 166.2), (166.2, 167.5, 166.1, 167.4))
+    for gap_alerts in (False, True):
+        sent.clear()
+        store.delete("ma_scanners", "s1")
+        sc = ma_scanner.evaluate(_scanner(confirm="close5", gap_alerts=gap_alerts), kite, s, at, s.close_at(at))
+        kite.quotes = {"NSE:INFY": {"last_price": 170.0, "ohlc": {"open": 169.0, "high": 170.0, "low": 168.5}}}
+        sc = ma_scanner.check_quotes(sc, kite, s, datetime(2026, 10, 1, 9, 16, tzinfo=IST))
+        sc = ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 20, 15, tzinfo=IST))
+        if not gap_alerts:  # dropped without a message
+            assert sc["state"] == {} and [x[0] for x in sent] == ["📈 INFY: buy above 166.50"]
+            continue
+        assert sc["state"]["INFY"]["touched"] and len(sent) == 1  # the gap's own close above doesn't count
+        sc = ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 25, 15, tzinfo=IST))
+        assert len(sent) == 1  # back inside
+        sc = ma_scanner.check_confirms(sc, kite, s, datetime(2026, 10, 1, 9, 30, 15, tzinfo=IST))
+        assert sent[-1][0] == "🚀 INFY buy confirmed: 5-min close 167.40 above 166.50" and sc["state"] == {}
 
 
 def test_nothing_from_before_the_scanner_was_armed(kite, sent):

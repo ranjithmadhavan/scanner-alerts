@@ -773,6 +773,8 @@ def _add_ma_jobs() -> None:
                       replace_existing=True)
     scheduler.add_job(ma_scanner.run_quotes, IntervalTrigger(seconds=30), id="ma-quotes", max_instances=1, coalesce=True,
                       replace_existing=True)
+    scheduler.add_job(ma_scanner.run_confirms, IntervalTrigger(seconds=30), id="ma-confirms", max_instances=1, coalesce=True,
+                      replace_existing=True)
 
 
 def start() -> None:

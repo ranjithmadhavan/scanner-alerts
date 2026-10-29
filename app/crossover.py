@@ -400,6 +400,11 @@ def scan(candles: list[Candle], rules, x: Exits) -> tuple[list[Entry], Setup | N
     return [t.entry for t in taken], pending, fast, slow
 
 
+def turned(candles: list[Candle], rules, i: int) -> bool:
+    """Has a crossover (a new trending phase, for ADX trend) come after candle i?"""
+    return any(k > i for k, _ in rules.prepare(candles).walk.crossovers)
+
+
 def trades(candles: list[Candle], rules, x: Exits, minutes: int = 0, start: int = 0) -> tuple[list[Trade], Walk]:
     """Every entry from candle `start` on, one position at a time: an entry while a trade is still open is
     passed over, and an open trade at the end blocks everything after it. With a second chance after a stop-out,
