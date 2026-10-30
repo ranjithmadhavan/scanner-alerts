@@ -8,7 +8,7 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from app import config
+from app import config, webhooks
 from app.market import IST, load_settings, now_ist, status_text
 from app.security import allowed_modules
 
@@ -54,6 +54,7 @@ templates.env.filters["company"] = _company
 templates.env.filters["ist"] = _ist
 templates.env.filters["when"] = _when
 templates.env.filters["price"] = _price
+templates.env.filters["hook_targets"] = lambda hook_ids, eps: webhooks.pick(eps, hook_ids)
 
 
 def render(request: Request, name: str, ctx: dict | None = None, status_code: int = 200) -> HTMLResponse:
@@ -67,6 +68,7 @@ def render(request: Request, name: str, ctx: dict | None = None, status_code: in
         "market_open": is_open,
         "market_text": market_text,
         "path": request.url.path,
+        "my_webhooks": webhooks.endpoints(user["username"]) if user else [],  # for the "send to" part of every form
     }
     return templates.TemplateResponse(request, name, {**base, **(ctx or {})}, status_code=status_code)
 

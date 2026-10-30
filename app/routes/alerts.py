@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import brokers, fractals, notify, prices
-from app import webhooks as hooks_module  # the forms have a field called `webhooks`
+from app import webhooks as hooks_module  # the forms have a field called `hook_ids`
 from app import scanner
 from app.kite import TIMEFRAMES, Candle, KiteAuthError, KiteError, find_instrument, search_instruments
 from app.market import in_scan_window, load_settings, now_ist, parse_hhmm
@@ -143,7 +143,7 @@ def _groups(alerts: list[dict]) -> list[dict]:
     return list(groups.values())
 
 
-def _overview(everything: list[dict]) -> dict:
+def _overview(everything: list[dict], eps: list[dict]) -> dict:
     """Figures for the line above the list: what is on watch, and what needs attention."""
     active = [a for a in everything if a["status"] == "active"]
     near = [(d, a) for a in active if (d := _distance(a)) is not None]
@@ -154,7 +154,7 @@ def _overview(everything: list[dict]) -> dict:
         "fractal_levels": sum(a["fractal"]["count"] for a in active if a.get("fractal")),
         "fractal_alerts": sum(1 for a in active if a.get("fractal")),
         "nearest": {"symbol": nearest[1]["symbol"], "pct": nearest[0]} if nearest else None,
-        "unsent": sum(1 for a in active if not a.get("channels") and not a.get("webhooks")),
+        "unsent": sum(1 for a in active if not a.get("channels") and not hooks_module.pick(eps, a.get("hook_ids"))),
         "unscanned": sum(1 for a in active if a.get("fractal") and not a["fractal"]["scanned"]),
     }
 
@@ -193,7 +193,7 @@ def _page_ctx(request: Request, user: dict) -> dict:
     return {
         "alerts": shown,
         "groups": _groups(shown),
-        "overview": _overview(everything),
+        "overview": _overview(everything, hooks_module.endpoints(username)),
         "total": len(everything),
         "counts": {**{k: sum(1 for a in everything if a["status"] == k) for k in ("active", "triggered", "paused")},
                    "all": len(everything)},
@@ -260,7 +260,8 @@ def _levels(condition: str, level: float, extra_condition: list[str], extra_leve
 
 def _build_alert(user: dict, symbol: str, condition: str, level: float, timeframe: str,
                  note: str, channels: list[str], extra_condition: list[str] = (),
-                 extra_level: list[str] = (), hooks: str = "", hook_payload: str = "") -> tuple[dict | None, str | None]:
+                 extra_level: list[str] = (), hooks: tuple[str, list[str]] = ("default", []),
+                 hook_payload: str = "") -> tuple[dict | None, str | None]:
     """Validate the New alert form. Returns (alert, None) or (None, error message)."""
     inst = _instrument(symbol)
     if not inst:
@@ -271,7 +272,7 @@ def _build_alert(user: dict, symbol: str, condition: str, level: float, timefram
     closes = any(uses_close(lv["condition"]) for lv in levels)
     if closes and timeframe not in TIMEFRAMES:
         return None, "Choose a candle timeframe."
-    hook_fields, error = _webhook_fields(hooks, hook_payload)
+    hook_fields, error = _webhook_fields(user, hooks, hook_payload)
     if error:
         return None, error
     now = now_ist().isoformat()
@@ -324,7 +325,7 @@ def _fractal_fields(fractal_timeframe: str, sides: str, triggers: list[str], con
 
 
 def _build_fractal_alert(user: dict, symbol: str, fractal_timeframe: str, sides: str, triggers: list[str], note: str,
-                         channels: list[str], hooks: str = "", hook_payload: str = "", confirm_timeframe: str = "",
+                         channels: list[str], hooks: tuple[str, list[str]] = ("default", []), hook_payload: str = "", confirm_timeframe: str = "",
                          min_candles: int = fractals.DEFAULT_MIN_BETWEEN, extremes_only: str = "") -> tuple[dict | None, str | None]:
     """Validate the New alert form in Fractals mode. Returns (alert, None) or (None, error message)."""
     inst = _instrument(symbol)
@@ -333,7 +334,7 @@ def _build_fractal_alert(user: dict, symbol: str, fractal_timeframe: str, sides:
     fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe, min_candles, extremes_only)
     if error:
         return None, error
-    hook_fields, error = _webhook_fields(hooks, hook_payload)
+    hook_fields, error = _webhook_fields(user, hooks, hook_payload)
     if error:
         return None, error
     now = now_ist().isoformat()
@@ -357,17 +358,9 @@ def _price_level(raw: str) -> float:
         return 0.0
 
 
-def _webhook_fields(hooks: str, hook_payload: str) -> tuple[dict, str | None]:
-    """The form's webhook boxes as alert fields. Returns (fields, None) or ({}, error)."""
-    urls, error = hooks_module.parse_urls(hooks)
-    if error:
-        return {}, error
-    payload, error = hooks_module.parse_payload(hook_payload)
-    if error:
-        return {}, error
-    if payload and not urls:
-        return {}, "Add a webhook URL to send that JSON to, or clear the JSON box."
-    return {"webhooks": urls, "webhook_payload": payload}, None
+def _webhook_fields(user: dict, hooks: tuple[str, list[str]], hook_payload: str) -> tuple[dict, str | None]:
+    """The form's webhook choice and JSON as alert fields. Returns (fields, None) or ({}, error)."""
+    return hooks_module.selection(user["username"], hooks[0], hooks[1], hook_payload)
 
 
 def _instrument(symbol: str):
@@ -464,7 +457,8 @@ def create(
     channels: list[str] = Form([]),
     extra_condition: list[str] = Form([]),
     extra_level: list[str] = Form([]),
-    webhooks: str = Form(""),
+    hook_mode: str = Form("default"),
+    hook_ids: list[str] = Form([]),
     webhook_payload: str = Form(""),
     fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
     confirm_timeframe: str = Form(""),
@@ -473,6 +467,7 @@ def create(
     min_candles: int = Form(fractals.DEFAULT_MIN_BETWEEN),
     extremes_only: str = Form(""),
 ):
+    webhooks = (hook_mode, hook_ids)
     if kind == "fractal":
         alert, error = _build_fractal_alert(user, symbol, fractal_timeframe, sides, triggers, note, channels,
                                             webhooks, webhook_payload, confirm_timeframe, min_candles, extremes_only)
@@ -660,10 +655,10 @@ def edit_form(request: Request, alert_id: str, user: dict = Depends(guard)):
     payload = json.dumps(json.loads(a["webhook_payload"]), indent=2) if a.get("webhook_payload") else ""
     if scanner.is_fractal(a):
         return render(request, "partials/alert_fractal_edit.html", {
-            "a": a, "hooks": a.get("webhooks") or [], "hook_payload": payload, **_fractal_options()})
+            "a": a, "hook_ids": a.get("hook_ids"), "hook_payload": payload, **_fractal_options()})
     return render(request, "partials/alert_edit.html", {
         "a": a, "levels": levels_of(a), "conditions": CONDITIONS, "max_levels": MAX_LEVELS,
-        "hooks": a.get("webhooks") or [], "hook_payload": payload,
+        "hook_ids": a.get("hook_ids"), "hook_payload": payload,
         "timeframes": [t for t in TIMEFRAMES if t != "1m"] + ["1m"]})
 
 
@@ -678,7 +673,8 @@ def edit(
     rearm: list[str] = Form([]),
     timeframe: str = Form("15m"),
     note: str = Form(""),
-    webhooks: str = Form(""),
+    hook_mode: str = Form("default"),
+    hook_ids: list[str] = Form([]),
     webhook_payload: str = Form(""),
     fractal_timeframe: str = Form(fractals.DEFAULT_TIMEFRAME),
     confirm_timeframe: str = Form(""),
@@ -694,7 +690,7 @@ def edit(
     if scanner.is_fractal(a):
         fields, error = _fractal_fields(fractal_timeframe, sides, triggers, confirm_timeframe, min_candles, extremes_only)
         if not error:
-            hook_fields, error = _webhook_fields(webhooks, webhook_payload)
+            hook_fields, error = _webhook_fields(user, (hook_mode, hook_ids), webhook_payload)
         if error:
             return fail(error)
         changes = {**fields, **hook_fields, "note": note.strip()[:140]}
@@ -732,7 +728,7 @@ def edit(
     closes = any(uses_close(lv["condition"]) for lv in levels)
     if closes and timeframe not in TIMEFRAMES:
         return fail("Choose a candle timeframe.")
-    hook_fields, error = _webhook_fields(webhooks, webhook_payload)
+    hook_fields, error = _webhook_fields(user, (hook_mode, hook_ids), webhook_payload)
     if error:
         return fail(error)
     changes = {"levels": levels, "timeframe": timeframe if closes else "", "note": note.strip()[:140], **hook_fields}
@@ -751,17 +747,17 @@ def edit(
 
 
 @router.post("/{alert_id}/webhooks/test")
-def webhook_test(alert_id: str, user: dict = Depends(guard), webhooks: str = Form(""), webhook_payload: str = Form(""),
-                 note: str = Form("")):
-    """POST a sample hit, marked as a test, to the URLs currently in the Edit panel (saved or not)."""
+def webhook_test(alert_id: str, user: dict = Depends(guard), hook_mode: str = Form("default"), hook_ids: list[str] = Form([]),
+                 webhook_payload: str = Form(""), note: str = Form("")):
+    """POST a sample hit, marked as a test, to the webhooks chosen in the Edit panel (saved or not)."""
     a = _own(alert_id, user)
     if not a:
         return HTMLResponse(status_code=404)
-    fields, error = _webhook_fields(webhooks, webhook_payload)
+    fields, error = _webhook_fields(user, (hook_mode, hook_ids), webhook_payload)
     if error:
         return fail(error)
-    if not fields["webhooks"]:
-        return fail("Add a webhook URL first.")
+    if not (eps := hooks_module.targets(user["username"], fields["hook_ids"])):
+        return fail("No webhook to send to. Add one on the Notifications page, or pick one here.")
     sample = {**a, **fields}
     if scanner.is_fractal(a):
         known = scanner.fractal_levels.get(a["id"], {})
@@ -770,21 +766,20 @@ def webhook_test(alert_id: str, user: dict = Depends(guard), webhooks: str = For
         message = note.strip()[:140] or f"Potential {sample_hit.signal}"
         text = f"Test: {scanner.fractal_text(sample, sample_hit)[0]} Nothing was hit."
         body = scanner.fractal_webhook_body(sample, sample_hit, message, text, f.level, now_ist(), test=True)
-        return _webhook_test_result(fields["webhooks"], body)
+        return _webhook_test_result(eps, body)
     hit = scanner.resolved(scanner.level_view(sample, levels_of(sample)[0]), float("inf"))
     up = hit["condition"] in ("high_above", "close_above")
     message = note.strip()[:140] or ("Potential sell" if up else "Potential buy")
     text = f"Test: {scanner.describe(hit)}. Nothing was hit."
     body = scanner.webhook_body(sample, hit, message, text, hit["level"], None, now_ist(), test=True)
-    return _webhook_test_result(fields["webhooks"], body)
+    return _webhook_test_result(eps, body)
 
 
-def _webhook_test_result(urls: list[str], body: dict):
-    result = hooks_module.send(urls, body)
+def _webhook_test_result(eps: list[dict], body: dict):
+    result = hooks_module.send_now(eps, body)
     if result != "sent":
         return fail(f"Webhook test failed. {result}")
-    count = len(urls)
-    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {count} webhook URL{'s' if count != 1 else ''}")
+    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {', '.join(e['name'] for e in eps)}")
 
 
 @router.post("/{alert_id}/pause")

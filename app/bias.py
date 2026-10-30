@@ -403,7 +403,7 @@ def prefs(username: str) -> dict:
     if "changes" not in doc and doc.get("telegram"):
         doc = {**doc, "changes": True}
     return {"changes": bool(doc.get("changes")), "signals": bool(doc.get("signals")), "telegram": bool(doc.get("telegram")),
-            "webhooks": doc.get("webhooks", []), "webhook_payload": doc.get("webhook_payload", ""),
+            "hook_ids": doc.get("hook_ids"), "webhook_payload": doc.get("webhook_payload", ""),
             "extremes_only": bool(doc.get("extremes_only"))}
 
 
@@ -482,8 +482,9 @@ def _deliver(username: str, p: dict, subject: str, body: str, hook: dict) -> dic
     out = {}
     if p["telegram"]:
         out["telegram"] = notify.send(username, ["telegram"], subject, body).get("telegram")
-    if p["webhooks"]:
-        out["webhook"] = webhooks.send(p["webhooks"], hook)
+    if hooks := webhooks.targets(username, p["hook_ids"]):
+        out["webhook"] = "sending"
+        webhooks.dispatch(hooks, hook)
     return out
 
 
@@ -491,7 +492,7 @@ def notify_all(snap: dict, s: MarketSettings | None = None) -> dict:
     """After a count: new signals to those who want them; at the 15-minute marks, a change of bias label too."""
     s = s or market_settings()
     people = [(u["username"], prefs(u["username"])) for u in store.list("users") if can_see(u["username"])]
-    people = [(u, p) for u, p in people if (p["telegram"] or p["webhooks"]) and (p["changes"] or p["signals"])]
+    people = [(u, p) for u, p in people if (p["changes"] or p["signals"]) and (p["telegram"] or webhooks.targets(u, p["hook_ids"]))]
     results: dict[str, dict] = {}
     fresh_all = new_signals(snap, previous(snap))
     for u, p in people:

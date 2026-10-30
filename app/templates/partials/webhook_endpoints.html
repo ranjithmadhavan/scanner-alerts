@@ -1,0 +1,89 @@
+{% from "partials/icons.html" import icon %}
+{# The person's webhooks: add, edit, test, rotate the signing secret, remove. `revealed` is a secret just made, shown once. #}
+<section id="webhooks" class="mt-12">
+  <div class="mb-3 px-1">
+    <h2 class="text-lg font-bold">Webhooks</h2>
+    <p class="mt-1 max-w-2xl text-[15px] text-ink-soft">Alerts and scanners can POST signed JSON to your own server, n8n, Zapier or a trading bot. Each one sends to your <strong>default</strong> webhooks unless you pick others on it.</p>
+  </div>
+
+  {% if revealed %}
+  <div class="mb-4 rounded-3xl border border-marigold/40 bg-marigold-50 px-6 py-5">
+    <p class="font-semibold text-marigold-dark">Copy this signing secret now. It won't be shown again.</p>
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <code class="min-w-0 flex-1 break-all rounded-xl bg-white px-3 py-2 font-mono text-[13px]">{{ revealed.secret }}</code>
+      <button type="button" data-copy="{{ revealed.secret }}" class="btn-outline shrink-0 px-3 py-1.5 text-xs">{{ icon('copy', 'h-3.5 w-3.5') }} Copy</button>
+    </div>
+    <p class="mt-2 text-[13px] leading-relaxed text-marigold-dark">Your receiver uses it to check the <code>X-Signature</code> header (how, below). Lost it? Rotate the secret to get a new one.</p>
+  </div>
+  {% endif %}
+
+  {% if endpoints %}
+  <div class="space-y-3">
+    {% for ep in endpoints %}
+    <article class="panel px-6 py-5">
+      <div class="flex flex-wrap items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="flex flex-wrap items-center gap-2">
+            <span class="font-display text-lg font-bold">{{ ep.name }}</span>
+            {% if ep.default %}<span class="rounded-full bg-peacock-50 px-2.5 py-0.5 text-xs font-semibold text-peacock">Default</span>{% endif %}
+          </p>
+          <p class="mt-1 break-all font-mono text-[13px] text-ink-soft">{{ ep.url }}</p>
+          <p class="mt-1 text-[13px] text-ink-soft">Signed with ••••{{ ep.secret_tail }}{% if ep.prev_until and ep.prev_until > now_iso %} and the old secret until {{ ep.prev_until|ist }}{% endif %}
+            {% if ep.header_name %}· {{ ep.header_name }}: ••••{{ ep.header_tail }}{% endif %}</p>
+          {% if ep.last %}
+          <p class="mt-1 text-[13px] {{ 'text-rise' if ep.last.ok else 'text-fall' }}">Last delivery {{ ep.last.at|ist }}: {{ 'delivered' if ep.last.ok else ep.last.detail }}</p>
+          {% else %}<p class="mt-1 text-[13px] text-marigold-dark">Nothing sent yet. Send a test to be sure it arrives.</p>{% endif %}
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <button type="button" class="btn-outline htmx-busy px-3 py-1.5 text-sm" hx-post="/notifications/webhooks/{{ ep.id }}/test" hx-target="#webhooks" hx-swap="outerHTML">{{ icon('send', 'h-4 w-4') }} Test</button>
+          <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" title="New signing secret (the old one works for 24 more hours)" aria-label="Rotate the signing secret of {{ ep.name }}"
+                  hx-post="/notifications/webhooks/{{ ep.id }}/rotate" hx-target="#webhooks" hx-swap="outerHTML" hx-confirm="Make a new signing secret for {{ ep.name }}? The old one keeps working for 24 hours.">{{ icon('refresh', 'h-4 w-4') }}</button>
+          <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" title="Remove this webhook" aria-label="Remove {{ ep.name }}"
+                  hx-post="/notifications/webhooks/{{ ep.id }}/remove" hx-target="#webhooks" hx-swap="outerHTML" hx-confirm="Remove {{ ep.name }}? Alerts and scanners stop sending to it.">{{ icon('trash', 'h-4 w-4') }}</button>
+        </div>
+      </div>
+      <details class="mt-3">
+        <summary class="cursor-pointer text-sm font-semibold text-peacock">Edit</summary>
+        <form class="mt-3" hx-post="/notifications/webhooks/{{ ep.id }}" hx-target="#webhooks" hx-swap="outerHTML">
+          {% with ep=ep, prefix='wh-' ~ ep.id ~ '-' %}{% include "partials/webhook_endpoint_fields.html" %}{% endwith %}
+          <button class="btn-primary htmx-busy mt-4 px-4 py-2 text-sm">Save</button>
+        </form>
+      </details>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if endpoints|length < max_endpoints %}
+  <details class="panel mt-3 px-6 py-5" {{ 'open' if not endpoints }}>
+    <summary class="flex cursor-pointer items-center gap-2 font-semibold">{{ icon('plus', 'h-4 w-4') }} Add a webhook</summary>
+    <form class="mt-4" hx-post="/notifications/webhooks" hx-target="#webhooks" hx-swap="outerHTML">
+      {% with ep={'default': not endpoints}, prefix='wh-new-' %}{% include "partials/webhook_endpoint_fields.html" %}{% endwith %}
+      <button class="btn-primary htmx-busy mt-4 px-4 py-2 text-sm">Add webhook</button>
+    </form>
+  </details>
+  {% endif %}
+
+  <details class="mt-3 px-1">
+    <summary class="cursor-pointer text-sm font-semibold text-peacock">How your receiver checks a request</summary>
+    <div class="mt-3 space-y-3 text-[13px] leading-relaxed text-ink-soft">
+      <p>Every request is a POST of JSON (with <code>"version": 1</code>) and these headers:</p>
+      <ul class="list-disc space-y-1 pl-5">
+        <li><code>X-Signature: t=1730000000,v1=5257a8…</code>: an HMAC-SHA256 of <code>t</code>, a dot and the raw body, keyed with the signing secret. While a secret is being rotated there are two <code>v1</code> values; accept either.</li>
+        <li><code>X-Webhook-Timestamp</code>: the same <code>t</code>. Refuse requests more than 5 minutes old, so a captured one can't be replayed.</li>
+        <li><code>X-Webhook-Id</code>: the same on every retry of one delivery. Ignore an id you've already handled.</li>
+        <li>Your own header, if you set one, for receivers that only check a key.</li>
+      </ul>
+      <p>A failed delivery (no answer, HTTP 429 or 5xx) is tried twice more, a few seconds apart. Answer with any 2xx once you have it.</p>
+<pre class="overflow-x-auto rounded-2xl bg-canvas p-4 font-mono text-[12px] leading-relaxed text-ink">import hashlib, hmac, time
+
+def verify(raw_body: bytes, signature: str, secret: str) -> bool:
+    parts = [p.split("=", 1) for p in signature.split(",")]
+    t = dict(parts)["t"]
+    if abs(time.time() - int(t)) > 300:
+        return False  # too old: a replay
+    expected = hmac.new(secret.encode(), t.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, v) for k, v in parts if k == "v1")</pre>
+    </div>
+  </details>
+</section>

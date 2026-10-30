@@ -1,5 +1,6 @@
 """Fractal bias: signals across the Nifty 50, how they've gone since, and the day's reading."""
 
+import json
 from datetime import date, datetime, time, timedelta
 
 import pytest
@@ -123,9 +124,10 @@ def kite(monkeypatch):
 def test_new_signals_every_check_and_bias_changes_at_the_quarter_hours(kite, monkeypatch):
     sent, hooks = [], []
     monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append((user, subject, body)) or {"telegram": "sent"})
-    monkeypatch.setattr(bias.webhooks, "send", lambda urls, body: hooks.append((urls, body)) or "sent")
-    bias.save_prefs("meera", {"changes": True, "signals": True, "telegram": True, "webhooks": ["https://hook.example/x"],
-                              "webhook_payload": '{"desk":"A"}'})
+    monkeypatch.setattr(bias.webhooks, "post", lambda ep, raw, delivery_id, retries=True: hooks.append((ep["name"], json.loads(raw))) or "sent")
+    store.put(bias.webhooks.COL, "w1", {"id": "w1", "user": "meera", "name": "Desk", "url": "https://hook.example/x", "default": True,
+                                        "secret": "", "created_at": "2026-10-01T09:00:00+05:30"})
+    bias.save_prefs("meera", {"changes": True, "signals": True, "telegram": True, "webhook_payload": '{"desk":"A"}'})  # default webhooks
     assert bias.capture_if_due(at(MON, 9, 15)) is None                                  # no candle closed yet
     snap = bias.capture_if_due(at(MON, 10, 0) + timedelta(seconds=30))
     assert snap["id"] == "2026-10-05T10:00" and snap["missing"] == ["NOTLISTED"]
@@ -146,13 +148,14 @@ def test_new_signals_every_check_and_bias_changes_at_the_quarter_hours(kite, mon
     assert day["slots"] == ["2026-10-05T10:00", "2026-10-05T10:05", "2026-10-05T10:10", "2026-10-05T10:15"]
     assert [p["bear"] for p in bias.series(day)] == [0, 0, 0, 40]
     # Bias changes only, on Telegram only: no signal messages, no webhooks.
-    bias.save_prefs("meera", {"changes": True, "signals": False, "telegram": True, "webhooks": [], "webhook_payload": ""})
+    bias.save_prefs("meera", {"changes": True, "signals": False, "telegram": True, "hook_ids": [], "webhook_payload": ""})
     before = len(hooks), len(sent)
     bias._done.clear()
     store.delete("bias_snapshots", "2026-10-05T10:15")
     store.update("bias_days", "2026-10-05", {"slots": day["slots"][:3], "announced": "Bullish"})
     bias.capture_if_due(at(MON, 10, 15) + timedelta(seconds=30))
     assert len(hooks) == before[0] and [x[1] for x in sent[before[1]:]] == ["🧭 Fractal bias turned Bearish (was Bullish) · 10:15 AM"]
+    store.delete(bias.webhooks.COL, "w1")
 
 
 def test_older_telegram_switch_still_means_bias_changes():
@@ -183,19 +186,23 @@ def test_the_page(kite, monkeypatch):
         assert "Only the super admin" in c.post("/bias/settings", data={"triggers": ["fail"], "min_candles": "3"}).headers["HX-Trigger"]
         # Notifications: Telegram needs setting up first; webhooks are checked and can be tested.
         assert "Notifications page" in c.post("/bias/notify", data={"changes": "1", "telegram": "1"}).headers["HX-Trigger"]
-        assert "can't be reached" in c.post("/bias/notify", data={"signals": "1", "webhooks": "http://localhost/x"}).headers["HX-Trigger"]
+        assert "Add one on the Notifications page" in c.get("/bias").text                       # no webhooks yet
+        assert "No webhook to send to" in c.post("/bias/notify/test", data={}).headers["HX-Trigger"]
         monkeypatch.setattr(bias.webhooks, "_is_public", lambda host: True)
         posted = []
 
         class Resp:
             status_code = 200
-        monkeypatch.setattr(bias.webhooks.httpx, "post", lambda url, json, **kw: posted.append((url, json)) or Resp())
-        r = c.post("/bias/notify", data={"signals": "1", "webhooks": "https://hook.example/x", "webhook_payload": '{"a": 1}'})
+        monkeypatch.setattr(bias.webhooks.httpx, "post", lambda url, content, **kw: posted.append((url, json.loads(content))) or Resp())
+        desk, _ = bias.webhooks.create("meera", "Desk", "https://hook.example/x", default=False)
+        r = c.post("/bias/notify", data={"signals": "1", "hook_mode": "pick", "hook_ids": [desk["id"]], "webhook_payload": '{"a": 1}'})
         assert "new signals to 1 webhook" in r.headers["HX-Trigger"] and 'name="signals" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" checked' in r.text
-        assert bias.prefs("meera") == {"changes": False, "signals": True, "telegram": False, "webhooks": ["https://hook.example/x"],
+        assert bias.prefs("meera") == {"changes": False, "signals": True, "telegram": False, "hook_ids": [desk["id"]],
                                        "webhook_payload": '{"a":1}', "extremes_only": False}
-        assert "Test request sent" in c.post("/bias/notify/test", data={"webhooks": "https://hook.example/x"}).headers["HX-Trigger"]
+        r = c.post("/bias/notify/test", data={"hook_mode": "pick", "hook_ids": [desk["id"]]})
+        assert "Test request sent to Desk" in r.headers["HX-Trigger"]
         assert posted[-1][1]["event"] == "fractal_bias_signals" and posted[-1][1]["test"] is True
+        store.delete(bias.webhooks.COL, desk["id"])
         c.post("/logout")
         c.post("/login", data={"username": "boss", "password": "boss-pass-123"})
         assert "Count these signals" in c.get("/bias").text
@@ -288,7 +295,7 @@ def test_a_signals_chart(kite, monkeypatch):
 def test_gap_flips_count_but_are_not_sent_as_signals(kite, monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append(subject) or {"telegram": "sent"})
-    bias.save_prefs("meera", {"changes": False, "signals": True, "telegram": True, "webhooks": [], "webhook_payload": ""})
+    bias.save_prefs("meera", {"changes": False, "signals": True, "telegram": True, "hook_ids": [], "webhook_payload": ""})
 
     def sig(symbol, flipped):
         return {"key": f"{symbol}:k", "symbol": symbol, "signal": "sell", "trigger": "confirm", "side": "low", "flipped": flipped,

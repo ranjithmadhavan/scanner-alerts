@@ -223,13 +223,14 @@ def fire(alert: dict, index: int, candle: Candle, price: float, now: datetime) -
         body += f"\nStill watching: {', '.join(waiting)}" if waiting else "\nThat was the last level on this alert."
     body += _with_sentiment(alert, now)
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
-    if alert.get("webhooks"):
-        results["webhook"] = webhooks.send(alert["webhooks"], webhook_body(alert, hit, signal, what, price, candle, now))
-    store.put("events", new_id(), {
+    if hooks := webhooks.targets(alert["user"], alert.get("hook_ids")):
+        results["webhook"] = "sending"
+    store.put("events", event_id := new_id(), {
         "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"], "key": alert_key(alert),
         "summary": describe(hit), "price": price, "level": hit["level"], "signal": "sell" if up else "buy",
         "at": now.isoformat(), "delivery": results,
     })
+    webhooks.dispatch(hooks, webhook_body(alert, hit, signal, what, price, candle, now), event_id)
     log.info("fired %s for %s: %s", alert["id"], alert["user"], results)
     return alert
 
@@ -421,13 +422,14 @@ def fire_fractal(alert: dict, hit: fractals.Hit, price: float, now: datetime) ->
                "last_hit": {"at": now.isoformat(), "text": summary, "price": price, "signal": hit.signal}}
     store.update("alerts", alert["id"], changes)
     results = notify.send(alert["user"], alert.get("channels", []), subject, body)
-    if alert.get("webhooks"):
-        results["webhook"] = webhooks.send(alert["webhooks"], fractal_webhook_body(alert, hit, signal, what, price, now))
-    store.put("events", new_id(), {
+    if hooks := webhooks.targets(alert["user"], alert.get("hook_ids")):
+        results["webhook"] = "sending"
+    store.put("events", event_id := new_id(), {
         "user": alert["user"], "alert_id": alert["id"], "symbol": alert["symbol"], "key": alert_key(alert),
         "summary": summary, "price": price, "level": f.level, "signal": hit.signal,
         "at": now.isoformat(), "delivery": results,
     })
+    webhooks.dispatch(hooks, fractal_webhook_body(alert, hit, signal, what, price, now), event_id)
     log.info("fractal %s for %s: %s %s", alert["id"], alert["user"], hit.key, results)
     return {**alert, **changes}
 

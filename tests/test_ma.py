@@ -336,6 +336,32 @@ def test_gap_entries_on_a_5_min_close(kite, sent):
         assert sent[-1][0] == "🚀 INFY buy confirmed: 5-min close 167.40 above 166.50" and sc["state"] == {}
 
 
+def test_daily_scanner_signals_go_to_the_default_webhooks_unless_it_picks(kite, sent, monkeypatch):
+    import json
+    from app import webhooks
+    from app.market import load_settings
+    s = load_settings()
+    posted = []
+    monkeypatch.setattr(webhooks, "post", lambda ep, raw, delivery_id, retries=True: posted.append((ep["name"], json.loads(raw))) or "sent")
+    for i, (name, default) in enumerate((("Bot", True), ("Desk", False))):
+        store.put(webhooks.COL, f"w{i}", {"id": f"w{i}", "user": "tara", "name": name, "url": f"https://{name.lower()}.example/h",
+                                          "default": default, "secret": "", "created_at": f"2026-09-0{i + 1}T09:00:00+05:30"})
+    at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
+    for hook_ids, to in ((None, ["Bot"]), (["w1"], ["Desk"]), ([], [])):
+        posted.clear()
+        store.delete("ma_scanners", "s1")
+        ma_scanner.evaluate(_scanner(hook_ids=hook_ids, webhook_payload='{"qty": 5}'), kite, s, at, s.close_at(at))
+        assert [n for n, _ in posted] == to, hook_ids
+        if to:
+            body = posted[0][1]
+            assert (body["version"], body["event"], body["timeframe"], body["payload"]) == (1, "ma_setups", "1d", {"qty": 5})
+            assert body["signals"][0] == {**body["signals"][0], "symbol": "INFY", "side": "buy", "level": 166.5, "stop": 164.0}
+    event = sorted(store.list("events", user="tara"), key=lambda e: e["at"])[-1]
+    assert "webhook" not in event["delivery"]
+    for i in range(2):
+        store.delete(webhooks.COL, f"w{i}")
+
+
 def test_nothing_from_before_the_scanner_was_armed(kite, sent):
     from app.market import load_settings
     s = load_settings()

@@ -5,6 +5,7 @@
 <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Tell us where to reach you. Each alert can use any of the places you set up here, and each place can reach several people.</p>
 
 {% include "partials/channels.html" %}
+{% include "partials/webhook_endpoints.html" %}
 
 <section class="mt-12">
   <h2 class="mb-3 px-1 text-lg font-bold">Recently sent</h2>
@@ -16,7 +17,7 @@
       <span class="text-sm text-ink-soft">{{ e.at|ist }}</span>
       <span class="ml-auto flex flex-wrap gap-1.5">
         {% for ch, res in e.delivery.items() %}
-        <span class="rounded-full px-2.5 py-0.5 text-xs font-medium {{ 'bg-rise-50 text-rise' if res == 'sent' else 'bg-fall-50 text-fall' }}" title="{{ res }}">{{ ch|capitalize }}{{ '' if res == 'sent' else ' failed' }}</span>
+        <span class="rounded-full px-2.5 py-0.5 text-xs font-medium {{ 'bg-rise-50 text-rise' if res == 'sent' else 'bg-canvas text-ink-soft' if res == 'sending' else 'bg-fall-50 text-fall' }}" title="{{ res }}">{{ ch|capitalize }}{{ '' if res == 'sent' else ' sending' if res == 'sending' else ' failed' }}</span>
         {% else %}<span class="text-xs text-ink-soft">No channels chosen</span>{% endfor %}
       </span>
     </li>

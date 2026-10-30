@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request
 
-from app import notify
+from app import notify, webhooks
 from app.market import now_ist
 from app.security import decrypt, encrypt, require
 from app.store import store
-from app.web import render, toast
+from app.web import fail, render, toast
 
 router = APIRouter(prefix="/notifications")
 guard = require("notifications")
@@ -39,12 +39,80 @@ def _ctx(user: dict) -> dict:
             for k, v in notify.CHANNELS.items()
         ],
         "events": sorted(store.list("events", user=user["username"]), key=lambda e: e["at"], reverse=True)[:15],
+        **_hooks_ctx(user),
     }
 
 
 @router.get("")
 def page(request: Request, user: dict = Depends(guard)):
     return render(request, "notifications.html", _ctx(user))
+
+
+# ---- webhooks (before the /{channel} routes, which would take /webhooks) ------------------------
+
+def _hooks_ctx(user: dict, revealed: dict | None = None) -> dict:
+    return {"endpoints": webhooks.endpoints(user["username"]), "max_endpoints": webhooks.MAX_ENDPOINTS,
+            "revealed": revealed, "now_iso": now_ist().isoformat()}
+
+
+def _hooks_panel(request: Request, user: dict, message: str, kind: str = "success", revealed: dict | None = None):
+    return toast(render(request, "partials/webhook_endpoints.html", _hooks_ctx(user, revealed)), message, kind)
+
+
+def _own_hook(hook_id: str, user: dict) -> dict | None:
+    ep = store.get(webhooks.COL, hook_id)
+    return ep if ep and ep["user"] == user["username"] else None
+
+
+@router.post("/webhooks")
+def hook_add(request: Request, user: dict = Depends(guard), name: str = Form(""), url: str = Form(""), default: str = Form(""),
+             header_name: str = Form(""), header_value: str = Form("")):
+    try:
+        ep, secret = webhooks.create(user["username"], name, url, bool(default), header_name, header_value)
+    except ValueError as e:
+        return fail(str(e))
+    return _hooks_panel(request, user, f"{ep['name']} added. Copy its signing secret now: it isn't shown again.",
+                        revealed={"id": ep["id"], "secret": secret})
+
+
+@router.post("/webhooks/{hook_id}")
+def hook_edit(request: Request, hook_id: str, user: dict = Depends(guard), name: str = Form(""), url: str = Form(""),
+              default: str = Form(""), header_name: str = Form(""), header_value: str = Form(""), drop_header: str = Form("")):
+    if not (ep := _own_hook(hook_id, user)):
+        return fail("That webhook is gone.")
+    try:
+        ep = webhooks.edit(ep, name, url, bool(default), header_name, header_value, bool(drop_header))
+    except ValueError as e:
+        return fail(str(e))
+    return _hooks_panel(request, user, f"{ep['name']} saved")
+
+
+@router.post("/webhooks/{hook_id}/test")
+def hook_test(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (ep := _own_hook(hook_id, user)):
+        return fail("That webhook is gone.")
+    now = now_ist()
+    result = webhooks.send_now([ep], {"event": "test", "test": True, "time": now.isoformat(),
+                                      "message": "Test from your stock scanner. If this arrived and its signature checks out, alerts will too."})
+    ok = result == "sent"
+    return _hooks_panel(request, user, f"Test delivered to {ep['name']}" if ok else f"Couldn't deliver: {result}", "success" if ok else "error")
+
+
+@router.post("/webhooks/{hook_id}/rotate")
+def hook_rotate(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (ep := _own_hook(hook_id, user)):
+        return fail("That webhook is gone.")
+    secret = webhooks.rotate(ep)
+    return _hooks_panel(request, user, "New signing secret made. The old one keeps working for 24 hours.",
+                        revealed={"id": ep["id"], "secret": secret})
+
+
+@router.post("/webhooks/{hook_id}/remove")
+def hook_remove(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (ep := _own_hook(hook_id, user)):
+        return fail("That webhook is gone.")
+    webhooks.remove(ep)
+    return _hooks_panel(request, user, f"{ep['name']} removed")
 
 
 def _tail(plain: str) -> str:

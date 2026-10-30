@@ -1,0 +1,33 @@
+{# A webhook's fields, for adding one or editing `ep`. A saved header value is never shown: blank keeps it. #}
+<div class="grid gap-4 sm:grid-cols-[1fr_2fr]">
+  <div>
+    <label for="{{ prefix }}name" class="label">Name</label>
+    <input id="{{ prefix }}name" name="name" maxlength="40" value="{{ ep.name or '' }}" placeholder="e.g. Trading bot" class="field" autocomplete="off">
+  </div>
+  <div>
+    <label for="{{ prefix }}url" class="label">URL</label>
+    <input id="{{ prefix }}url" name="url" type="url" required value="{{ ep.url or '' }}" placeholder="https://example.com/hook" class="field font-mono text-[13px]" autocomplete="off" spellcheck="false">
+  </div>
+</div>
+<label class="mt-4 flex cursor-pointer items-start gap-2.5">
+  <input type="checkbox" name="default" value="1" class="mt-1 h-4 w-4 rounded accent-peacock" {{ 'checked' if ep.default }}>
+  <span><span class="text-[15px] font-semibold">Default</span>
+    <span class="block text-[13px] leading-snug text-ink-soft">Every alert and scanner that doesn't pick its own webhooks sends here.</span></span>
+</label>
+<div class="mt-4 grid gap-4 sm:grid-cols-[1fr_2fr]">
+  <div>
+    <label for="{{ prefix }}hname" class="label">Header name <span class="font-normal text-ink-soft">(optional)</span></label>
+    <input id="{{ prefix }}hname" name="header_name" maxlength="64" value="{{ ep.header_name or '' }}" placeholder="X-API-Key" class="field font-mono text-[13px]" autocomplete="off" spellcheck="false">
+  </div>
+  <div>
+    <label for="{{ prefix }}hvalue" class="label">Header value <span class="font-normal text-ink-soft">(optional)</span></label>
+    <input id="{{ prefix }}hvalue" name="header_value" type="password" maxlength="500" placeholder="{{ 'Saved (••••' ~ ep.header_tail ~ '). Type a new one to replace it' if ep.header_name else 'Your API key or Bearer …' }}"
+           class="field font-mono text-[13px]" autocomplete="new-password" spellcheck="false" data-1p-ignore data-lpignore="true">
+  </div>
+</div>
+<p class="mt-1.5 text-[13px] leading-relaxed text-ink-soft">For receivers that check a key in a header. Stored encrypted; it's sent only to this URL, over https. Every request is also signed with this webhook's secret.</p>
+{% if ep.header_name %}
+<label class="mt-2 flex cursor-pointer items-center gap-2 text-sm">
+  <input type="checkbox" name="drop_header" value="1" class="h-4 w-4 rounded accent-peacock"> Stop sending this header
+</label>
+{% endif %}

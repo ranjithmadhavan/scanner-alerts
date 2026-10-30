@@ -23,3 +23,11 @@ def _kite_without_waiting(monkeypatch):
     monkeypatch.setattr(kite, "INSTRUMENTS_URL", "http://127.0.0.1:9/instruments")  # refused at once
     monkeypatch.setattr(kite, "_waits", {})
     monkeypatch.setattr(kite, "_waits_loaded", True)
+
+
+@pytest.fixture(autouse=True)
+def _webhooks_inline(monkeypatch):
+    """Webhook deliveries run as they are sent rather than in the background, and retry without waiting."""
+    from app import webhooks
+    monkeypatch.setattr(webhooks, "_run", lambda fn, *a: fn(*a))
+    monkeypatch.setattr(webhooks, "RETRY_WAITS", (0, 0))

@@ -17,7 +17,7 @@ guard = require("bias")
 
 def _notify_ctx(user: dict, p: dict | None = None) -> dict:
     p = p or bias.prefs(user["username"])
-    return {"np": p, "np_hooks": "\n".join(p["webhooks"]),
+    return {"np": p,
             "np_payload": json.dumps(json.loads(p["webhook_payload"]), indent=2) if p["webhook_payload"] else "",
             "tg_ready": notify.recipient_ready("telegram", notify.load_contacts(user["username"]))}
 
@@ -112,30 +112,29 @@ def capture_now(request: Request, user: dict = Depends(guard)):
     return toast(response, f"Counted: {len(snap['signals'])} signals, {snap['label'].lower()}")
 
 
-def _prefs_from_form(user: dict, changes: str, signals: str, telegram: str, hooks: str, payload: str) -> tuple[dict, str | None]:
-    urls, error = webhooks.parse_urls(hooks)
-    if not error:
-        payload, error = webhooks.parse_payload(payload)
+def _prefs_from_form(user: dict, changes: str, signals: str, telegram: str, hook_mode: str, hook_ids: list[str],
+                     payload: str) -> tuple[dict, str | None]:
+    hooks, error = webhooks.selection(user["username"], hook_mode, hook_ids, payload)
     if error:
         return {}, error
-    if payload and not urls:
-        return {}, "Add a webhook URL to send that JSON to, or clear the JSON box."
     if telegram and not notify.recipient_ready("telegram", notify.load_contacts(user["username"])):
         return {}, "Set up Telegram on the Notifications page first."
     return {"changes": bool(changes), "signals": bool(signals), "telegram": bool(telegram),
-            "webhooks": urls, "webhook_payload": payload, "extremes_only": bias.prefs(user["username"])["extremes_only"]}, None
+            **hooks, "extremes_only": bias.prefs(user["username"])["extremes_only"]}, None
 
 
 @router.post("/notify")
 def save_notify(request: Request, user: dict = Depends(guard), changes: str = Form(""), signals: str = Form(""),
-                telegram: str = Form(""), webhooks_text: str = Form("", alias="webhooks"), webhook_payload: str = Form("")):
+                telegram: str = Form(""), hook_mode: str = Form("default"), hook_ids: list[str] = Form([]),
+                webhook_payload: str = Form("")):
     """What this person hears about (bias changes, new signals) and where (Telegram, their webhooks)."""
-    p, error = _prefs_from_form(user, changes, signals, telegram, webhooks_text, webhook_payload)
+    p, error = _prefs_from_form(user, changes, signals, telegram, hook_mode, hook_ids, webhook_payload)
     if error:
         return fail(error)
     bias.save_prefs(user["username"], p)
     what = [w for w, on in (("bias changes", p["changes"]), ("new signals", p["signals"])) if on]
-    where = [w for w, on in (("Telegram", p["telegram"]), (f"{len(p['webhooks'])} webhook{'s' if len(p['webhooks']) != 1 else ''}", p["webhooks"])) if on]
+    hooks = webhooks.targets(user["username"], p["hook_ids"])
+    where = [w for w, on in (("Telegram", p["telegram"]), (f"{len(hooks)} webhook{'s' if len(hooks) != 1 else ''}", hooks)) if on]
     msg = f"Fractal bias: {' and '.join(what)} to {' and '.join(where)}" if what and where else "Fractal bias notifications are off"
     return toast(render(request, "partials/bias_notify.html", _notify_ctx(user, p)), msg)
 
@@ -149,22 +148,23 @@ def set_extremes(user: dict = Depends(guard), on: str = Form("")):
 
 
 @router.post("/notify/test")
-def test_notify(user: dict = Depends(guard), webhooks_text: str = Form("", alias="webhooks"), webhook_payload: str = Form("")):
-    """Send a sample new-signal request to the webhook URLs in the form, without saving anything."""
-    urls, error = webhooks.parse_urls(webhooks_text)
-    if not error:
-        webhook_payload, error = webhooks.parse_payload(webhook_payload)
-    if error or not urls:
-        return fail(error or "Add a webhook URL to test.")
+def test_notify(user: dict = Depends(guard), hook_mode: str = Form("default"), hook_ids: list[str] = Form([]),
+                webhook_payload: str = Form("")):
+    """Send a sample new-signal request to the webhooks chosen in the form, without saving anything."""
+    hooks, error = webhooks.selection(user["username"], hook_mode, hook_ids, webhook_payload)
+    eps = webhooks.targets(user["username"], hooks.get("hook_ids")) if not error else []
+    if error or not eps:
+        return fail(error or "No webhook to send to. Add one on the Notifications page, or pick one here.")
+    webhook_payload = hooks["webhook_payload"]
     now = now_ist()
     sample = {"symbol": "INFY", "signal": "buy", "trigger": "confirm", "side": "low", "flipped": False, "level": 1500.0,
               "price": 1504.5, "stop": 1497.2, "target": 1528.0, "at": now.isoformat(), "status": "held"}
     snap = {"id": f"{now.date().isoformat()}T{now:%H:%M}", "date": now.date().isoformat(), "at": now.isoformat(), "signals": [sample]}
     body = {**bias.hook_body("fractal_bias_signals", snap, {"webhook_payload": webhook_payload}, signals=[sample]), "test": True}
-    result = webhooks.send(urls, body)
+    result = webhooks.send_now(eps, body)
     if result != "sent":
         return fail(f"Webhook test failed. {result}")
-    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {len(urls)} webhook URL{'s' if len(urls) != 1 else ''}")
+    return toast(HTMLResponse("", headers={"HX-Reswap": "none"}), f"Test request sent to {', '.join(e['name'] for e in eps)}")
 
 
 @router.post("/recount")

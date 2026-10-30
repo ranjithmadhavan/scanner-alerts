@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import config, kite, scanner
+from app import config, kite, scanner, webhooks
 from app.store import db_stats, store
 from app.routes import account, admin, alerts, auth, bias, broker, indicators, notifications, oi
 from app.security import Forbidden, LoginRequired, seed_superadmin
@@ -41,6 +41,11 @@ def _warm_caches() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     seed_superadmin()
+    try:  # webhook URLs saved on alerts and scanners before webhooks were set up once, on the Notifications page
+        if moved := webhooks.migrate():
+            logging.info("moved the webhook URLs of %d alerts and scanners to saved webhooks", moved)
+    except Exception:
+        logging.exception("couldn't move webhook URLs to saved webhooks")
     threading.Thread(target=_warm_caches, daemon=True).start()
     if config.SCANNER_ENABLED:
         scanner.start()

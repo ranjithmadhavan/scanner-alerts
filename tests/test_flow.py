@@ -715,7 +715,19 @@ def test_edit_alert_add_change_remove_and_rearm_levels(client, monkeypatch):
     store.delete("alerts", "e2")
 
 
-def test_webhooks_are_optional_and_post_json_when_a_level_is_hit(client, monkeypatch):
+def _signed_by(secret: str, body: bytes, signature: str) -> bool:
+    """What a receiver does with X-Signature: recompute the HMAC of "<t>.<raw body>" and compare."""
+    import hashlib
+    import hmac
+    parts = [p.split("=", 1) for p in signature.split(",")]
+    t = dict(parts)["t"]
+    expected = hmac.new(secret.encode(), t.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, v) for k, v in parts if k == "v1")
+
+
+def test_webhooks_set_up_once_signed_and_chosen_per_alert(client, monkeypatch):
+    import json
+    import re
     from app import webhooks
     login(client, "boss", "boss-pass-123")
     monkeypatch.setattr("app.routes.alerts._armed_price", lambda u, a: None)
@@ -726,41 +738,64 @@ def test_webhooks_are_optional_and_post_json_when_a_level_is_hit(client, monkeyp
         def __init__(self, code):
             self.status_code = code
 
-    def fake_post(url, json, timeout, follow_redirects, headers):
-        posted.append((url, json))
+    def fake_post(url, content, headers, timeout, follow_redirects):
+        assert follow_redirects is False
+        posted.append((url, content, headers))
         return Resp(500 if "down" in url else 200)
     monkeypatch.setattr(webhooks.httpx, "post", fake_post)
 
+    def add(**form):
+        return client.post("/notifications/webhooks", data=form)
+
+    # Settings: https and public only; a header must be a real, non-reserved one with a value.
+    for bad, why in (({"url": "http://bot.example/hook"}, "must start with https://"), ({"url": "https://localhost/x"}, "can't be reached"),
+                     ({"url": "https://bot.example/hook", "header_name": "Content-Type", "header_value": "x"}, "set by the app"),
+                     ({"url": "https://bot.example/hook", "header_name": "X-API-Key"}, "1 to 500 characters")):
+        assert why in add(**bad).headers["HX-Trigger"], bad
+    assert webhooks.endpoints("boss") == []
+    r = add(name="Bot", url="https://bot.example/hook", default="1", header_name="X-API-Key", header_value="key-12345678")
+    secret = re.search(r"whsec_[\w-]+", r.text).group(0)                     # shown once...
+    bot = webhooks.endpoints("boss")[0]
+    assert bot["default"] and bot["secret_tail"] == secret[-4:] and secret not in json.dumps(bot)   # ...and kept encrypted
+    assert "key-12345678" not in json.dumps(bot) and bot["header_tail"] == "5678"
+    page = client.get("/notifications").text
+    assert secret not in page and "key-12345678" not in page and "X-API-Key: ••••5678" in page
+    add(name="Down", url="https://down.example/hook")
+    down = webhooks.endpoints("boss")[1]
+    assert not down["default"]
+
+    # Its test: signed, with the key header, and remembered.
+    r = client.post(f"/notifications/webhooks/{bot['id']}/test")
+    assert "Test delivered to Bot" in r.headers["HX-Trigger"] and "Last delivery" in r.text
+    url, raw, headers = posted[-1]
+    assert _signed_by(secret, raw, headers["X-Signature"]) and not _signed_by("whsec_wrong", raw, headers["X-Signature"])
+    assert headers["X-API-Key"] == "key-12345678" and headers["X-Webhook-Id"] and json.loads(raw)["version"] == 1
+
+    # Alerts: no choice is the default webhooks; picked ones replace them; or none.
     def create(**more):
         return client.post("/alerts", data={"symbol": "INFY", "condition": "cross", "level": "1510", **more})
-
-    # Bad input is refused and nothing is saved.
-    for bad in ({"webhooks": "ftp://example.com/x"}, {"webhooks": "http://localhost/hook"},
-                {"webhooks": "https://a.example/h", "webhook_payload": "{not json"}, {"webhook_payload": '{"a": 1}'},
-                {"webhooks": "\n".join(f"https://h{i}.example/x" for i in range(6))}):
+    for bad in ({"hook_mode": "pick"}, {"hook_mode": "pick", "hook_ids": ["not-mine"]}, {"webhook_payload": "{not json"}):
         assert create(**bad).headers.get("HX-Reswap") == "none", bad
     assert store.list("alerts", user="boss") == []
+    assert "My default webhooks" in client.get("/alerts").text
+    create(note="defaults")
+    create(note="picked", hook_mode="pick", hook_ids=[down["id"], bot["id"]], webhook_payload='{"qty": 50}')
+    r = create(note="none", hook_mode="none")
+    assert "1 webhook" in r.text and "2 webhooks" in r.text
+    alerts = {a["note"]: a for a in store.list("alerts", user="boss")}
+    assert alerts["defaults"]["hook_ids"] is None and alerts["picked"]["hook_ids"] == [down["id"], bot["id"]]
+    assert alerts["none"]["hook_ids"] == [] and alerts["picked"]["webhook_payload"] == '{"qty":50}'
+    picked = alerts["picked"]
+    form = client.get(f"/alerts/{picked['id']}/edit").text
+    assert 'value="pick" class="mt-1 h-4 w-4 accent-peacock" checked' in form and "Send a test request" in form
+    r = client.post(f"/alerts/{picked['id']}/webhooks/test", data={"hook_mode": "pick", "hook_ids": [bot["id"]]})
+    assert "Test request sent to Bot" in r.headers["HX-Trigger"] and json.loads(posted[-1][1])["test"] is True
 
-    r = create(webhooks="https://bot.example/hook\nhttps://down.example/hook\nhttps://bot.example/hook",
-               webhook_payload='{"strategy": "sweep",\n "qty": 50, "tags": [["a"], ["b"]]}')
-    assert "2 webhooks" in r.text
-    a = store.list("alerts", user="boss")[0]
-    assert a["webhooks"] == ["https://bot.example/hook", "https://down.example/hook"]
-    assert a["webhook_payload"] == '{"strategy":"sweep","qty":50,"tags":[["a"],["b"]]}'
-
-    # The edit panel shows them, can test them, and can change them.
-    form = client.get(f"/alerts/{a['id']}/edit").text
-    assert "https://bot.example/hook" in form and "&#34;strategy&#34;" in form and "Send a test request" in form
-    r = client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://bot.example/hook", "webhook_payload": '{"x": 1}'})
-    assert "Test request sent to 1 webhook URL" in r.headers["HX-Trigger"]
-    assert posted[-1][1]["test"] is True and posted[-1][1]["payload"] == {"x": 1} and posted[-1][1]["symbol"] == "INFY"
-    assert "HTTP 500" in client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://down.example/h"}).headers["HX-Trigger"]
-    assert store.get("alerts", a["id"])["webhooks"] == a["webhooks"]          # testing saves nothing
-
-    # A hit posts to every URL; one failing endpoint doesn't stop the other, and the result is logged.
+    # A hit: each alert to its own webhooks. A 5xx is tried again (same delivery id), and the result is logged.
     now = datetime(2026, 9, 28, 11, 0, 30, tzinfo=IST)
     store.put("brokers", "boss", {"mode": "enctoken", "status": "connected", "enctoken": "x"})
-    store.update("alerts", a["id"], {"armed_at": now.replace(second=0).isoformat(), "note": "Range high"})
+    for a in alerts.values():
+        store.update("alerts", a["id"], {"armed_at": now.replace(second=0).isoformat()})
 
     class FakeKite:
         def profile(self):
@@ -771,20 +806,57 @@ def test_webhooks_are_optional_and_post_json_when_a_level_is_hit(client, monkeyp
     monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
     posted.clear()
     scanner.run_scan(now)
-    assert [url for url, _ in posted] == a["webhooks"]
-    body = posted[0][1]
-    assert body["symbol"] == "INFY" and body["message"] == "Range high" and body["test"] is False
-    assert (body["direction"], body["level"], body["price"], body["condition"]) == ("above", 1510.0, 1512, "high_above")
-    assert body["text"] == "INFY crossed above your level of 1510." and body["time"] == now.isoformat()
-    assert body["payload"] == {"strategy": "sweep", "qty": 50, "tags": [["a"], ["b"]]}
-    event = [e for e in store.list("events", user="boss") if e["alert_id"] == a["id"]][0]
-    assert event["delivery"]["webhook"] == "Reached 1 of 2. down.example: HTTP 500"
+    by_note = {}
+    for url, raw, headers in posted:
+        body = json.loads(raw)
+        by_note.setdefault(body["message"], []).append((url, headers["X-Webhook-Id"]))
+        assert _signed_by(secret, raw, headers["X-Signature"]) or "down" in url
+    assert set(by_note) == {"defaults", "picked"}
+    assert [u for u, _ in by_note["defaults"]] == ["https://bot.example/hook"]
+    tries = [i for u, i in by_note["picked"] if "down" in u]
+    assert len(tries) == 3 and len(set(tries)) == 1                            # three tries, one delivery id
+    body = json.loads(next(raw for url, raw, _ in posted if json.loads(raw)["message"] == "picked"))
+    assert body["symbol"] == "INFY" and body["payload"] == {"qty": 50} and body["version"] == 1
+    events = {e["alert_id"]: e["delivery"] for e in store.list("events", user="boss")}
+    assert events[alerts["defaults"]["id"]]["webhook"] == "sent"
+    assert events[picked["id"]]["webhook"] == "Reached 1 of 2. Down: HTTP 500"
+    assert "webhook" not in events[alerts["none"]["id"]]
 
-    # Clearing the box in the edit panel removes the webhooks.
-    client.post(f"/alerts/{a['id']}/edit", data={"extra_index": ["0"], "extra_condition": ["cross"], "extra_level": ["1510"]})
-    saved = store.get("alerts", a["id"])
-    assert saved["webhooks"] == [] and saved["webhook_payload"] == ""
-    store.delete("alerts", a["id"])
+    # Rotating: both secrets sign for a while. Removing: the alerts that picked it drop it.
+    r = client.post(f"/notifications/webhooks/{bot['id']}/rotate")
+    fresh = re.search(r"whsec_[\w-]+", r.text).group(0)
+    client.post(f"/notifications/webhooks/{bot['id']}/test")
+    _, raw, headers = posted[-1]
+    assert fresh != secret and _signed_by(fresh, raw, headers["X-Signature"]) and _signed_by(secret, raw, headers["X-Signature"])
+    client.post(f"/notifications/webhooks/{down['id']}/remove")
+    assert store.get("alerts", picked["id"])["hook_ids"] == [bot["id"]] and [e["name"] for e in webhooks.endpoints("boss")] == ["Bot"]
+    # Someone else's webhook can't be touched.
+    store.put(webhooks.COL, "theirs", {**bot, "id": "theirs", "user": "other"})
+    assert "gone" in client.post("/notifications/webhooks/theirs/test").headers["HX-Trigger"]
+    for a in alerts.values():
+        store.delete("alerts", a["id"])
+    for ep in store.list(webhooks.COL):
+        store.delete(webhooks.COL, ep["id"])
+
+
+def test_webhook_urls_saved_on_alerts_move_to_saved_webhooks():
+    from app import webhooks
+    store.put("alerts", "m1", {"id": "m1", "user": "mia", "webhooks": ["https://old.example/h", "https://two.example/h"]})
+    store.put("alerts", "m2", {"id": "m2", "user": "mia", "webhooks": ["https://old.example/h"]})
+    store.put("ma_scanners", "m3", {"id": "m3", "user": "mia", "webhooks": []})
+    store.put("users", "mia", {"username": "mia"})
+    store.put("bias_alerts", "mia", {"signals": True, "webhooks": ["https://two.example/h"]})
+    assert webhooks.migrate() == 4 and webhooks.migrate() == 0
+    eps = {e["url"]: e for e in webhooks.endpoints("mia")}
+    assert set(eps) == {"https://old.example/h", "https://two.example/h"} and not any(e["default"] for e in eps.values())
+    old, two = eps["https://old.example/h"]["id"], eps["https://two.example/h"]["id"]
+    assert store.get("alerts", "m1")["hook_ids"] == [old, two] and store.get("alerts", "m2")["hook_ids"] == [old]
+    assert store.get("ma_scanners", "m3")["hook_ids"] is None                  # had none: now the defaults (none yet)
+    assert store.get("bias_alerts", "mia")["hook_ids"] == [two] and store.get("alerts", "m1")["webhooks"] is None
+    for col, i in (("alerts", "m1"), ("alerts", "m2"), ("ma_scanners", "m3"), ("users", "mia"), ("bias_alerts", "mia")):
+        store.delete(col, i)
+    for e in eps.values():
+        store.delete(webhooks.COL, e["id"])
 
 
 def test_webhook_urls_must_be_public():
@@ -792,7 +864,9 @@ def test_webhook_urls_must_be_public():
     assert "isn't a web address" in webhooks.url_problem("javascript:alert(1)")
     for private in ("http://127.0.0.1/x", "http://10.0.0.5/x", "http://169.254.169.254/latest/meta-data", "http://[::1]/x"):
         assert "can't be reached from the internet" in webhooks.url_problem(private), private
-    assert webhooks.send(["http://127.0.0.1/x"], {}) == "127.0.0.1: not a public address"
+    ep = {"id": "p1", "name": "Local", "url": "https://127.0.0.1/x", "secret": ""}
+    assert webhooks.send_now([ep], {}) == "Local: not a public address"
+    store.delete(webhooks.COL, "p1")
 
 
 def test_nothing_is_scanned_outside_market_hours_or_on_holidays(client, monkeypatch):
@@ -855,7 +929,8 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
 
     class Ok:
         status_code = 200
-    monkeypatch.setattr(webhooks.httpx, "post", lambda url, json, timeout, follow_redirects, headers: posted.append(json) or Ok())
+    monkeypatch.setattr(webhooks.httpx, "post", lambda url, content, **kw: posted.append(__import__("json").loads(content)) or Ok())
+    client.post("/notifications/webhooks", data={"name": "Bot", "url": "https://bot.example/hook", "default": "1"})
 
     friday = datetime(2026, 9, 25, 9, 15, tzinfo=IST)
     monday = datetime(2026, 9, 28, 9, 15, tzinfo=IST)
@@ -885,7 +960,7 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
     # Created from the New alert form in Fractals mode: no price level needed.
     r = client.post("/alerts", data={"symbol": "INFY", "kind": "fractal", "min_candles": "0", "fractal_timeframe": "30m", "sides": "both",
                                      "triggers": ["touch", "reject"], "channels": ["telegram"],
-                                     "webhooks": "https://bot.example/hook", "webhook_payload": '{"qty": 50}'})
+                                     "webhook_payload": '{"qty": 50}'})  # to the default webhook
     assert "Watching INFY 30 min fractals" in r.headers["HX-Trigger"] and "Fractal 30 min" in r.text
     assert "levels appear after the first scan" in r.text
     a = store.list("alerts", user="boss")[0]
@@ -938,18 +1013,21 @@ def test_fractal_alert_end_to_end(client, monkeypatch):
 
     # The edit panel is the fractal one; changing the timeframe starts afresh.
     form = client.get(f"/alerts/{a['id']}/edit").text
-    assert "Edit INFY fractal alert" in form and "Break fails" in form and "https://bot.example/hook" in form
-    r = client.post(f"/alerts/{a['id']}/webhooks/test", data={"webhooks": "https://bot.example/hook"})
+    assert "Edit INFY fractal alert" in form and "Break fails" in form and "Bot" in form
+    r = client.post(f"/alerts/{a['id']}/webhooks/test", data={"hook_mode": "default"})
     assert "Test request sent" in r.headers["HX-Trigger"] and posted[-1]["test"] is True and posted[-1]["event"] == "fractal_hit"
-    r = client.post(f"/alerts/{a['id']}/edit", data={"fractal_timeframe": "1h", "sides": "low", "triggers": ["fail"], "note": "Sweep"})
+    r = client.post(f"/alerts/{a['id']}/edit", data={"fractal_timeframe": "1h", "sides": "low", "triggers": ["fail"], "note": "Sweep",
+                                                     "hook_mode": "none"})
     assert "INFY fractal alert updated" in r.headers["HX-Trigger"]
     saved = store.get("alerts", a["id"])
     assert (saved["timeframe"], saved["sides"], saved["triggers"], saved["note"], saved["fired"]) == ("1h", "low", ["fail"], "Sweep", [])
-    assert saved["webhooks"] == []                                            # the box was left empty
+    assert saved["hook_ids"] == []                                            # no webhooks now
     client.post(f"/alerts/{a['id']}/pause")
     client.post(f"/alerts/{a['id']}/rearm")
     assert store.get("alerts", a["id"])["status"] == "active"
     store.delete("alerts", a["id"])
+    for ep in webhooks.endpoints("boss"):
+        store.delete(webhooks.COL, ep["id"])
     scanner._fractal_history.clear()
 
 

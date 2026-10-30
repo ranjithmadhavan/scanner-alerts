@@ -52,8 +52,9 @@
   {% else %}
     <a href="/notifications" class="text-xs font-medium text-marigold-dark underline decoration-marigold/40 underline-offset-2">No channels set up</a>
   {% endfor %}
-  {% if a.webhooks %}<span class="rounded-full border border-peacock/25 bg-peacock-50 px-2 py-px text-[11px] font-medium text-peacock" title="{{ a.webhooks|join('\n') }}">{{ a.webhooks|length }} webhook{{ 's' if a.webhooks|length != 1 }}</span>{% endif %}
-  {% if channels|selectattr('ready')|list and not a.channels and not a.webhooks %}<span class="text-xs text-marigold-dark">Not sent anywhere</span>{% endif %}
+  {% set hooks = a.hook_ids|hook_targets(my_webhooks) %}
+  {% if hooks %}<span class="rounded-full border border-peacock/25 bg-peacock-50 px-2 py-px text-[11px] font-medium text-peacock" title="{{ hooks|map(attribute='name')|join('\n') }}">{{ hooks|length }} webhook{{ 's' if hooks|length != 1 }}</span>{% endif %}
+  {% if channels|selectattr('ready')|list and not a.channels and not hooks %}<span class="text-xs text-marigold-dark">Not sent anywhere</span>{% endif %}
   </span>
 {%- endmacro %}
 

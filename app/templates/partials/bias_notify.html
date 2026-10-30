@@ -26,13 +26,8 @@
       {% else %}
       <p class="text-[15px] text-ink-soft">Telegram · <a href="/notifications" class="font-semibold text-peacock hover:underline">set it up first</a></p>
       {% endif %}
-      <label class="label mt-4" for="bias-hooks">Webhook URLs <span class="font-normal text-ink-soft">(optional, one per line)</span></label>
-      <textarea id="bias-hooks" name="webhooks" rows="2" class="field font-mono text-sm" placeholder="https://example.com/hook">{{ np_hooks }}</textarea>
-      <details class="mt-2" {{ 'open' if np_payload }}>
-        <summary class="cursor-pointer text-sm font-semibold text-peacock">Extra JSON for webhooks</summary>
-        <textarea name="webhook_payload" rows="3" class="field mt-2 font-mono text-sm" placeholder='{"strategy": "fractal-bias"}'>{{ np_payload }}</textarea>
-        <p class="mt-1 text-[13px] text-ink-soft">Sent as <code>payload</code>. Each request is JSON with <code>event</code> (<code>fractal_bias_signals</code> or <code>fractal_bias_change</code>), <code>signals</code> or <code>label</code>/<code>was</code>, the current <code>bias</code>, and a <code>link</code>.</p>
-      </details>
+      {% with hook_ids=np.hook_ids, hook_payload=np_payload, prefix='bias-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+      <p class="mt-2 text-[13px] text-ink-soft">Each request is JSON with <code>event</code> (<code>fractal_bias_signals</code> or <code>fractal_bias_change</code>), <code>signals</code> or <code>label</code>/<code>was</code>, the current <code>bias</code>, and a <code>link</code>.</p>
     </fieldset>
   </div>
 

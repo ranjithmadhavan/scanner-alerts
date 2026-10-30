@@ -79,7 +79,7 @@
     </label>
     <p class="mt-3 text-[13px] text-ink-soft">You'll get a message when a {{ strategy.setup_word|lower }} closes (enter beyond ₹…, SL, target) and when its level is traded (or a 5-min candle closes beyond it), within a minute or so.</p>
 
-    {% with hooks=form_sc.webhooks or [], hook_payload=form_sc.webhook_payload, prefix='sc-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+    {% with hook_ids=form_sc.hook_ids, hook_payload=form_sc.webhook_payload, prefix='sc-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
 
     <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
       <div class="flex flex-wrap items-center gap-2">

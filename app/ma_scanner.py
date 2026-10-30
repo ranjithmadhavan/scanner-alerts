@@ -256,13 +256,14 @@ def send(sc: dict, kind: str, items: list[dict], now: datetime) -> dict:
     record(sc, kind, items, now)
     subject, body = message(sc, kind, items, now)
     results = notify.send(sc["user"], sc.get("channels", []), subject, body)
-    if sc.get("webhooks"):
-        results["webhook"] = webhooks.send(sc["webhooks"], hook_body(sc, kind, items, now))
-    store.put("events", new_id(), {
+    if hooks := webhooks.targets(sc["user"], sc.get("hook_ids")):
+        results["webhook"] = "sending"
+    store.put("events", event_id := new_id(), {
         "user": sc["user"], "alert_id": sc["id"], "key": f"ma:{sc['id']}", "symbol": items[0]["symbol"],
         "summary": subject.split(" ", 1)[1], "price": items[0].get("price") or items[0]["level"], "level": items[0]["level"],
         "signal": items[0]["side"], "at": now.isoformat(), "delivery": results,
     })
+    webhooks.dispatch(hooks, hook_body(sc, kind, items, now), event_id)
     log.info("ma %s %s for %s: %d stocks, %s", sc["id"], kind, sc["user"], len(items), results)
     return results
 

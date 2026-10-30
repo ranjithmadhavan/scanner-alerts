@@ -130,11 +130,11 @@ def _mine(strat: Strategy, username: str) -> list[dict]:
                   key=lambda s: s["created_at"], reverse=True)
 
 
-def _scanner_view(sc: dict) -> dict:
+def _scanner_view(sc: dict, eps: list[dict]) -> dict:
     state = sc.get("state") or {}
     rules = ma_scanner.rules_of(sc)
     return {**sc, "describe": ma_scanner.describe(sc), "label": rules.label, "summary": rules.summary, "waiting": sorted(state.items()),
-            "sends_to": [notify.CHANNELS[c] for c in sc.get("channels", [])] + (["webhooks"] if sc.get("webhooks") else [])}
+            "sends_to": [notify.CHANNELS[c] for c in sc.get("channels", [])] + [e["name"] for e in webhooks.pick(eps, sc.get("hook_ids"))]}
 
 
 def _setup_of(sc: dict) -> dict:
@@ -144,14 +144,14 @@ def _setup_of(sc: dict) -> dict:
             "symbols": ", ".join(spec.get("symbols") or []), "tf": sc["tf"], **asdict(ma_scanner.rules_of(sc))}
 
 
-NEW_SCANNER = {"stop": "candle", "rr": 2, "name": "", "gap_alerts": True, "confirm": "", "channels": None, "webhooks": [], "webhook_payload": ""}
+NEW_SCANNER = {"stop": "candle", "rr": 2, "name": "", "gap_alerts": True, "confirm": "", "channels": None, "hook_ids": None, "webhook_payload": ""}
 
 
 def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "", edit_id: str = "") -> dict:
     username = user["username"]
     f = STRATEGY_FORMS[strat.key]
     contacts = notify.load_contacts(username)
-    scanners = _mine(strat, username)
+    scanners, my_hooks = _mine(strat, username), webhooks.endpoints(username)
     setup, bt_setup, exits = {**UNIVERSE_DEFAULTS, **f.setup}, {**UNIVERSE_DEFAULTS, **f.backtest}, dict(f.exits)
     # "Backtest this": the form starts from a saved scanner's settings.
     if from_id and (sc := next((s for s in scanners if s["id"] == from_id), None)):
@@ -172,7 +172,7 @@ def _ctx(strat: Strategy, user: dict, tab: str, from_id: str = "", edit_id: str 
         "screen": screen, **(_screen_ctx(screen) if screen and screen.status != "running" else {}),
         "screen_day": ma_screen.last_session(load_settings(), now).isoformat(),
         **_feed_ctx(strat, username, ""),
-        "scanners": [_scanner_view(s) for s in scanners], "max_scanners": ma_scanner.MAX_SCANNERS,
+        "scanners": [_scanner_view(s, my_hooks) for s in scanners], "max_scanners": ma_scanner.MAX_SCANNERS,
         "setup": setup, "editing": editing, "form_sc": form_sc, "bt_setup": bt_setup, "exits": exits, "today": today.isoformat(),
         "start_default": (today - timedelta(days=DEFAULT_DAYS[bt_setup["tf"]])).isoformat(),
         "live_tfs": ma_scanner.TIMEFRAMES, "backtest_tfs": ma_backtest.TIMEFRAMES,
@@ -418,17 +418,14 @@ def _list(strat: Strategy, request: Request, user: dict):
     return render(request, "partials/ma_scanners.html", _ctx(strat, user, "scanners"))
 
 
-def _read_scanner(strat: Strategy, form) -> dict:
+def _read_scanner(strat: Strategy, form, username: str) -> dict:
     """A scanner's settings from its form, as saved. Raises ValueError with something to show."""
     spec, tf, rules = _read_setup(strat, form, ma_scanner.TIMEFRAMES)
     if problem := ma_scanner.limit_problem(len(universe.resolve(spec, now_ist().date())), tf):
         raise ValueError(problem)
     stop = _stop(strat, form)
     rr = _rr(form.get("rr", "2"))
-    hooks, error = webhooks.parse_urls(form.get("webhooks", ""))
-    if error:
-        raise ValueError(error)
-    payload, error = webhooks.parse_payload(form.get("webhook_payload", ""))
+    hooks, error = webhooks.selection(username, form.get("hook_mode", "default"), form.getlist("hook_ids"), form.get("webhook_payload", ""))
     if error:
         raise ValueError(error)
     channels = form.getlist("channels")
@@ -436,7 +433,7 @@ def _read_scanner(strat: Strategy, form) -> dict:
     return {"name": name, "spec": spec, "tf": tf, "rules": asdict(rules), "stop": stop, "rr": rr,
             "gap_alerts": bool(form.get("gap_alerts")), "confirm": form.get("confirm") if form.get("confirm") in ma_scanner.CONFIRMS else "",
             "channels": [c for c in notify.CHANNELS if c in channels],
-            "webhooks": hooks, "webhook_payload": payload}
+            **hooks}
 
 
 async def create(strat: Strategy, request: Request, user: dict):
@@ -445,14 +442,14 @@ async def create(strat: Strategy, request: Request, user: dict):
     try:
         if len(_mine(strat, username)) >= ma_scanner.MAX_SCANNERS:
             raise ValueError(f"You can keep up to {ma_scanner.MAX_SCANNERS} {strat.name} scanners. Remove one first.")
-        settings = _read_scanner(strat, form)
+        settings = _read_scanner(strat, form, username)
     except ValueError as e:
         return fail(str(e))
     now = now_ist()
     sc = {"id": new_id(), "user": username, "strategy": strat.key, **settings,
           "status": "active", "created_at": now.isoformat(), "armed_at": now.isoformat(), "state": {}, "fired": []}
     store.put(ma_scanner.COL, sc["id"], sc)
-    msg = "Scanner saved. It reads the candles at the next candle close." + ("" if sc["channels"] or sc["webhooks"] else " It has nowhere to send yet.")
+    msg = "Scanner saved. It reads the candles at the next candle close." + ("" if sc["channels"] or webhooks.targets(username, sc["hook_ids"]) else " It has nowhere to send yet.")
     return toast(_list(strat, request, user), msg)
 
 
@@ -460,7 +457,7 @@ async def update(strat: Strategy, request: Request, scanner_id: str, user: dict)
     if not (sc := _own(scanner_id, user)):
         return fail("That scanner is gone.")
     try:
-        settings = _read_scanner(strat, await request.form())
+        settings = _read_scanner(strat, await request.form(), user["username"])
     except ValueError as e:
         return fail(str(e))
     msg = "Scanner updated."
@@ -499,8 +496,8 @@ def test_message(scanner_id: str, user: dict):
     item = {"symbol": "SAMPLE", "side": side, "level": level, "stop": stop, "target": target, "trigger_at": now_ist().isoformat()}
     subject, body = ma_scanner.message(sc, "setup", [item], now_ist())
     results = notify.send(user["username"], sc.get("channels", []), "[Test] " + subject, body)
-    if sc.get("webhooks"):
-        results["webhook"] = webhooks.send(sc["webhooks"], ma_scanner.hook_body(sc, "setup", [item], now_ist(), test=True))
+    if hooks := webhooks.targets(user["username"], sc.get("hook_ids")):
+        results["webhook"] = webhooks.send_now(hooks, ma_scanner.hook_body(sc, "setup", [item], now_ist(), test=True))
     sent = [notify.CHANNELS.get(c, "Webhook") for c, r in results.items() if r == "sent"]
     failed = [f"{notify.CHANNELS.get(c, 'Webhook')}: {r}" for c, r in results.items() if r != "sent"]
     if not results:

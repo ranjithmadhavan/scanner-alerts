@@ -140,7 +140,7 @@
     </div>
   </div>
 
-  {% with hooks=[], hook_payload='', prefix='new-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+  {% with hook_ids=none, hook_payload='', prefix='new-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
 
   <div class="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
     <div class="flex flex-wrap items-center gap-2">
