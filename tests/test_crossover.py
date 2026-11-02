@@ -92,6 +92,34 @@ def test_touch_rule():
         walk(candles, Rules(touch="slow", once=False), fast, slow).entries[0].setup.trigger == 2
 
 
+def test_entry_beyond_the_slow_ma_holds_the_earlier_level():
+    # Buy: red candle 1 (high 102) is above the slow MA at 100. Red candle 2 (high 99.5) would be a better level but
+    # is under it: ignored, so the level stays 102 and candle 3 (high 101) doesn't enter. Without the rule it moves.
+    candles = series(GREEN, RED, (99, 99.5, 97, 98), (98, 101, 97.5, 100.5))
+    fast, slow = [101] * 4, [100] * 4
+    held = walk(candles, Rules(once=False, beyond_slow=True), fast, slow)
+    assert held.entries == [] and (held.pending.trigger, held.pending.level) == (1, 102)
+    moved = walk(candles, Rules(once=False), fast, slow)
+    assert [(e.setup.trigger, e.setup.level, e.index) for e in moved.entries] == [(2, 99.5, 3)]
+    # Sell: green candle 1 (low 98) is below the slow MA at 100; green candle 2 (low 100.5) is above it: ignored.
+    candles = series(RED, (98.5, 103, 98, 102), (101, 104, 100.5, 103), (103, 103.5, 99, 99.5))
+    fast, slow = [99] * 4, [100] * 4
+    held = walk(candles, Rules(once=False, beyond_slow=True), fast, slow)
+    assert held.pending.level == 98 and held.entries == []
+    assert walk(candles, Rules(once=False), fast, slow).entries[0].setup.trigger == 2
+
+
+def test_entry_beyond_the_slow_ma_alone_sets_nothing_up_and_the_opposite_crossover_cancels():
+    # Only a pullback candle on the wrong side: no setup at all.
+    candles = series(GREEN, (99, 99.5, 97, 98), (98, 101, 97.5, 100.5))
+    w = walk(candles, Rules(once=False, beyond_slow=True), [101] * 3, [100] * 3)
+    assert w.entries == [] and w.pending is None
+    # A held level goes when the trend turns.
+    candles = series(GREEN, RED, (99, 99.5, 97, 98), (98, 99, 97, 98.5))
+    w = walk(candles, Rules(once=False, beyond_slow=True), [101, 101, 101, 99], [100] * 4)
+    assert w.crossovers == [(3, "sell")] and w.pending is None and w.entries == []
+
+
 def _entry(candles, level=102, stop=98, index=2, gap=False, side="buy"):
     return Entry(Setup(side, 1, level, stop, 0), index, gap)
 

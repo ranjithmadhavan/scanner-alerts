@@ -66,7 +66,8 @@ def _ma_rules(form) -> Rules:
     if touch not in crossover.TOUCH:
         raise ValueError("Pick the pullback rule.")
     once = bool(form.get("once"))
-    return Rules(fast_kind, fast_len, slow_kind, slow_len, touch, _sides(form), once, once and bool(form.get("second")))
+    return Rules(fast_kind, fast_len, slow_kind, slow_len, touch, _sides(form), once, once and bool(form.get("second")),
+                 bool(form.get("beyond_slow")))
 
 
 def _adx_rules(form) -> AdxRules:
@@ -91,7 +92,7 @@ class StrategyForm:
 
 
 MA_SETUP = {"tf": "15m", "fast_kind": "ema", "fast_len": 9, "slow_kind": "ema", "slow_len": 21, "touch": "", "sides": "both",
-            "once": True, "second": True}  # a second entry after a stop-out, ticked to start with
+            "once": True, "second": True, "beyond_slow": True}  # a second entry after a stop-out, and entries beyond the slow MA, ticked to start with
 STRATEGY_FORMS = {
     # The MA backtest starts positional: daily 10/20 EMA, buys only, pullbacks that touch the fast MA, half booked at
     # 1:2, breakeven at 1R, the rest out on a close beyond the slow MA, ₹1,000 risked per trade.
@@ -462,7 +463,8 @@ async def update(strat: Strategy, request: Request, scanner_id: str, user: dict)
         return fail(str(e))
     msg = "Scanner updated."
     # Other stocks, candles or rules: what it was waiting on no longer applies, and it starts afresh, as after a pause.
-    if any(settings[k] != sc.get(k) for k in ("spec", "tf", "rules")):
+    # (Rules are compared as read: one saved before a rule existed has that rule's default, which isn't a change.)
+    if settings["rules"] != asdict(ma_scanner.rules_of(sc)) or any(settings[k] != sc.get(k) for k in ("spec", "tf")):
         settings.update(armed_at=now_ist().isoformat(), state={}, evaluated_at="")
         msg += " Its waiting setups were dropped; it reads the candles again at the next candle close."
     with ma_scanner.lock(scanner_id):  # not while the quote job is changing what it waits on

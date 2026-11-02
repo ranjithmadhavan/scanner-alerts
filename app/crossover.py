@@ -6,7 +6,9 @@ slow one the trend is up and buys are looked for; below, sells. Until the opposi
 * a pullback candle is a red candle in an uptrend (close below open), a green one in a downtrend. With
   `touch`, it must also reach the chosen moving average: its low at or below it for a buy, its high at
   or above it for a sell. The crossover candle itself is never the pullback;
-* the latest pullback candle is the *trigger candle*: each new one replaces the one before;
+* the latest pullback candle is the *trigger candle*: each new one replaces the one before. With
+  `beyond_slow`, a pullback candle whose level is on the wrong side of the slow MA (at or below it for a buy,
+  at or above it for a sell) is ignored: the earlier trigger stays until it is entered or the opposite crossover;
 * a later candle trading beyond it (above its high for a buy, below its low for a sell) is the entry.
   When that candle opens beyond the level, the entry came on a *gap*;
 * with `once` (the default), a crossover gives one entry: after it, nothing more is looked for until the
@@ -75,6 +77,7 @@ class Rules:
     sides: str = "both"
     once: bool = True  # one entry per crossover...
     second: bool = False  # ...or, with `once`, a second one if the first was stopped out (decided in trades(), not walk())
+    beyond_slow: bool = False  # the entry level must be above the slow MA for a buy, below it for a sell
 
     @property
     def label(self) -> str:
@@ -86,7 +89,8 @@ class Rules:
         """'Must touch the fast MA · buys only · first entry per crossover, a second after a stop-out'"""
         entries = ("first entry per crossover" + (", a second after a stop-out" if self.second else "")) if self.once \
             else "re-entries in the same trend"
-        return f"{TOUCH[self.touch]} · {SIDES[self.sides].lower()} · {entries}"
+        slow = " · entry beyond the slow MA" if self.beyond_slow else ""
+        return f"{TOUCH[self.touch]} · {SIDES[self.sides].lower()} · {entries}{slow}"
 
     def warmup(self) -> int:
         """Candles to read before the first one that matters, so an EMA has settled."""
@@ -136,6 +140,11 @@ class Walk:  # what a strategy's walk over the candles found (crossovers: when e
     trend: str | None = None  # "buy" while fast is above slow, "sell" while below
 
 
+def clear_of_slow(side: str, price: float, slow: float) -> bool:
+    """Is `price` on the trade's side of the slow MA: above it for a buy, below it for a sell?"""
+    return price > slow if side == "buy" else price < slow
+
+
 def walk(candles: list[Candle], rules: Rules, fast: list | None = None, slow: list | None = None) -> Walk:
     if fast is None or slow is None:
         fast, slow = rules.averages(candles)
@@ -163,10 +172,13 @@ def walk(candles: list[Candle], rules: Rules, fast: list | None = None, slow: li
         # With a second chance, walk() lists every entry of the crossover; trades() keeps the ones allowed.
         if entered or rules.sides not in ("both", now) or (rules.once and (crossed is None or (used and not rules.second))):
             continue
+        new = None
         if now == "buy" and c.close < c.open and (touch_ma is None or (touch_ma[i] is not None and c.low <= touch_ma[i])):
-            setup = Setup("buy", i, c.high, c.low, crossed)
+            new = Setup("buy", i, c.high, c.low, crossed)
         elif now == "sell" and c.close > c.open and (touch_ma is None or (touch_ma[i] is not None and c.high >= touch_ma[i])):
-            setup = Setup("sell", i, c.low, c.high, crossed)
+            new = Setup("sell", i, c.low, c.high, crossed)
+        if new and (not rules.beyond_slow or clear_of_slow(now, new.level, s)):
+            setup = new
     out.pending = setup
     return out
 
@@ -398,6 +410,12 @@ def scan(candles: list[Candle], rules, x: Exits) -> tuple[list[Entry], Setup | N
         if (taken and taken[-1].status == "open") or len(before) >= 2 or (before and not stopped_out(before[0])):
             pending = None
     return [t.entry for t in taken], pending, fast, slow
+
+
+def running(candles: list[Candle], rules, x: Exits, e: Entry) -> bool:
+    """Is the trade from this entry still open at the last candle?"""
+    p = rules.prepare(candles)
+    return simulate(e, candles, p.fast, p.slow, x, 0, p.ends).status == "open"
 
 
 def turned(candles: list[Candle], rules, i: int) -> bool:

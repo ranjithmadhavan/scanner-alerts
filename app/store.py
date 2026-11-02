@@ -66,7 +66,9 @@ class FirestoreStore:
         self._col(col).document(doc_id).set(data)
 
     def update(self, col, doc_id, fields):
-        self._col(col).document(doc_id).set(fields, merge=True)
+        # Each named field is replaced whole, as MemoryStore does. merge=True would merge into a saved map instead, so
+        # a key removed from it (a scanner's `state`) would never go away.
+        self._col(col).document(doc_id).set(fields, merge=list(fields) or True)
 
     def delete(self, col, doc_id):
         self._col(col).document(doc_id).delete()

@@ -17,6 +17,61 @@ from app.store import store
 INFY = Instrument("INFY", "INFOSYS", 408065, False)
 
 
+def test_an_entry_from_before_arming_or_a_finished_trade_is_not_put_on_watch(kite, sent):
+    """IOC, 2 Nov 2026: a level broken and stopped out weeks before the scanner was armed came back as a new entry when
+    price rose through it and a 5-min candle closed back under it."""
+    from app.market import load_settings
+    s = load_settings()
+    quiet = (date(2026, 10, 2), (167.5, 168, 167, 167.8))
+    kite.candles = daily(ROWS + [BREAK[1], quiet[1]], DAYS + [BREAK[0], quiet[0]])
+    oct2 = datetime(2026, 10, 2, 15, 46, tzinfo=IST)
+    # Reached on 1 Oct, armed that evening: not on watch, and nothing to confirm.
+    sc = ma_scanner.evaluate(_scanner(confirm="close5", armed_at="2026-10-01T20:00:00+05:30"), kite, s, oct2, s.close_at(oct2))
+    assert "INFY" not in sc["state"] and sent == []
+    # Armed before it, so it stays on watch...
+    sc = ma_scanner.evaluate(_scanner(confirm="close5"), kite, s, oct2, s.close_at(oct2))
+    assert sc["state"]["INFY"]["touched"] and sc["state"]["INFY"]["level"] == 166.5
+    # ...until the trade has ended at its SL (164): the next read drops it.
+    stopped = (date(2026, 10, 2), (163.5, 168, 163, 167))  # green, so not a new pullback candle itself
+    kite.candles = daily(ROWS + [BREAK[1], stopped[1]], DAYS + [BREAK[0], stopped[0]])
+    sc = ma_scanner.evaluate(_scanner(confirm="close5"), kite, s, oct2, s.close_at(oct2))
+    assert "INFY" not in sc["state"]
+    store.delete("ma_scanners", "s1")
+
+
+def test_an_entry_on_the_wrong_side_of_the_slow_ma_says_so(kite, sent):
+    sc = _scanner(state={"INFY": {"side": "sell", "level": 134.32, "candle_stop": 139.13, "slow": 130.0,
+                                  "trigger_at": "2026-09-30T00:00:00+05:30", "token": 408065}})
+    now = datetime(2026, 10, 1, 10, 0, tzinfo=IST)
+    _, entries = ma_scanner._quoted(sc, {"NSE:INFY": {"last_price": 134.0, "ohlc": {"open": 135.0, "high": 136, "low": 134}}}, now)
+    assert entries[0]["against_slow"] == 130.0
+    assert "⚠ entry above the slow MA (₹130.00)" in ma_scanner._line(sc, entries[0])
+    # On the right side, or a strategy without a slow MA: nothing said.
+    assert ma_scanner.against_slow("sell", 134.0, 139.0) is None and ma_scanner.against_slow("sell", 134.0, None) is None
+    assert ma_scanner.against_slow("buy", 134.0, 139.0) == 139.0
+    assert "slow MA" not in ma_scanner._line(sc, {**entries[0], "against_slow": None})
+    assert ma_scanner.hook_body(sc, "entry", entries, now)["signals"][0]["against_slow"] == 130.0
+    store.delete("ma_scanners", "s1")
+
+
+def test_entry_beyond_the_slow_ma_is_an_option_and_old_scanners_keep_their_setups(web):
+    assert 'name="beyond_slow" value="1"' in web.get("/ma?tab=scanners").text.split("data-ma-once")[0]
+    assert ma_scanner.rules_of({"rules": {"fast_len": 2}}).beyond_slow is False  # saved before the option: off
+    web.post("/ma/scanners", data={**SETUP, "stop": "candle", "rr": "2", "name": "With", "beyond_slow": "1"})
+    sc = store.list("ma_scanners", user="tara")[0]
+    assert sc["rules"]["beyond_slow"] is True
+    # Saved before the option existed: editing the name alone doesn't re-arm it.
+    rules = {k: v for k, v in sc["rules"].items() if k != "beyond_slow"}
+    store.update("ma_scanners", sc["id"], {"rules": rules, "state": {"INFY": {"level": 1}}})
+    r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "2", "name": "Renamed"})
+    assert "waiting setups were dropped" not in r.headers["HX-Trigger"]
+    assert store.get("ma_scanners", sc["id"])["state"] == {"INFY": {"level": 1}}
+    # Ticking it does: the levels may no longer apply.
+    r = web.post(f"/ma/scanners/{sc['id']}", data={**SETUP, "stop": "candle", "rr": "2", "name": "Renamed", "beyond_slow": "1"})
+    assert "waiting setups were dropped" in r.headers["HX-Trigger"]
+    store.delete("ma_scanners", sc["id"])
+
+
 def weekdays(start: date, n: int) -> list[date]:
     out, d = [], start
     while len(out) < n:

@@ -161,6 +161,11 @@ def plan(sc: dict, side: str, entry: float, candle_stop: float, slow_now: float 
     return stop, (entry + rr * (entry - stop) if rr else None)  # entry - stop is negative for a sell
 
 
+def against_slow(side: str, price: float, slow: float | None) -> float | None:
+    """The slow MA, when an entry at `price` is on the wrong side of it (a strategy without one has no such side)."""
+    return slow if slow is not None and not crossover.clear_of_slow(side, price, slow) else None
+
+
 def _line(sc: dict, item: dict) -> str:
     above = "above" if item["side"] == "buy" else "below"
     head = f"{item['symbol']} {item['side']}"
@@ -176,7 +181,10 @@ def _line(sc: dict, item: dict) -> str:
     stop = item.get("stop")
     sl = "" if stop is None else (f" · SL ₹{stop:,.2f}" if sc.get("stop", "candle") == "candle" else f" · SL slow MA (₹{stop:,.2f} now)")
     target = f" · target ₹{item['target']:,.2f} (1:{float(sc['rr']):g})" if item.get("target") is not None else ""
-    return what + sl + target
+    warning = ""
+    if item.get("against_slow") is not None:
+        warning = f" · ⚠ entry {'below' if item['side'] == 'buy' else 'above'} the slow MA (₹{item['against_slow']:,.2f})"
+    return what + sl + target + warning
 
 
 def describe(sc: dict) -> str:
@@ -207,12 +215,14 @@ def message(sc: dict, kind: str, items: list[dict], now: datetime) -> tuple[str,
     return subject, "\n".join(lines)
 
 
+SIGNAL_FIELDS = ("symbol", "side", "level", "stop", "target", "price", "gap", "confirmed", "trigger_at", "against_slow")
+
+
 def hook_body(sc: dict, kind: str, items: list[dict], now: datetime, test: bool = False) -> dict:
     return {"event": "ma_setups" if kind == "setup" else "ma_entries", "test": test, "scanner_id": sc["id"],
             "scanner": sc["name"], "strategy": strategy_of(sc), "timeframe": sc["tf"], "averages": rules_of(sc).label,
             "time": now.isoformat(),
-            "signals": [{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "confirmed", "trigger_at")}
-                        for i in items],
+            "signals": [{k: i.get(k) for k in SIGNAL_FIELDS} for i in items],
             "payload": json.loads(sc["webhook_payload"]) if sc.get("webhook_payload") else None}
 
 
@@ -229,7 +239,7 @@ def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
     doc_id = f"{sc['user']}:{day}"
     new = [{"at": now.isoformat(), "kind": kind, "scanner_id": sc["id"], "scanner": sc["name"], "tf": sc["tf"],
             "strategy": strategy_of(sc),
-            **{k: i.get(k) for k in ("symbol", "side", "level", "stop", "target", "price", "gap", "confirmed", "trigger_at")}}
+            **{k: i.get(k) for k in SIGNAL_FIELDS}}
            for i in items]
     with _feed_lock:
         doc = store.get(FEED, doc_id) or {"user": sc["user"], "date": day, "items": []}
@@ -280,7 +290,7 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
     """Read every stock's candles up to the candle that closed at `upto`, report new setups and any entry the
     quotes missed, and save what is now waiting. Returns the scanner as saved."""
     rules, tf = rules_of(sc), sc["tf"]
-    cutoff = _cutoff(sc)
+    cutoff, armed = _cutoff(sc), datetime.fromisoformat(sc["armed_at"])
     seen = set(sc.get("fired", []))
     new_keys: list[str] = []
     known = instruments()
@@ -314,8 +324,11 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
                 continue
             if confirming(sc) and not (e.gap and not sc.get("gap_alerts")):
                 # Traded beyond the level, but only a 5-min close beyond it is an entry (check_confirms). The latest
-                # such level stays on watch until a newer setup or the trend turning replaces it.
-                if n == len(found) - 1 and not pending and not crossover.turned(candles, rules, e.index):
+                # such level stays on watch until a newer setup or the trend turning replaces it, as long as it was
+                # reached since the scanner was armed and that trade hasn't already ended: price coming back through
+                # an old level is not a fresh entry.
+                if (n == len(found) - 1 and not pending and candle_end(candles[e.index], tf, s) > armed
+                        and not crossover.turned(candles, rules, e.index) and crossover.running(candles, rules, exits_of(sc), e)):
                     state[symbol] = {**watch(e.setup), "touched": True}
                 continue
             if candle_end(candles[e.index], tf, s) <= cutoff:
@@ -328,6 +341,7 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
             stop, target = plan(sc, e.side, price, e.setup.stop, slow[e.index - 1] if e.index else None)
             entries.append({"key": key, "symbol": symbol, "side": e.side, "level": e.setup.level, "stop": stop,
                             "target": target, "price": price, "gap": e.gap,
+                            "against_slow": against_slow(e.side, price, slow[e.setup.trigger]),
                             "trigger_at": candles[e.setup.trigger].start.isoformat()})
         if p := pending:
             trigger = candles[p.trigger]
@@ -407,7 +421,8 @@ def _quoted(sc: dict, got: dict, now: datetime) -> tuple[dict, list[dict]]:
         price = day_open if gap else ltp
         stop, target = plan(sc, item["side"], day_open if gap else item["level"], item["candle_stop"], item.get("slow"))
         entries.append({"symbol": symbol, "side": item["side"], "level": item["level"], "stop": stop, "target": target,
-                        "price": price, "gap": gap, "trigger_at": item["trigger_at"]})
+                        "price": price, "gap": gap, "against_slow": against_slow(item["side"], price, item.get("slow")),
+                        "trigger_at": item["trigger_at"]})
     changes = {"state": state, "fired": fired[-KEEP_FIRED:], "quoted_at": now.isoformat()}
     store.update(COL, sc["id"], changes)
     return {**sc, **changes}, entries
@@ -461,6 +476,7 @@ def check_confirms(sc: dict, client, s: MarketSettings, now: datetime) -> dict:
             stop, target = plan(sc, item["side"], c.close, item["candle_stop"], item.get("slow"))
             entries.append({"symbol": symbol, "side": item["side"], "level": item["level"], "stop": stop, "target": target,
                             "price": c.close, "gap": False, "confirmed": candle_end(c, CONFIRM_TF, s).isoformat(),
+                            "against_slow": against_slow(item["side"], c.close, item.get("slow")),
                             "trigger_at": item["trigger_at"]})
         changes = {"state": state, "fired": fired[-KEEP_FIRED:], "confirmed_upto": upto.isoformat()}
         store.update(COL, sc["id"], changes)
