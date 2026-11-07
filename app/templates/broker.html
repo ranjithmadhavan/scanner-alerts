@@ -33,7 +33,7 @@
 <div class="panel mt-8 p-6 shadow-soft sm:p-7">
   <h2 class="text-xl font-bold">How do you want to connect?</h2>
   <form method="post" action="/broker/mode" class="mt-4 grid gap-2 sm:grid-cols-2">
-    {% for key, title, body in [('connect', 'Kite Connect API', 'Official API with your app key. Needs the Kite Connect plan for price history.'), ('enctoken', 'Browser session', 'Paste the enctoken from a logged-in kite.zerodha.com tab. Free, but unofficial.')] %}
+    {% for key, title, body in [('connect', 'Kite Connect API', 'Official API with your app key. Needs the Kite Connect plan for price history.'), ('enctoken', 'Browser session', 'Log in with your Kite password and 2FA code, or paste an enctoken. Free, but unofficial.')] %}
     <button name="mode" value="{{ key }}" class="rounded-2xl border px-4 py-3.5 text-left transition {{ 'border-peacock bg-peacock-50' if broker.mode == key else 'border-line hover:border-peacock/40' }}">
       <span class="block text-[15px] font-semibold">{{ title }}</span>
       <span class="mt-0.5 block text-[13px] leading-snug text-ink-soft">{{ body }}</span>
@@ -43,7 +43,37 @@
 
   <div class="mt-7 border-t border-line pt-6">
   {% if broker.mode == 'enctoken' %}
-    <form hx-post="/broker/enctoken" hx-target="#broker-status" hx-swap="outerHTML" class="space-y-5">
+    <form hx-post="/broker/login" hx-target="#broker-status" hx-swap="outerHTML" class="space-y-5"
+          hx-on::after-request="if (event.detail.elt === this) { this.querySelector('[name=code]').value=''; if (event.detail.successful) this.querySelector('[name=password]').value=''; }">
+      <div>
+        <h3 class="text-[17px] font-bold">Log in with Kite</h3>
+        <p class="mt-1 text-sm leading-relaxed text-ink-soft">Works on any phone or computer. Your password goes straight to Kite to sign in and is never saved here.</p>
+      </div>
+      <div class="grid gap-5 sm:grid-cols-3">
+        <div>
+          <label for="login_user_id" class="label">Kite user ID</label>
+          <input id="login_user_id" name="kite_user_id" value="{{ broker.kite_user_id or '' }}" required placeholder="AB1234" autocomplete="username" autocapitalize="characters" spellcheck="false" class="field uppercase">
+        </div>
+        <div>
+          <label for="login_password" class="label">Kite password</label>
+          <input id="login_password" name="password" type="password" required autocomplete="current-password" class="field">
+        </div>
+        <div>
+          <label for="login_code" class="label">6-digit 2FA code</label>
+          <input id="login_code" name="code" required inputmode="numeric" pattern="\s*\d{3}\s*\d{3}\s*" maxlength="7" autocomplete="one-time-code" placeholder="123456" class="field font-mono tracking-widest">
+        </div>
+      </div>
+      <p class="text-xs leading-relaxed text-ink-soft">The code is the one from your authenticator app (or Kite app) that you'd type when logging in to Kite. Several wrong tries in a row can lock your Kite account for a while.</p>
+      <button class="btn-primary htmx-busy">Log in and check</button>
+    </form>
+
+    <details class="group mt-7 border-t border-line pt-6">
+      <summary class="flex cursor-pointer items-center justify-between gap-3 text-[15px] font-semibold text-ink">
+        Or paste an enctoken instead
+        <svg class="h-4 w-4 shrink-0 text-ink-soft transition group-open:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </summary>
+      <p class="mt-1 text-sm text-ink-soft">The backup if Kite's login above stops working: copy the token from a logged-in kite.zerodha.com tab.</p>
+    <form hx-post="/broker/enctoken" hx-target="#broker-status" hx-swap="outerHTML" class="mt-5 space-y-5">
       <div class="grid gap-5 sm:grid-cols-[200px_1fr]">
         <div>
           <label for="kite_user_id" class="label">Kite user ID</label>
@@ -82,6 +112,7 @@
       {% endcall %}
       <button class="btn-primary htmx-busy">Save and check</button>
     </form>
+    </details>
   {% else %}
     <form method="post" action="/broker/connect" class="space-y-5">
       <div class="grid gap-5 sm:grid-cols-2">

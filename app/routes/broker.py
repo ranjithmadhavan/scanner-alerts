@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
 from app import brokers, config, scanner
-from app.kite import KiteAuthError, KiteError, clean_enctoken, connect_exchange_token, connect_login_url
+from app.kite import KiteAuthError, KiteError, clean_enctoken, connect_exchange_token, connect_login_url, web_login
 from app.market import IST, now_ist
 from app.security import decrypt, require
 from app.web import render, toast
@@ -88,6 +88,25 @@ def save_enctoken(request: Request, user: dict = Depends(guard),
                      "That doesn't look like a full enctoken. Copy the whole cookie value.", "error")
     brokers.save(username, {"mode": "enctoken", "enctoken": token, "kite_user_id": kite_user_id.strip().upper()})
     return _verify(request, user, "Connected with enctoken")
+
+
+@router.post("/login")
+def kite_web_login(request: Request, user: dict = Depends(guard), kite_user_id: str = Form(...),
+                   password: str = Form(...), code: str = Form(...)):
+    """Log in to Kite with password + 2FA code. The password goes to Kite once and is never saved."""
+    username = user["username"]
+    user_id, code = kite_user_id.strip().upper(), "".join(code.split())
+    if not (code.isdigit() and len(code) == 6):
+        return toast(render(request, "partials/broker_status.html", _ctx(user)),
+                     "The code should be the 6 digits from your authenticator app.", "error")
+    try:
+        token = web_login(user_id, password, code)
+    except KiteAuthError as e:
+        return toast(render(request, "partials/broker_status.html", _ctx(user)), f"Kite said: {e}", "error")
+    except KiteError as e:
+        return toast(render(request, "partials/broker_status.html", _ctx(user)), str(e), "error")
+    brokers.save(username, {"mode": "enctoken", "enctoken": token, "kite_user_id": user_id})
+    return _verify(request, user, "Logged in to Kite")
 
 
 @router.post("/test")

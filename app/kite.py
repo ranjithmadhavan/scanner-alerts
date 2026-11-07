@@ -318,6 +318,56 @@ def clean_enctoken(raw: str) -> str:
     return token
 
 
+# ---- Kite web login (password + 2FA code -> enctoken) -------------------------
+# The same two steps kite.zerodha.com takes when you sign in. Unofficial: Kite can change these without
+# notice. The password is sent to Kite once and never stored.
+
+WEB_LOGIN = "https://kite.zerodha.com/api"
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+
+
+def _web_login_body(r: httpx.Response) -> dict:
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    if r.status_code == 429:
+        raise KiteError("Kite says too many login attempts. Wait a few minutes and try again.")
+    if r.status_code >= 500 or not body:
+        raise KiteError(f"Kite's login didn't answer properly (HTTP {r.status_code}). Try again, or paste an enctoken instead.")
+    if r.status_code != 200 or body.get("status") != "success":
+        raise KiteAuthError(body.get("message") or f"Kite login failed (HTTP {r.status_code})")
+    return body.get("data") or {}
+
+
+def web_login(user_id: str, password: str, code: str) -> str:
+    """Sign in with the Kite user ID, password and the 6-digit 2FA code; return the session's enctoken."""
+    OTHER.wait()
+    try:
+        with httpx.Client(base_url=WEB_LOGIN, timeout=15, headers={
+            "X-Kite-Version": "3", "User-Agent": _BROWSER_UA,
+            "Origin": "https://kite.zerodha.com", "Referer": "https://kite.zerodha.com/",
+        }) as c:
+            step = _web_login_body(c.post("/login", data={"user_id": user_id, "password": password}))
+            if not step.get("request_id"):
+                raise KiteError("Kite didn't ask for a 2FA code. Try again, or paste an enctoken instead.")
+            r = c.post("/twofa", data={
+                "user_id": step.get("user_id") or user_id,
+                "request_id": step["request_id"],
+                "twofa_value": code,
+                "twofa_type": step.get("twofa_type") or "totp",
+            })
+            _web_login_body(r)
+            token = r.cookies.get("enctoken") or next(
+                (ck.value for ck in c.cookies.jar if ck.name == "enctoken"), "")
+    except httpx.HTTPError as e:
+        raise KiteError(f"Couldn't reach Kite: {e}") from e
+    if not token:
+        raise KiteError("Kite logged you in but didn't hand back a session token. Paste an enctoken instead.")
+    return clean_enctoken(token)
+
+
 # ---- Kite Connect login -----------------------------------------------------
 
 def connect_login_url(api_key: str) -> str:

@@ -1413,3 +1413,58 @@ def test_chart_opens_on_the_alerts_own_candle(client):
     assert 'data-chart="TCS" data-lines' in page and page.count('data-interval=""') == 2  # trades only: the range decides
     for aid in ("i1", "i2", "i3"):
         store.delete("alerts", aid)
+
+
+def _kite_web(monkeypatch, *, twofa_ok=True, token="tok-" + "x" * 40):
+    """Kite's web login, faked: /login asks for 2FA, /twofa sets the enctoken cookie (or rejects the code)."""
+    import httpx
+    seen = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.url.path, dict(httpx.QueryParams(req.content.decode()))))
+        if req.url.path.endswith("/login"):
+            return httpx.Response(200, json={"status": "success", "data": {"user_id": "AB1234", "request_id": "r1", "twofa_type": "totp"}})
+        if not twofa_ok:
+            return httpx.Response(400, json={"status": "error", "message": "Invalid TOTP"})
+        return httpx.Response(200, json={"status": "success", "data": {}},
+                              headers={"set-cookie": f"enctoken={token}; Path=/; Secure"})
+
+    real = httpx.Client
+    monkeypatch.setattr(kite.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    return seen
+
+
+def test_kite_web_login_saves_enctoken_not_password(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    seen = _kite_web(monkeypatch)
+
+    class FakeKite:
+        def profile(self):
+            return {"user_name": "Boss"}
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+
+    r = client.post("/broker/login", data={"kite_user_id": "ab1234", "password": "secret-pw", "code": "123 456"})
+    assert "Logged in to Kite" in r.headers["HX-Trigger"]
+    assert [p for p, _ in seen] == ["/api/login", "/api/twofa"]
+    assert seen[1][1]["twofa_value"] == "123456" and seen[1][1]["request_id"] == "r1"
+
+    doc = brokers.load("boss")
+    assert doc["mode"] == "enctoken" and doc["kite_user_id"] == "AB1234" and doc["status"] == "connected"
+    from app.security import decrypt
+    assert decrypt(doc["enctoken"]) == "tok-" + "x" * 40
+    assert "secret-pw" not in str(store.get("brokers", "boss"))
+
+
+def test_kite_web_login_errors(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    _kite_web(monkeypatch, twofa_ok=False)
+    before = brokers.load("boss").get("enctoken")
+    r = client.post("/broker/login", data={"kite_user_id": "AB1234", "password": "pw", "code": "12345"})
+    assert "6 digits" in r.headers["HX-Trigger"]
+    r = client.post("/broker/login", data={"kite_user_id": "AB1234", "password": "pw", "code": "000000"})
+    assert "Invalid TOTP" in r.headers["HX-Trigger"]
+    assert brokers.load("boss").get("enctoken") == before  # a failed login leaves the saved token alone
+    # The paste-a-token backup is still on the page.
+    client.post("/broker/mode", data={"mode": "enctoken"})
+    page = client.get("/broker").text
+    assert 'hx-post="/broker/login"' in page and 'hx-post="/broker/enctoken"' in page
