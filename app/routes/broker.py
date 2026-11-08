@@ -32,6 +32,7 @@ def _ctx(user: dict, **extra) -> dict:
         "broker": doc,
         "has_secret": bool(decrypt(doc.get("api_secret", ""))),
         "stale": _session_is_stale(doc),
+        "logins": brokers.saved_logins(doc),
         "callback_url": config.BASE_URL + CALLBACK_PATH,
         **extra,
     }
@@ -90,23 +91,62 @@ def save_enctoken(request: Request, user: dict = Depends(guard),
     return _verify(request, user, "Connected with enctoken")
 
 
+def _status(request: Request, user: dict, message: str, kind: str = "error"):
+    return toast(render(request, "partials/broker_status.html", _ctx(user)), message, kind)
+
+
 @router.post("/login")
-def kite_web_login(request: Request, user: dict = Depends(guard), kite_user_id: str = Form(...),
-                   password: str = Form(...), code: str = Form(...)):
-    """Log in to Kite with password + 2FA code. The password goes to Kite once and is never saved."""
+def kite_web_login(request: Request, user: dict = Depends(guard), saved: str = Form(""),
+                   kite_user_id: str = Form(""), password: str = Form(""), code: str = Form(...),
+                   remember: str = Form("")):
+    """Log in to Kite with password + 2FA code. Pick a saved account (`saved`) to need only the code; a new
+    account's password is kept, encrypted, when `remember` is ticked."""
     username = user["username"]
-    user_id, code = kite_user_id.strip().upper(), "".join(code.split())
+    code = "".join(code.split())
+    if saved:
+        user_id, password = saved.strip().upper(), brokers.saved_password(username, saved.strip().upper())
+        if not password:
+            return _status(request, user, "That saved account is gone. Choose another or add it again.")
+    else:
+        user_id = kite_user_id.strip().upper()
+        if not user_id or not password:
+            return _status(request, user, "Enter your Kite user ID and password.")
     if not (code.isdigit() and len(code) == 6):
-        return toast(render(request, "partials/broker_status.html", _ctx(user)),
-                     "The code should be the 6 digits from your authenticator app.", "error")
+        return _status(request, user, "The code should be the 6 digits from your authenticator app.")
     try:
         token = web_login(user_id, password, code)
     except KiteAuthError as e:
-        return toast(render(request, "partials/broker_status.html", _ctx(user)), f"Kite said: {e}", "error")
+        hint = " If you changed your Kite password, update the saved one under Saved accounts." if saved else ""
+        return _status(request, user, f"Kite said: {e}{hint}")
     except KiteError as e:
-        return toast(render(request, "partials/broker_status.html", _ctx(user)), str(e), "error")
+        return _status(request, user, str(e))
     brokers.save(username, {"mode": "enctoken", "enctoken": token, "kite_user_id": user_id})
-    return _verify(request, user, "Logged in to Kite")
+    if not saved and remember:
+        brokers.remember_login(username, user_id, password)
+    return _verify(request, user, "Logged in to Kite", login_panel=True)
+
+
+def _login_panel(request: Request, user: dict, message: str = "", kind: str = "success"):
+    response = render(request, "partials/kite_login.html", _ctx(user))
+    return toast(response, message, kind) if message else response
+
+
+@router.post("/logins/edit")
+def edit_saved_login(request: Request, user: dict = Depends(guard), original: str = Form(...),
+                     kite_user_id: str = Form(...), password: str = Form("")):
+    """Change a saved account's user ID and/or password. A blank password keeps the saved one."""
+    username, original, user_id = user["username"], original.strip().upper(), kite_user_id.strip().upper()
+    password = password or brokers.saved_password(username, original)
+    if not user_id or not password:
+        return _login_panel(request, user, "Enter a Kite user ID and password.", "error")
+    brokers.remember_login(username, user_id, password, replaces=original)
+    return _login_panel(request, user, f"Saved {user_id}")
+
+
+@router.post("/logins/delete")
+def delete_saved_login(request: Request, user: dict = Depends(guard), kite_user_id: str = Form(...)):
+    brokers.forget_login(user["username"], kite_user_id.strip().upper())
+    return _login_panel(request, user, f"Removed {kite_user_id.strip().upper()}")
 
 
 @router.post("/test")
@@ -114,7 +154,7 @@ def test(request: Request, user: dict = Depends(guard)):
     return _verify(request, user, "Kite session is working")
 
 
-def _verify(request: Request, user: dict, ok_message: str):
+def _verify(request: Request, user: dict, ok_message: str, login_panel: bool = False):
     username = user["username"]
     try:
         profile = brokers.client_for(username).profile()
@@ -127,7 +167,9 @@ def _verify(request: Request, user: dict, ok_message: str):
         msg, kind = f"Kite said: {e}", "error"
     except KiteError as e:
         msg, kind = f"Couldn't reach Kite: {e}", "error"
-    return toast(render(request, "partials/broker_status.html", _ctx(user)), msg, kind)
+    # After a web login the saved-accounts list may have changed, so the form comes back too (out of band).
+    name = "partials/broker_login_result.html" if login_panel else "partials/broker_status.html"
+    return toast(render(request, name, _ctx(user)), msg, kind)
 
 
 @router.post("/mode")

@@ -320,7 +320,7 @@ def clean_enctoken(raw: str) -> str:
 
 # ---- Kite web login (password + 2FA code -> enctoken) -------------------------
 # The same two steps kite.zerodha.com takes when you sign in. Unofficial: Kite can change these without
-# notice. The password is sent to Kite once and never stored.
+# notice. Callers may keep the password (encrypted) so the next login needs only the code.
 
 WEB_LOGIN = "https://kite.zerodha.com/api"
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

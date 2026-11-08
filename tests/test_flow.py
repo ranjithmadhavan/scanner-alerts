@@ -1468,3 +1468,43 @@ def test_kite_web_login_errors(client, monkeypatch):
     client.post("/broker/mode", data={"mode": "enctoken"})
     page = client.get("/broker").text
     assert 'hx-post="/broker/login"' in page and 'hx-post="/broker/enctoken"' in page
+
+
+def test_kite_saved_login_needs_only_the_code(client, monkeypatch):
+    login(client, "boss", "boss-pass-123")
+    seen = _kite_web(monkeypatch)
+
+    class FakeKite:
+        def profile(self):
+            return {"user_name": "Boss"}
+    monkeypatch.setattr(brokers, "client_for", lambda u, doc=None: FakeKite())
+    client.post("/broker/mode", data={"mode": "enctoken"})
+
+    # First login: remembered, and the password is stored encrypted, never in plain text.
+    r = client.post("/broker/login", data={"kite_user_id": "ab1234", "password": "secret-pw", "code": "123456", "remember": "1"})
+    assert "Logged in to Kite" in r.headers["HX-Trigger"]
+    assert 'id="kite-login" hx-swap-oob="true"' in r.text and 'value="AB1234"' in r.text
+    assert "secret-pw" not in str(store.get("brokers", "boss"))
+    assert brokers.saved_password("boss", "AB1234") == "secret-pw"
+
+    # Next day: pick the saved account, type only the code.
+    seen.clear()
+    r = client.post("/broker/login", data={"saved": "AB1234", "code": "654321"})
+    assert "Logged in to Kite" in r.headers["HX-Trigger"]
+    assert seen[0][1] == {"user_id": "AB1234", "password": "secret-pw"} and seen[1][1]["twofa_value"] == "654321"
+    page = client.get("/broker").text
+    assert 'name="saved" value="AB1234" checked' in page and "Saved accounts" in page
+
+    # Edit: a blank password keeps the saved one; a new one replaces it; renaming moves it.
+    client.post("/broker/logins/edit", data={"original": "AB1234", "kite_user_id": "AB1234", "password": ""})
+    assert brokers.saved_password("boss", "AB1234") == "secret-pw"
+    client.post("/broker/logins/edit", data={"original": "AB1234", "kite_user_id": "cd5678", "password": "new-pw"})
+    assert brokers.saved_password("boss", "AB1234") == "" and brokers.saved_password("boss", "CD5678") == "new-pw"
+
+    # Remove: gone, and logging in with it now asks for the details again.
+    r = client.post("/broker/logins/delete", data={"kite_user_id": "CD5678"})
+    assert "Removed CD5678" in r.headers["HX-Trigger"] and brokers.load("boss")["kite_logins"] == {}
+    r = client.post("/broker/login", data={"saved": "CD5678", "code": "123456"})
+    assert "saved account is gone" in r.headers["HX-Trigger"]
+    r = client.post("/broker/login", data={"kite_user_id": "AB1234", "code": "123456"})
+    assert "user ID and password" in r.headers["HX-Trigger"]

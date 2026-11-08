@@ -1,0 +1,88 @@
+{% from "partials/icons.html" import icon %}
+{% set ids = logins|map(attribute='user_id')|list %}
+{% set pick = broker.kite_user_id if broker.kite_user_id in ids else (ids[0] if ids else '') %}
+<div id="kite-login" {% if oob %}hx-swap-oob="true"{% endif %}>
+  <form hx-post="/broker/login" hx-target="#broker-status" hx-swap="outerHTML" class="group space-y-5"
+        hx-on::after-request="if (event.detail.elt === this) { this.querySelector('[name=code]').value=''; }">
+    <div>
+      <h3 class="text-[17px] font-bold">Log in with Kite</h3>
+      <p class="mt-1 text-sm leading-relaxed text-ink-soft">
+        {%- if logins %}Pick a saved account and enter today's 2FA code.
+        {%- else %}Works on any phone or computer. Tick “Remember” and next time you'll only need the 2FA code.{% endif -%}
+      </p>
+    </div>
+
+    {% if logins %}
+    <fieldset>
+      <legend class="label">Account</legend>
+      <div class="mt-1 grid gap-2 sm:grid-cols-3">
+        {% for l in logins %}
+        <label class="flex cursor-pointer items-center gap-3 rounded-2xl border border-line px-4 py-3 transition hover:border-peacock/40 has-[:checked]:border-peacock has-[:checked]:bg-peacock-50">
+          <input type="radio" name="saved" value="{{ l.user_id }}" {{ 'checked' if l.user_id == pick }} class="accent-peacock">
+          <span class="min-w-0">
+            <span class="block font-mono text-[15px] font-semibold">{{ l.user_id }}</span>
+            <span class="block text-xs text-ink-soft">Password saved</span>
+          </span>
+        </label>
+        {% endfor %}
+        <label class="flex cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-line px-4 py-3 transition hover:border-peacock/40 has-[:checked]:border-peacock has-[:checked]:bg-peacock-50">
+          <input type="radio" name="saved" value="" data-new-account class="accent-peacock">
+          <span class="text-[15px] font-semibold">Another account</span>
+        </label>
+      </div>
+    </fieldset>
+    {% endif %}
+
+    <div class="grid gap-5 sm:grid-cols-3">
+      <div class="{{ 'hidden group-has-[[data-new-account]:checked]:block' if logins }}">
+        <label for="login_user_id" class="label">Kite user ID</label>
+        <input id="login_user_id" name="kite_user_id" value="{{ '' if logins else (broker.kite_user_id or '') }}" placeholder="AB1234" autocomplete="username" autocapitalize="characters" spellcheck="false" class="field uppercase">
+      </div>
+      <div class="{{ 'hidden group-has-[[data-new-account]:checked]:block' if logins }}">
+        <label for="login_password" class="label">Kite password</label>
+        <input id="login_password" name="password" type="password" autocomplete="current-password" class="field">
+      </div>
+      <div>
+        <label for="login_code" class="label">6-digit 2FA code</label>
+        <input id="login_code" name="code" required inputmode="numeric" pattern="\s*\d{3}\s*\d{3}\s*" maxlength="7" autocomplete="one-time-code" placeholder="123456" class="field font-mono tracking-widest">
+      </div>
+    </div>
+    <label class="flex items-center gap-2.5 text-sm text-ink {{ 'hidden group-has-[[data-new-account]:checked]:flex' if logins }}">
+      <input type="checkbox" name="remember" value="1" checked class="h-4 w-4 accent-peacock">
+      Remember this account. The password is stored encrypted, only for your login here.
+    </label>
+    <p class="text-xs leading-relaxed text-ink-soft">The code is the one from your authenticator app (or Kite app) that you'd type when logging in to Kite. Several wrong tries in a row can lock your Kite account for a while.</p>
+    <button class="btn-primary htmx-busy">Log in and check</button>
+  </form>
+
+  {% if logins %}
+  <details class="group/saved mt-7 border-t border-line pt-6">
+    <summary class="flex cursor-pointer items-center justify-between gap-3 text-[15px] font-semibold text-ink">
+      Saved accounts
+      <svg class="h-4 w-4 shrink-0 text-ink-soft transition group-open/saved:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+    </summary>
+    <p class="mt-1 text-sm text-ink-soft">Change the user ID or password if you update them on Kite. Leave the password blank to keep the saved one.</p>
+    <ul class="mt-4 space-y-3">
+      {% for l in logins %}
+      <li class="rounded-2xl bg-canvas p-4">
+        <form hx-post="/broker/logins/edit" hx-target="#kite-login" hx-swap="outerHTML" class="grid items-end gap-3 sm:grid-cols-[180px_1fr_auto_auto]">
+          <input type="hidden" name="original" value="{{ l.user_id }}">
+          <div>
+            <label for="edit_id_{{ loop.index }}" class="label">Kite user ID</label>
+            <input id="edit_id_{{ loop.index }}" name="kite_user_id" value="{{ l.user_id }}" required autocomplete="off" autocapitalize="characters" spellcheck="false" data-1p-ignore data-lpignore="true" class="field uppercase">
+          </div>
+          <div>
+            <label for="edit_pw_{{ loop.index }}" class="label">Kite password</label>
+            <input id="edit_pw_{{ loop.index }}" name="password" type="password" autocomplete="new-password" placeholder="Saved. Leave blank to keep it." data-1p-ignore data-lpignore="true" class="field">
+          </div>
+          <button class="btn-outline htmx-busy">Save</button>
+          <button type="button" class="rounded-full p-2.5 text-ink-soft hover:bg-white hover:text-fall"
+                  hx-post="/broker/logins/delete" hx-vals='{{ {"kite_user_id": l.user_id}|tojson }}' hx-target="#kite-login" hx-swap="outerHTML"
+                  hx-confirm="Forget the saved login for {{ l.user_id }}?" title="Remove" aria-label="Remove {{ l.user_id }}">{{ icon('trash', 'h-4 w-4') }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>

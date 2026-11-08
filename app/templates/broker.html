@@ -43,29 +43,7 @@
 
   <div class="mt-7 border-t border-line pt-6">
   {% if broker.mode == 'enctoken' %}
-    <form hx-post="/broker/login" hx-target="#broker-status" hx-swap="outerHTML" class="space-y-5"
-          hx-on::after-request="if (event.detail.elt === this) { this.querySelector('[name=code]').value=''; if (event.detail.successful) this.querySelector('[name=password]').value=''; }">
-      <div>
-        <h3 class="text-[17px] font-bold">Log in with Kite</h3>
-        <p class="mt-1 text-sm leading-relaxed text-ink-soft">Works on any phone or computer. Your password goes straight to Kite to sign in and is never saved here.</p>
-      </div>
-      <div class="grid gap-5 sm:grid-cols-3">
-        <div>
-          <label for="login_user_id" class="label">Kite user ID</label>
-          <input id="login_user_id" name="kite_user_id" value="{{ broker.kite_user_id or '' }}" required placeholder="AB1234" autocomplete="username" autocapitalize="characters" spellcheck="false" class="field uppercase">
-        </div>
-        <div>
-          <label for="login_password" class="label">Kite password</label>
-          <input id="login_password" name="password" type="password" required autocomplete="current-password" class="field">
-        </div>
-        <div>
-          <label for="login_code" class="label">6-digit 2FA code</label>
-          <input id="login_code" name="code" required inputmode="numeric" pattern="\s*\d{3}\s*\d{3}\s*" maxlength="7" autocomplete="one-time-code" placeholder="123456" class="field font-mono tracking-widest">
-        </div>
-      </div>
-      <p class="text-xs leading-relaxed text-ink-soft">The code is the one from your authenticator app (or Kite app) that you'd type when logging in to Kite. Several wrong tries in a row can lock your Kite account for a while.</p>
-      <button class="btn-primary htmx-busy">Log in and check</button>
-    </form>
+    {% include "partials/kite_login.html" %}
 
     <details class="group mt-7 border-t border-line pt-6">
       <summary class="flex cursor-pointer items-center justify-between gap-3 text-[15px] font-semibold text-ink">
