@@ -238,7 +238,7 @@ def record(sc: dict, kind: str, items: list[dict], now: datetime) -> None:
     day = now.astimezone(IST).date().isoformat()
     doc_id = f"{sc['user']}:{day}"
     new = [{"at": now.isoformat(), "kind": kind, "scanner_id": sc["id"], "scanner": sc["name"], "tf": sc["tf"],
-            "strategy": strategy_of(sc),
+            "strategy": strategy_of(sc), "rules": sc["rules"], "confirm": sc.get("confirm", ""),  # for its chart later
             **{k: i.get(k) for k in SIGNAL_FIELDS}}
            for i in items]
     with _feed_lock:

@@ -9,14 +9,14 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from app import brokers, crossover, ma_backtest, ma_scanner, ma_screen, notify, universe, webhooks
+from app import brokers, crossover, ma_backtest, ma_scanner, ma_screen, notify, signal_chart, universe, webhooks
 from app.adx import AdxRules
 from app.crossover import Exits, Rules
 from app.kite import KiteAuthError, KiteError, instruments, refresh_instruments, search_instruments
 from app.market import is_market_open, load_settings, now_ist, parse_hhmm
 from app.security import require
 from app.store import new_id, store
-from app.strategies import STRATEGIES, Strategy
+from app.strategies import STRATEGIES, Strategy, rules_from
 from app.web import _company, fail, render, toast
 
 MAX_SYMBOLS = 500
@@ -413,6 +413,27 @@ def _feed_ctx(strat: Strategy, username: str, day: str) -> dict:
             "feed_live": day == days[0] and is_market_open(load_settings(), now)}
 
 
+def signal_chart_data(strat: Strategy, user: dict, day: str, at: str, symbol: str, kind: str, view: str):
+    """The chart behind one feed item, found by when it was sent, the stock and the kind."""
+    item = next((i for i in ma_scanner.feed(user["username"], day, strat.key)
+                 if i["at"] == at and i["symbol"] == symbol and i["kind"] == kind), None)
+    if not item:
+        return JSONResponse({"error": "That signal isn't in the feed any more."}, status_code=404)
+    # The rules as they were when it was sent (kept on the item since charts were added), else the scanner's now.
+    sc = _own(item["scanner_id"], user) if item.get("scanner_id") else None
+    raw = item.get("rules") or (sc or {}).get("rules")
+    rules = rules_from(item.get("strategy", "ma"), raw) if raw else None
+    confirm = (item["confirm"] if "confirm" in item else (sc or {}).get("confirm")) == "close5"
+    if brokers.load(user["username"]).get("status") != "connected":
+        return JSONResponse({"error": "Connect Kite on the Broker page to see charts."}, status_code=409)
+    try:
+        return JSONResponse(signal_chart.build(user["username"], item, rules, confirm, view))
+    except KiteAuthError:
+        return JSONResponse({"error": "Kite isn't connected or the session has expired."}, status_code=400)
+    except KiteError as e:
+        return JSONResponse({"error": f"Couldn't get prices from Kite: {e}"}, status_code=400)
+
+
 # ---- live scanners --------------------------------------------------------------------------
 
 def _list(strat: Strategy, request: Request, user: dict):
@@ -570,6 +591,10 @@ def router_for(key: str) -> APIRouter:
     @router.get("/signals")
     def signals_(request: Request, user: dict = Depends(guard), day: str = ""):
         return render(request, "partials/ma_feed.html", {**_feed_ctx(strat, user["username"], day), **_options(strat)})
+
+    @router.get("/signals/chart")
+    def signal_chart_(day: str, at: str, symbol: str, kind: str, view: str = "", user: dict = Depends(guard)):
+        return signal_chart_data(strat, user, day, at, symbol, kind, view)
 
     @router.post("/scanners")
     async def create_(request: Request, user: dict = Depends(guard)):

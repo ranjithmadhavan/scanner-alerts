@@ -567,7 +567,7 @@ def test_screen_end_to_end(web, kite):
     assert chart["row"]["level"] == 166.5 and chart["trigger"] == "2026-09-30" and chart["candles"][-1]["time"] == "2026-09-30"
 
 
-def test_signals_feed_shows_what_the_scanners_sent(web, kite, sent):
+def test_signals_feed_shows_what_the_scanners_sent(web, kite, sent, monkeypatch):
     from app.market import load_settings
     s = load_settings()
     at = datetime(2026, 9, 30, 15, 31, tzinfo=IST)
@@ -576,7 +576,23 @@ def test_signals_feed_shows_what_the_scanners_sent(web, kite, sent):
     assert (items[0]["kind"], items[0]["symbol"], items[0]["level"], items[0]["scanner"]) == ("setup", "INFY", 166.5, "Infy daily")
     assert items[0]["stop"] == 164 and items[0]["target"] == 171.5
     html = web.get("/ma/signals?day=2026-09-30").text
-    assert "Signals" in html and "INFY" in html
+    assert "Signals" in html and "INFY" in html and "data-signal=" in html
+
+    # Its chart: the next day, the first 5-min candle to trade above 166.5 is the entry; then the target is reached.
+    from app import signal_chart
+    monkeypatch.setattr(signal_chart, "instruments", lambda: {"INFY": INFY})
+    kite.candles = daily(ROWS + [BREAK[1]], DAYS + [BREAK[0]])
+    five = lambda h, m, o, hi, lo, c: Candle(datetime(2026, 10, 1, h, m, tzinfo=IST), o, hi, lo, c)  # noqa: E731
+    kite.five = [five(9, 15, 165, 166, 164.8, 165.5), five(9, 20, 165.5, 167, 165.2, 166.8), five(9, 25, 166.8, 168, 166, 167.5),
+                 five(9, 30, 167.5, 172, 167, 171.8)]
+    q = {"day": "2026-09-30", "at": items[0]["at"], "symbol": "INFY", "kind": "setup"}
+    got = web.get("/ma/signals/chart", params=q).json()
+    assert got["view"] == "1d" and got["setup_at"] == "2026-09-30" and [o["label"] for o in got["overlays"]] == ["2 SMA", "5 SMA"]
+    assert got["entry"]["price"] == 166.5 and got["entry"]["time"] == "2026-10-01" and got["exit"]["reason"] == "Target"
+    fine = web.get("/ma/signals/chart", params={**q, "view": "5m"}).json()
+    assert fine["view"] == "5m" and fine["entry"]["when"] == "1 Oct, 9:20 AM" and fine["exit"]["when"] == "1 Oct, 9:30 AM"
+    assert fine["overlays"][0]["label"] == "2 SMA (daily)" and len(fine["overlays"][0]["points"]) == len(fine["candles"])
+    assert web.get("/ma/signals/chart", params={**q, "at": "nope"}).status_code == 404
     store.delete("ma_scanners", "s1")
 
 
