@@ -1,0 +1,32 @@
+{% from "partials/icons.html" import icon %}
+{# One signal's chart, opened from the Signals feed ([data-signal] rows). Filled in by app.js. #}
+<div id="signal-drawer" class="fixed inset-0 z-50" hidden>
+  <div data-close class="drawer-scrim absolute inset-0 bg-ink/30"></div>
+  <aside class="drawer-panel absolute inset-y-0 right-0 flex w-full max-w-[860px] flex-col bg-white shadow-2xl sm:rounded-l-[28px]"
+         role="dialog" aria-modal="true" aria-labelledby="signal-title">
+    <header class="flex items-start gap-4 border-b border-line px-6 pb-4 pt-6 sm:px-7">
+      <div class="min-w-0 flex-1">
+        <h2 id="signal-title" class="text-2xl font-bold"></h2>
+        <p id="signal-sub" class="truncate text-sm text-ink-soft"></p>
+      </div>
+      <button type="button" data-close class="rounded-full p-2 text-ink-soft hover:bg-canvas hover:text-ink" aria-label="Close chart">{{ icon('close') }}</button>
+    </header>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 pt-4 sm:px-7">
+      {# The scanner's own candles, or 5-minute candles from the setup on (to see the entry). #}
+      <div id="signal-views" class="inline-flex rounded-full bg-canvas p-1" role="tablist" aria-label="Candles">
+        <button type="button" role="tab" data-view="" class="rounded-full px-3.5 py-1.5 text-sm font-semibold text-ink-soft transition aria-selected:bg-white aria-selected:text-ink aria-selected:shadow-sm"></button>
+        <button type="button" role="tab" data-view="5m" class="rounded-full px-3.5 py-1.5 text-sm font-semibold text-ink-soft transition aria-selected:bg-white aria-selected:text-ink aria-selected:shadow-sm">5 min</button>
+      </div>
+      {# Each line is a toggle: show or hide it. #}
+      <div id="signal-lines" class="flex flex-wrap items-center gap-1.5 text-sm"></div>
+      <span id="signal-panel-legend" class="text-sm text-ink-soft"></span>
+    </div>
+    <div class="relative flex min-h-[340px] flex-1 flex-col px-3 pb-3 pt-3 sm:px-4">
+      <div id="signal-chart" class="min-h-0 w-full flex-1"></div>
+      <div id="signal-panel" class="h-[130px] w-full border-t border-line" hidden></div>
+      <p id="signal-msg" class="pointer-events-none absolute inset-0 grid place-items-center px-8 text-center text-[15px] text-ink-soft"></p>
+    </div>
+    {# Where it entered (or would have), and how it went. #}
+    <div id="signal-notes" class="space-y-1.5 border-t border-line px-6 py-3.5 text-sm sm:px-7"></div>
+  </aside>
+</div>

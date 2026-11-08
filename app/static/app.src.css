@@ -106,8 +106,8 @@ html.page-loading, html.page-loading * { cursor: progress; }
 /* Leaving is quicker than arriving; only transform and opacity move, so it stays on the compositor. */
 .drawer-panel { transform: translate3d(100%, 0, 0); transition: transform .24s cubic-bezier(.4,0,1,1); will-change: transform; }
 .drawer-scrim { opacity: 0; transition: opacity .2s ease-in; }
-#chart-drawer.open .drawer-panel { transform: none; transition: transform .38s cubic-bezier(.16,1,.3,1); }
-#chart-drawer.open .drawer-scrim { opacity: 1; transition: opacity .3s ease-out; }
+#chart-drawer.open .drawer-panel, #signal-drawer.open .drawer-panel { transform: none; transition: transform .38s cubic-bezier(.16,1,.3,1); }
+#chart-drawer.open .drawer-scrim, #signal-drawer.open .drawer-scrim { opacity: 1; transition: opacity .3s ease-out; }
 html.drawer-lock { overflow: hidden; }
 /* The panel keeps room for its notes, so the chart doesn't jump when they arrive. */
 #chart-hits { min-height: 5.5rem; }
@@ -157,6 +157,9 @@ input:checked + span .tick { display: inline; }
    under it; the header keeps its rule while it sticks (borders on sticky cells don't travel). */
 .bt-row { background: #fff; }
 .bt-row[data-bt-signal] { cursor: pointer; }
+.sig-row { cursor: pointer; transition: background-color .15s; }
+.sig-row:hover, .sig-row:focus-visible { background: #F8F5F0; outline: none; }
+.sig-row[data-selected] { background: #FDF4E3; }
 .bt-row:hover, .bt-row:focus-visible { background: #F8F5F0; outline: none; }
 .bt-row[data-selected] { background: #FDF4E3; }
 .bt-row > td { border-top: 1px solid #ECE6DC; }
@@ -172,7 +175,7 @@ details > summary::-webkit-details-marker { display: none; }
   .arrive, .toast-in, .quote-in, .section-in, .dialog-in { animation: fade-in .2s ease-out both; }
   .breathe, .count-pulse, .just-hit .hit-chip { animation: none; }
   .just-hit::before { animation: fade-in 1.6s ease-in reverse both; clip-path: none; }
-  .rail-dot, .drawer-panel, #chart-drawer.open .drawer-panel { transition: none; }
+  .rail-dot, .drawer-panel, #chart-drawer.open .drawer-panel, #signal-drawer.open .drawer-panel { transition: none; }
   #page-progress.loading { animation: none; transform: scaleX(.6); }
   .btn:hover:not(:disabled), .btn:active:not(:disabled), .btn:hover:not(:disabled) svg,
   button[class~="rounded-full"]:not([class*="btn"]):active, button[class~="rounded-full"]:not([class*="btn"]):hover > svg, [data-chart]:hover svg,

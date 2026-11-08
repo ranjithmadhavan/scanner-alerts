@@ -1,3 +1,4 @@
+{% from "partials/icons.html" import icon %}
 {# What the live scanners found, newest first. Refreshes itself every 30 seconds while the market is open (today only). #}
 <section id="ma-feed" class="panel mt-5 overflow-hidden"
          {% if feed_live %}hx-get="{{ base }}/signals?day={{ feed_day }}" hx-trigger="every 30s" hx-swap="outerHTML"{% endif %}>
@@ -32,9 +33,12 @@
       </thead>
       <tbody class="num divide-y divide-line/70 whitespace-nowrap">
         {% for g in feed %}
-        <tr>
+        {% set what = ('Setup · ' ~ g.side|capitalize ~ (' above ' if g.side == 'buy' else ' below ')) if g.kind == 'setup' else ('Entry · ' ~ g.side ~ ' at ') %}
+        <tr class="sig-row" data-signal='{{ {"day": feed_day, "at": g.at, "symbol": g.symbol, "kind": g.kind, "tf": g.tf, "tf_label": tf_label(g.tf),
+              "sub": what ~ "₹" ~ ((g.level if g.kind == "setup" else (g.price or g.level))|price) ~ " · " ~ g.scanner ~ " · " ~ tf_label(g.tf)|lower ~ " · " ~ (g.at|ist("%-d %b, %-I:%M %p"))}|tojson }}'
+            tabindex="0" title="Chart {{ g.symbol }}: where it entered">
           <td class="py-2 pl-6 pr-3">{{ g.at|ist('%-I:%M %p') }}</td>
-          <td class="py-2 pr-3 font-semibold">{{ g.symbol }}</td>
+          <td class="py-2 pr-3 font-semibold"><span class="inline-flex items-center gap-1.5">{{ g.symbol }} <span class="text-ink-soft">{{ icon('chart', 'h-3.5 w-3.5') }}</span></span></td>
           <td class="py-2 pr-3">
             {% if g.kind == 'setup' %}<span class="rounded-full bg-peacock-50 px-2 py-0.5 text-xs font-semibold text-peacock">Setup</span>
               <span class="{{ 'text-rise' if g.side == 'buy' else 'text-fall' }} font-semibold">{{ g.side|capitalize }} {{ 'above' if g.side == 'buy' else 'below' }}</span>

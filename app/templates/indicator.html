@@ -30,6 +30,7 @@
 
 {% if tab == 'scanners' %}
 {% include "partials/ma_feed.html" %}
+{% include "partials/signal_chart.html" %}
 
 {# New scanner, or (with ?edit=) a saved one's settings, saved back to it. #}
 <form id="new-scanner" class="ma-form panel mt-5 shadow-soft {{ 'ring-2 ring-peacock/40' if editing }}" hx-post="{{ base }}/scanners{{ '/' ~ editing.id if editing }}"

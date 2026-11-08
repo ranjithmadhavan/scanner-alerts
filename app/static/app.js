@@ -1110,3 +1110,156 @@ function strategyLines(L, chart, got, legend, panelBox) {
     show(row.dataset.screenSymbol);
   });
 })();
+
+// ---- Indicator scanners' Signals feed: one signal's chart, on the scanner's candles or on 5-minute ones ------------
+// The level is drawn dotted across, with SL and target; markers show the setup candle, the entry (or where it would
+// have been) and the SL or target that came next. Each line in the legend can be shown or hidden.
+(() => {
+  const drawer = document.getElementById("signal-drawer");
+  if (!drawer) return;
+  const $ = (id) => document.getElementById(id);
+  const msg = $("signal-msg"), notes = $("signal-notes"), chips = $("signal-lines");
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  let chart, below, series, lineSeries = [], item = null, view = "", request = 0, lastFocus, hideTimer;
+  const hidden = new Set();  // overlays switched off, by position (the same averages in either view)
+
+  function paintChips(overlays) {
+    chips.innerHTML = overlays.map((o, i) =>
+      `<button type="button" data-line="${i}" aria-pressed="${!hidden.has(i)}" title="Show or hide ${esc(o.label)}"
+         class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-medium ring-1 ring-line transition hover:bg-canvas aria-pressed:text-ink [&:not([aria-pressed=true])]:text-ink-soft [&:not([aria-pressed=true])]:line-through">
+         <span class="inline-block h-0.5 w-4" style="background:${o.color}"></span>${esc(o.label)}</button>`).join("");
+  }
+
+  function setNotes(d) {
+    const buy = d.side === "buy", rows = [];
+    const word = buy ? "above" : "below";
+    if (d.entry) {
+      rows.push(`<p><span class="font-semibold ${buy ? "text-rise" : "text-fall"}">${d.kind === "entry" ? "Entered" : "Would have entered"} at ${chartRupees(d.entry.price)}</span>
+        <span class="text-ink-soft">· ${esc(d.entry.when)} · ${esc(d.entry.how)}</span></p>`);
+      rows.push(d.exit
+        ? `<p><span class="font-semibold ${d.exit.reason === "SL" ? "text-fall" : "text-rise"}">Then ${d.exit.reason === "SL" ? "SL" : "target"} at ${chartRupees(d.exit.price)}</span> <span class="text-ink-soft">· ${esc(d.exit.when)}</span></p>`
+        : `<p class="text-ink-soft">Neither the SL nor the target was reached through ${esc(d.until)}.</p>`);
+    } else {
+      rows.push(`<p class="text-ink-soft">Price didn't trade ${word} ${chartRupees(d.level)} after the ${d.tf === "1d" ? "setup day" : "setup candle"}, through ${esc(d.until)}.</p>`);
+    }
+    if (d.kind === "setup") rows.push(`<p class="text-[13px] text-ink-soft">Worked out from 5-minute candles after the setup candle closed. The live scanner may have dropped the setup sooner, if a newer pullback candle formed or the averages crossed back.</p>`);
+    if (!d.lines) rows.push(`<p class="text-[13px] text-ink-soft">This scanner has been removed, so its lines can't be drawn.</p>`);
+    notes.innerHTML = rows.join("");
+  }
+
+  function draw(d) {
+    const L = window.LightweightCharts;
+    chart?.remove(); below?.remove(); below = null;
+    chart = L.createChart($("signal-chart"), chartLook(L));
+    chart.applyOptions({ timeScale: { timeVisible: !d.daily, secondsVisible: false } });
+    series = chart.addCandlestickSeries(candleLook);
+    series.setData(d.candles);
+    lineSeries = d.overlays.map((o, i) => {
+      const s = chart.addLineSeries({ color: o.color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, visible: !hidden.has(i) });
+      s.setData(o.points);
+      return s;
+    });
+    paintChips(d.overlays);
+    $("signal-panel-legend").innerHTML = "";
+    if (d.panel) below = strategyLines(L, chart, { ...d, overlays: [] }, $("signal-panel-legend"), $("signal-panel"));
+    else $("signal-panel").hidden = true;
+
+    const buy = d.side === "buy";
+    const line = (price, color, title, style) => price !== null && price !== undefined &&
+      series.createPriceLine({ price, color, lineWidth: style === 1 ? 2 : 1, lineStyle: style, axisLabelVisible: true, title });
+    line(d.level, "#E9A23B", buy ? "Enter above" : "Enter below", 1);  // dotted: where the entry is
+    line(d.stop, "#C2475A", "SL", 2);
+    line(d.target, "#2E8B57", "Target", 2);
+    const marks = [];
+    if (d.setup_at !== null) marks.push({ time: d.setup_at, position: buy ? "aboveBar" : "belowBar", shape: "circle", color: "#E9A23B", text: "Setup" });
+    if (d.entry) marks.push({ time: d.entry.time, position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown",
+      color: buy ? "#2E8B57" : "#C2475A", text: (d.kind === "entry" ? "Entry " : "Would enter ") + d.entry.price.toFixed(2) });
+    if (d.exit) marks.push({ time: d.exit.time, position: d.exit.reason === "SL" ? (buy ? "belowBar" : "aboveBar") : (buy ? "aboveBar" : "belowBar"),
+      shape: "square", color: d.exit.reason === "SL" ? "#C2475A" : "#2E8B57", text: `${d.exit.reason} ${d.exit.price.toFixed(2)}` });
+    const key = (t) => String(t).padStart(12, "0");
+    series.setMarkers(marks.sort((a, b) => key(a.time).localeCompare(key(b.time))));
+
+    // Frame the story: a little before the setup, through the exit (or the entry), with room after.
+    const index = (t) => d.candles.findIndex((c) => c.time === t);
+    const n = d.candles.length;
+    const from = d.setup_at !== null ? index(d.setup_at) : -1;
+    const last = Math.max(from, d.entry ? index(d.entry.time) : -1, d.exit ? index(d.exit.time) : -1);
+    if (from >= 0) {
+      const before = d.view === "5m" ? 20 : 45;
+      const after = d.view === "5m" ? 40 : 10;
+      chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, from - before), to: Math.min(n + 3, Math.max(last + after, from + (d.view === "5m" ? 80 : 20))) });
+    } else chart.timeScale().fitContent();
+    msg.textContent = n ? "" : "Kite has no candles for this.";
+    setNotes(d);
+  }
+
+  async function load() {
+    const mine = ++request;
+    drawer.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-selected", (b.dataset.view || item.tf) === (view || item.tf)));
+    msg.textContent = `Loading ${item.symbol}…`;
+    notes.innerHTML = "";
+    try {
+      await loadChartLib();
+      const q = new URLSearchParams({ day: item.day, at: item.at, symbol: item.symbol, kind: item.kind, view });
+      const r = await fetch(`${maBase()}/signals/chart?${q}`);
+      const d = await r.json().catch(() => ({ error: `The server couldn't draw this chart (HTTP ${r.status}). Try again in a moment.` }));
+      await new Promise((done) => setTimeout(done, 0));
+      if (mine !== request) return;
+      if (!r.ok) throw new Error(d.error || "Couldn't load the chart.");
+      draw(d);
+    } catch (e) {
+      if (mine === request) { msg.textContent = e.message; chart?.remove(); chart = null; below?.remove(); below = null; chips.innerHTML = ""; }
+    }
+  }
+
+  function open(row) {
+    try { item = JSON.parse(row.dataset.signal); } catch { return; }
+    lastFocus = document.activeElement;
+    document.querySelectorAll("[data-signal]").forEach((r) => r.toggleAttribute("data-selected", r === row));
+    view = "";
+    $("signal-title").textContent = item.symbol;
+    $("signal-sub").textContent = item.sub;
+    const [own, fine] = drawer.querySelectorAll("[data-view]");
+    own.textContent = item.tf_label;
+    $("signal-views").hidden = item.tf === "5m";  // already 5-minute: nothing to switch to
+    fine.hidden = item.tf === "5m";
+    clearTimeout(hideTimer);
+    drawer.hidden = false;
+    void drawer.offsetWidth;
+    drawer.classList.add("open");
+    document.documentElement.classList.add("drawer-lock");
+    drawer.querySelector("[data-close].rounded-full")?.focus({ preventScroll: true });
+    // Let the panel land before drawing, so the slide doesn't stutter.
+    setTimeout(load, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 380);
+  }
+
+  function close() {
+    request++;
+    drawer.classList.remove("open");
+    document.documentElement.classList.remove("drawer-lock");
+    hideTimer = setTimeout(() => { drawer.hidden = true; }, 260);
+    lastFocus?.focus({ preventScroll: true });
+  }
+
+  drawer.addEventListener("click", (e) => {
+    if (e.target.closest("[data-close]")) return close();
+    const tab = e.target.closest("[data-view]");
+    if (tab && tab.dataset.view !== view) { view = tab.dataset.view; return load(); }
+    const chip = e.target.closest("[data-line]");
+    if (chip) {
+      const i = Number(chip.dataset.line);
+      hidden.has(i) ? hidden.delete(i) : hidden.add(i);
+      chip.setAttribute("aria-pressed", !hidden.has(i));
+      lineSeries[i]?.applyOptions({ visible: !hidden.has(i) });
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !drawer.hidden) return close();
+    const row = e.target.matches?.("[data-signal]") ? e.target : null;
+    if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(row); }
+  });
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-signal]");
+    if (row) open(row);
+  });
+})();
