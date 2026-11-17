@@ -16,6 +16,10 @@ Reading a snapshot against the day's first one:
 The sentiment is the balance of the first: (put change - call change) / (|put change| + |call change|),
 from -1 (only call writing) to +1 (only put writing). At the open there is no change yet, so PCR
 stands in.
+
+Only today's change counts: the starting point is the day's first snapshot, never yesterday's close.
+Right at the open Kite can quote options with no OI yet; such a snapshot is not saved (capture raises
+NoOIYet) so the next scanner tick tries again, and the day's start is the first snapshot that has OI.
 """
 
 import logging
@@ -34,6 +38,19 @@ DEFAULTS = {"interval": 15, "strikes": 10}
 INTERVALS = [15, 30]
 STRIKE_CHOICES = [5, 8, 10, 12, 15]
 LAKH = 100_000
+
+
+class NoOIYet(KiteError):
+    """Kite answered, but the at-the-money options carry no OI yet (it happens right at the open)."""
+
+
+def has_oi(snap: dict) -> bool:
+    """True when the snapshot's at-the-money strike has call and put OI: a usable reading."""
+    rows = snap.get("rows") or []
+    if not rows:
+        return False
+    atm = min(rows, key=lambda r: abs(r["strike"] - snap["spot"]))
+    return bool(atm.get("ce_oi")) and bool(atm.get("pe_oi"))
 
 
 def load_settings() -> dict:
@@ -94,6 +111,8 @@ def capture(client, now: datetime, slot_id: str | None = None) -> dict:
         "date": now.date().isoformat(), "at": now.isoformat(), "expiry": expiry, "spot": spot,
         "rows": [rows[k] for k in sorted(rows)],
     }
+    if not has_oi(snap):
+        raise NoOIYet("Kite has no OI for the at-the-money options yet; trying again shortly")
     store.put("oi_snapshots", snap["id"], snap)
     day = store.get("oi_days", snap["date"]) or {}
     slots = sorted(set(day.get("slots", [])) | {snap["id"]})
@@ -133,6 +152,9 @@ def capture_if_due(now: datetime, s: MarketSettings) -> dict | None:
         return None
     try:
         snap = capture(client, now, slot_id)
+    except NoOIYet as e:
+        log.info("OI capture %s: %s", slot_id, e)  # not marked done: the next tick retries
+        return None
     except KiteError as e:
         log.warning("OI capture %s failed: %s", slot_id, e)
         return None
@@ -201,10 +223,12 @@ def announce(snap: dict) -> dict | None:
 # ---- reading it --------------------------------------------------------------------
 
 def day_snapshots(day: str) -> list[dict]:
-    """The day's snapshots from the open on. One taken before the open only repeats yesterday's close,
-    so it would make a poor starting point for the day's changes."""
+    """The day's snapshots from the open on that carry OI. One taken before the open only repeats
+    yesterday's close, and one Kite answered with no OI would make every later reading look like a
+    change from zero: neither is a starting point for the day's changes."""
     opens = f"{day}T{market_settings().open:%H:%M}"
-    return sorted((s for s in store.list("oi_snapshots", date=day) if s["id"] >= opens), key=lambda s: s["at"])
+    return sorted((s for s in store.list("oi_snapshots", date=day) if s["id"] >= opens and has_oi(s)),
+                  key=lambda s: s["at"])
 
 
 def analyse(snap: dict, first: dict) -> dict:
@@ -213,7 +237,9 @@ def analyse(snap: dict, first: dict) -> dict:
     rows = []
     for r in snap["rows"]:
         b = base.get(r["strike"])
-        rows.append({**r, "ce_chg": r["ce_oi"] - b["ce_oi"] if b else None, "pe_chg": r["pe_oi"] - b["pe_oi"] if b else None})
+        # A strike with no OI in the first snapshot has no known start today: no change counted for it.
+        rows.append({**r, "ce_chg": r["ce_oi"] - b["ce_oi"] if b and b["ce_oi"] else None,
+                     "pe_chg": r["pe_oi"] - b["pe_oi"] if b and b["pe_oi"] else None})
     ce_total = sum(r["ce_oi"] for r in rows)
     pe_total = sum(r["pe_oi"] for r in rows)
     ce_chg = sum(r["ce_chg"] for r in rows if r["ce_chg"] is not None)
@@ -276,9 +302,16 @@ def sentiment(username: str, now: datetime) -> dict | None:
     # Only the day's first snapshot and the latest one by `now` are read, not the whole day.
     opens = f"{day}T{market_settings().open:%H:%M}"
     ids = sorted(sid for sid in (store.get("oi_days", day) or {}).get("slots", []) if opens <= sid <= f"{day}T{now:%H:%M}")
-    snaps = [s for s in (store.get("oi_snapshots", ids[0]), store.get("oi_snapshots", ids[-1])) if s] if ids else []
-    if not snaps:
+    first = None
+    for k, sid in enumerate(ids):  # the first snapshot with OI; normally ids[0]
+        s = store.get("oi_snapshots", sid)
+        if s and has_oi(s):
+            first, ids = s, ids[k:]
+            break
+    if not first:
         return None
+    latest = first if ids[-1] == first["id"] else store.get("oi_snapshots", ids[-1])
+    snaps = [first] + ([latest] if latest and latest is not first and has_oi(latest) else [])
     r = analyse(snaps[-1], snaps[0])
     return {"label": r["label"], "pcr": round(r["pcr"], 2) if r["pcr"] is not None else None,
             "support": r["support"], "resistance": r["resistance"], "spot": r["spot"],

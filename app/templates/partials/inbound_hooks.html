@@ -1,0 +1,99 @@
+{% from "partials/icons.html" import icon %}
+{# Incoming webhooks: URLs a charting tool POSTs to; what arrives goes to the person's channels and is kept here. #}
+{% macro channel_picks(prefix, picked) -%}
+<fieldset class="mt-4">
+  <legend class="label">Send what arrives to</legend>
+  <div class="mt-1 flex flex-wrap gap-x-5 gap-y-2">
+    {% for key, label in channel_names.items() %}
+    <label class="flex cursor-pointer items-center gap-2 text-[15px]">
+      <input type="checkbox" name="channels" value="{{ key }}" class="h-4 w-4 rounded accent-peacock" {{ 'checked' if key in picked }}>
+      {{ label }}{% if key not in ready %} <span class="text-[13px] text-marigold-dark">(not set up yet)</span>{% endif %}
+    </label>
+    {% endfor %}
+  </div>
+</fieldset>
+{%- endmacro %}
+<section id="inbound" class="mt-12">
+  <div class="mb-3 px-1">
+    <h2 class="text-lg font-bold">Incoming webhooks</h2>
+    <p class="mt-1 max-w-2xl text-[15px] text-ink-soft">A URL your charting tool (TradingView, Chartink, Amibroker…) can send alerts to. Whatever it sends reaches you on Telegram, and the last 20 are kept here.</p>
+  </div>
+
+  {% if inbound %}
+  <div class="space-y-3">
+    {% for h in inbound %}
+    <article class="panel px-6 py-5">
+      <div class="flex flex-wrap items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="font-display text-lg font-bold">{{ h.name }}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <code class="min-w-0 flex-1 break-all rounded-xl bg-canvas px-3 py-2 font-mono text-[13px]">{{ h.url }}</code>
+            <button type="button" data-copy="{{ h.url }}" class="btn-outline shrink-0 px-3 py-1.5 text-xs">{{ icon('copy', 'h-3.5 w-3.5') }} Copy URL</button>
+          </div>
+          <p class="mt-2 text-[13px] text-ink-soft">Sends to {% for c in h.channels %}{{ channel_names.get(c, c) }}{{ ', ' if not loop.last }}{% endfor %}
+            · {% if h.last_at %}{{ h.count }} received, last {{ h.last_at|when }}{% else %}<span class="text-marigold-dark">nothing received yet</span>{% endif %}</p>
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <button type="button" class="btn-outline htmx-busy px-3 py-1.5 text-sm" hx-post="/notifications/inbound/{{ h.id }}/test" hx-target="#inbound" hx-swap="outerHTML">{{ icon('send', 'h-4 w-4') }} Test</button>
+          <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-canvas hover:text-ink" title="Make a new URL (the old one stops working)" aria-label="Make a new URL for {{ h.name }}"
+                  hx-post="/notifications/inbound/{{ h.id }}/new-url" hx-target="#inbound" hx-swap="outerHTML" hx-confirm="Make a new URL for {{ h.name }}? The old one stops working at once, so you'll need to paste the new one into your chart alerts.">{{ icon('refresh', 'h-4 w-4') }}</button>
+          <button type="button" class="rounded-full p-2 text-ink-soft transition hover:bg-fall-50 hover:text-fall" title="Remove this incoming webhook" aria-label="Remove {{ h.name }}"
+                  hx-post="/notifications/inbound/{{ h.id }}/remove" hx-target="#inbound" hx-swap="outerHTML" hx-confirm="Remove {{ h.name }}? Its URL stops working and what it received is deleted.">{{ icon('trash', 'h-4 w-4') }}</button>
+        </div>
+      </div>
+
+      {% if h.recent %}
+      <details class="mt-3">
+        <summary class="cursor-pointer text-sm font-semibold text-peacock">Last received ({{ h.recent|length }})</summary>
+        <ul class="mt-2 divide-y divide-line rounded-2xl border border-line">
+          {% for m in h.recent %}
+          <li class="px-4 py-3">
+            <p class="flex flex-wrap items-center gap-2 text-[13px] text-ink-soft">
+              <span>{{ m.at|when }}</span>
+              {% if m.test %}<span class="rounded-full bg-canvas px-2 py-0.5 text-xs">Test</span>{% endif %}
+              {% for ch, res in m.delivery.items() %}
+              <span class="rounded-full px-2 py-0.5 text-xs font-medium {{ 'bg-rise-50 text-rise' if res == 'sent' else 'bg-fall-50 text-fall' }}" title="{{ res }}">{{ channel_names.get(ch, ch) }}{{ '' if res == 'sent' else ' failed' }}</span>
+              {% endfor %}
+            </p>
+            <pre class="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-ink">{{ m.data if m.data is string else m.data|tojson(indent=1) }}</pre>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+
+      <details class="mt-3">
+        <summary class="cursor-pointer text-sm font-semibold text-peacock">Edit</summary>
+        <form class="mt-3" hx-post="/notifications/inbound/{{ h.id }}" hx-target="#inbound" hx-swap="outerHTML">
+          <label for="in-{{ h.id }}-name" class="label">Name</label>
+          <input id="in-{{ h.id }}-name" name="name" maxlength="40" value="{{ h.name }}" class="field sm:max-w-sm" autocomplete="off">
+          {{ channel_picks('in-' ~ h.id, h.channels) }}
+          <button class="btn-primary htmx-busy mt-4 px-4 py-2 text-sm">Save</button>
+        </form>
+      </details>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if inbound|length < max_inbound %}
+  <details class="panel mt-3 px-6 py-5">
+    <summary class="flex cursor-pointer items-center gap-2 font-semibold">{{ icon('plus', 'h-4 w-4') }} Add an incoming webhook</summary>
+    <form class="mt-4" hx-post="/notifications/inbound" hx-target="#inbound" hx-swap="outerHTML">
+      <label for="in-new-name" class="label">Name</label>
+      <input id="in-new-name" name="name" maxlength="40" placeholder="e.g. TradingView Nifty" class="field sm:max-w-sm" autocomplete="off">
+      {{ channel_picks('in-new', ['telegram']) }}
+      <button class="btn-primary htmx-busy mt-4 px-4 py-2 text-sm">Make a URL</button>
+    </form>
+  </details>
+  {% endif %}
+
+  <details class="mt-3 px-1">
+    <summary class="cursor-pointer text-sm font-semibold text-peacock">How to send to it from TradingView</summary>
+    <div class="mt-3 space-y-3 text-[13px] leading-relaxed text-ink-soft">
+      <p>In the alert's <strong>Notifications</strong> tab, tick <strong>Webhook URL</strong> and paste the URL. Whatever you put in the alert's <strong>Message</strong> is what's sent. Plain text arrives as it is; JSON arrives as one line per field, and is kept as JSON for trading on later. For example:</p>
+<pre class="overflow-x-auto rounded-2xl bg-canvas p-4 font-mono text-[12px] leading-relaxed text-ink">{"ticker": "{{ '{{ticker}}' }}", "action": "{{ '{{strategy.order.action}}' }}", "price": "{{ '{{close}}' }}", "time": "{{ '{{timenow}}' }}"}</pre>
+      <p>Any tool that can POST to a URL works the same way. The URL is the key, so keep it private: if it gets out, make a new one. Up to 30 requests a minute and 10 KB each.</p>
+    </div>
+  </details>
+</section>

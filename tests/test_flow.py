@@ -1508,3 +1508,67 @@ def test_kite_saved_login_needs_only_the_code(client, monkeypatch):
     assert "saved account is gone" in r.headers["HX-Trigger"]
     r = client.post("/broker/login", data={"kite_user_id": "AB1234", "code": "123456"})
     assert "user ID and password" in r.headers["HX-Trigger"]
+
+
+def test_incoming_webhook_sends_what_arrives_to_telegram_and_keeps_it(client, monkeypatch):
+    from app import inbound
+    monkeypatch.setattr(inbound, "_run", lambda fn, *a: fn(*a))
+    monkeypatch.setattr(inbound, "_hits", __import__("collections").defaultdict(__import__("collections").deque))
+    login(client, "boss", "boss-pass-123")
+    monkeypatch.setattr(notify, "telegram_bot_info", lambda t: {"username": "alerts_bot", "name": "Alerts"})
+    client.post("/notifications/telegram", data={"telegram_bot_token": "123456:abcdefWXYZ", "telegram_chat_id": "42"})
+    sent = []
+    monkeypatch.setitem(notify._SENDERS, "telegram", lambda ct, s, b: sent.append((s, b)))
+
+    assert "Pick at least one" in client.post("/notifications/inbound", data={"name": "TV"}).headers["HX-Trigger"]
+    r = client.post("/notifications/inbound", data={"name": "TV Nifty", "channels": ["telegram"]})
+    hook = inbound.hooks("boss")[0]
+    url = inbound.url(hook)
+    assert url in r.text and "/hook/" in url
+    path = url.removeprefix(config.BASE_URL)
+
+    # JSON (as TradingView sends it) arrives as key: value lines, and is kept as JSON.
+    r = client.post(path, content=b'{"ticker": "NIFTY", "action": "buy", "price": 24510.5}', headers={"Content-Type": "text/plain"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert sent[-1] == ("📩 TV Nifty", "ticker: NIFTY\naction: buy\nprice: 24510.5")
+    # Plain text as it came.
+    client.post(path, content=b"NIFTY crossed 24500")
+    assert sent[-1][1] == "NIFTY crossed 24500"
+
+    hook = inbound.hooks("boss")[0]
+    assert hook["count"] == 2 and hook["recent"][0]["data"] == "NIFTY crossed 24500"
+    assert hook["recent"][1]["data"] == {"ticker": "NIFTY", "action": "buy", "price": 24510.5}
+    assert hook["recent"][0]["delivery"] == {"telegram": "sent"}
+    page = client.get("/notifications").text
+    assert "Incoming webhooks" in page and "NIFTY crossed 24500" in page and "TV Nifty: ticker: NIFTY" in page
+
+    # Unknown URLs, oversized bodies, and floods are turned away; no login is needed, and none is used.
+    assert client.post("/hook/" + "x" * 32, content=b"hi").status_code == 404
+    assert client.post(path, content=b"x" * (inbound.MAX_BODY + 1)).status_code == 413
+    monkeypatch.setattr(inbound, "RATE", (3, 60))
+    assert client.post(path, content=b"three").status_code == 200
+    assert client.post(path, content=b"four").status_code == 429
+
+    # Test, edit, a new URL (the old one stops working), remove.
+    r = client.post(f"/notifications/inbound/{hook['id']}/test")
+    assert "Test sent" in r.headers["HX-Trigger"] and sent[-1][0] == "📩 TV Nifty (test)"
+    client.post(f"/notifications/inbound/{hook['id']}", data={"name": "Renamed", "channels": ["telegram", "email"]})
+    assert inbound.hooks("boss")[0]["channels"] == ["telegram", "email"]
+    client.post(f"/notifications/inbound/{hook['id']}/new-url")
+    moved = inbound.hooks("boss")[0]
+    assert moved["name"] == "Renamed" and inbound.url(moved) != url
+    inbound._hits.clear()
+    assert client.post(path, content=b"old").status_code == 404
+    assert client.post(inbound.url(moved).removeprefix(config.BASE_URL), content=b"new").status_code == 200
+    client.post(f"/notifications/inbound/{moved['id']}/remove")
+    assert inbound.hooks("boss") == []
+
+    # Someone else's hook can't be touched.
+    other = inbound.create("someone", "Theirs", ["telegram"])
+    assert "gone" in client.post(f"/notifications/inbound/{other['id']}/remove").headers["HX-Trigger"]
+
+
+def test_hook_tokens_stay_out_of_logs():
+    from app.main import _hide_hook_token
+    assert _hide_hook_token("/hook/abcSECRET123") == "/hook/…"
+    assert _hide_hook_token("/notifications") == "/notifications"

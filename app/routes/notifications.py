@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request
 
-from app import notify, webhooks
+from app import inbound, notify, webhooks
 from app.market import now_ist
 from app.security import decrypt, encrypt, require
 from app.store import store
@@ -40,6 +40,7 @@ def _ctx(user: dict) -> dict:
         ],
         "events": sorted(store.list("events", user=user["username"]), key=lambda e: e["at"], reverse=True)[:15],
         **_hooks_ctx(user),
+        **_inbound_ctx(user),
     }
 
 
@@ -113,6 +114,68 @@ def hook_remove(request: Request, hook_id: str, user: dict = Depends(guard)):
         return fail("That webhook is gone.")
     webhooks.remove(ep)
     return _hooks_panel(request, user, f"{ep['name']} removed")
+
+
+# ---- incoming webhooks: URLs a charting tool posts to, sent on to Telegram etc. ---------------------
+
+def _inbound_ctx(user: dict) -> dict:
+    contacts = notify.load_contacts(user["username"])
+    return {"inbound": [{**h, "url": inbound.url(h)} for h in inbound.hooks(user["username"])],
+            "max_inbound": inbound.MAX_HOOKS, "channel_names": notify.CHANNELS,
+            "ready": [c for c in notify.CHANNELS if notify.sender_ready(c) and notify.recipient_ready(c, contacts)]}
+
+
+def _inbound_panel(request: Request, user: dict, message: str, kind: str = "success"):
+    return toast(render(request, "partials/inbound_hooks.html", _inbound_ctx(user)), message, kind)
+
+
+@router.post("/inbound")
+def inbound_add(request: Request, user: dict = Depends(guard), name: str = Form(""), channels: list[str] = Form([])):
+    try:
+        hook = inbound.create(user["username"], name, channels)
+    except ValueError as e:
+        return fail(str(e))
+    return _inbound_panel(request, user, f"{hook['name']} is ready. Copy its URL into your chart's alert.")
+
+
+@router.post("/inbound/{hook_id}")
+def inbound_edit(request: Request, hook_id: str, user: dict = Depends(guard), name: str = Form(""),
+                 channels: list[str] = Form([])):
+    if not (hook := inbound.own(hook_id, user["username"])):
+        return fail("That incoming webhook is gone.")
+    try:
+        hook = inbound.edit(hook, name, channels)
+    except ValueError as e:
+        return fail(str(e))
+    return _inbound_panel(request, user, f"{hook['name']} saved")
+
+
+@router.post("/inbound/{hook_id}/test")
+def inbound_test(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (hook := inbound.own(hook_id, user["username"])):
+        return fail("That incoming webhook is gone.")
+    sample = {"ticker": "NIFTY", "action": "buy", "price": 24500.5, "message": "Test: this is how your chart alerts will look"}
+    results = inbound.deliver(hook, sample, now_ist(), test=True)
+    failed = [f"{notify.CHANNELS.get(c, c)}: {r}" for c, r in results.items() if r != "sent"]
+    return _inbound_panel(request, user, "Couldn't send: " + "; ".join(failed) if failed else
+                          "Test sent. Check your " + " and ".join(notify.CHANNELS[c] for c in results) + ".",
+                          "error" if failed else "success")
+
+
+@router.post("/inbound/{hook_id}/new-url")
+def inbound_new_url(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (hook := inbound.own(hook_id, user["username"])):
+        return fail("That incoming webhook is gone.")
+    inbound.new_url(hook)
+    return _inbound_panel(request, user, "New URL made. The old one has stopped working: update your chart alerts.")
+
+
+@router.post("/inbound/{hook_id}/remove")
+def inbound_remove(request: Request, hook_id: str, user: dict = Depends(guard)):
+    if not (hook := inbound.own(hook_id, user["username"])):
+        return fail("That incoming webhook is gone.")
+    inbound.remove(hook)
+    return _inbound_panel(request, user, f"{hook['name']} removed. Its URL no longer works.")
 
 
 def _tail(plain: str) -> str:

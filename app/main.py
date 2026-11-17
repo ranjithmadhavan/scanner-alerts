@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import time
 import secrets
@@ -11,11 +12,26 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import config, kite, scanner, webhooks
 from app.store import db_stats, store
-from app.routes import account, admin, alerts, auth, bias, broker, indicators, notifications, oi
+from app.routes import account, admin, alerts, auth, bias, broker, inbound, indicators, notifications, oi
 from app.security import Forbidden, LoginRequired, seed_superadmin
 from app.web import is_htmx, render
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _hide_hook_token(path: str) -> str:
+    """An incoming webhook's URL is its key, so it never goes in a log."""
+    return re.sub(r"^/hook/[^/?]+", "/hook/…", path)
+
+
+class _HideHookTokens(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) > 2 and isinstance(record.args[2], str):
+            record.args = (*record.args[:2], _hide_hook_token(record.args[2]), *record.args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_HideHookTokens())
 
 if config.STORAGE == "firestore" and not (config.SESSION_SECRET and config.ENCRYPTION_KEY):
     raise RuntimeError("Set SESSION_SECRET and ENCRYPTION_KEY — stored broker secrets are encrypted with ENCRYPTION_KEY.")
@@ -80,13 +96,13 @@ async def timing(request: Request, call_next):
     db_ms = stats[1] * 1000
     response.headers["Server-Timing"] = f"db;desc=\"{stats[0]} calls\";dur={db_ms:.0f}, app;dur={total:.0f}"
     logging.getLogger("timing").info("%s %s %s %.0fms (db %d calls, %.0fms)",
-                                     request.method, request.url.path, response.status_code, total, stats[0], db_ms)
+                                     request.method, _hide_hook_token(request.url.path), response.status_code, total, stats[0], db_ms)
     return response
 
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-for r in (auth, alerts, broker, notifications, oi, bias, admin, account):
+for r in (auth, alerts, broker, notifications, inbound, oi, bias, admin, account):
     app.include_router(r.router)
 for r in indicators.routers:  # MA pullback, ADX trend
     app.include_router(r)

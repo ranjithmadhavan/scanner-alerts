@@ -277,3 +277,51 @@ def test_other_alerts_carry_the_latest_reading(kite):
     store.put("users", "nisha", {"username": "nisha", "role": "user", "active": True, "modules": ["scanner"]})
     assert scanner._with_sentiment({"user": "nisha"}, MON.replace(hour=10)) == ""              # no Nifty OI permission
     store.delete("users", "nisha")
+
+
+def _no_oi_at_the_open(kite):
+    for k in STRIKES:
+        for kind in ("CE", "PE"):
+            kite.oi[f"NIFTY26O06{k}{kind}"] = 0
+
+
+def test_a_snapshot_with_no_oi_is_not_kept_and_the_next_tick_retries(kite):
+    store.update("settings", "oi", {"strikes": 2})
+    _no_oi_at_the_open(kite)
+    with pytest.raises(oi.NoOIYet):
+        oi.capture(kite, MON.replace(hour=9, minute=15))
+    assert store.list("oi_snapshots") == []
+    assert oi.capture_if_due(MON.replace(hour=9, minute=15), S) is None          # Kite had no OI yet: nothing saved
+    kite.oi.clear()                                                                # a minute later it does
+    snap = oi.capture_if_due(MON.replace(hour=9, minute=16), S)
+    assert snap["id"] == "2026-10-05T09:15" and oi.has_oi(snap)
+    assert [s["id"] for s in oi.day_snapshots("2026-10-05")] == ["2026-10-05T09:15"]
+
+
+def test_the_day_starts_from_the_first_snapshot_with_oi(kite):
+    """A zero-OI snapshot saved before this fix must not be the baseline: every reading would be a change from zero."""
+    store.update("settings", "oi", {"strikes": 2})
+    empty = oi.capture(kite, MON.replace(hour=9, minute=16), "2026-10-05T09:15")
+    for r in empty["rows"]:
+        r["ce_oi"] = r["pe_oi"] = 0
+    store.put("oi_snapshots", empty["id"], empty)
+    first = oi.capture(kite, MON.replace(hour=9, minute=31), "2026-10-05T09:30")
+    for k in (24400, 24450, 24500):
+        kite.oi[f"NIFTY26O06{k}PE"] = 400_000                                       # puts written after the start
+    oi.capture(kite, MON.replace(hour=10, minute=1), "2026-10-05T10:00")
+    snaps = oi.day_snapshots("2026-10-05")
+    assert [s["id"] for s in snaps] == ["2026-10-05T09:30", "2026-10-05T10:00"]
+    r = oi.analyse(snaps[-1], snaps[0])
+    assert (r["pe_chg"], r["ce_chg"]) == (900_000, 0) and r["label"] == "Bullish"   # only today's change, from 09:30
+    now = oi.sentiment("omkar", MON.replace(hour=10, minute=5))
+    assert now["label"] == "Bullish" and now["slot"] == "2026-10-05T10:00"
+    assert oi.analyse(first, first)["score"] is None
+
+
+def test_a_strike_with_no_oi_at_the_start_counts_no_change(kite):
+    store.update("settings", "oi", {"strikes": 2})
+    kite.oi["NIFTY26O0624400PE"] = 0                                               # one far strike unquoted at the start
+    first = oi.capture(kite, MON.replace(hour=9, minute=16), "2026-10-05T09:15")
+    kite.oi["NIFTY26O0624400PE"] = 500_000
+    r = oi.analyse(oi.capture(kite, MON.replace(hour=9, minute=31), "2026-10-05T09:30"), first)
+    assert r["rows"][0]["pe_chg"] is None and r["pe_chg"] == 0                      # not a 5L "change" from zero
