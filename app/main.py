@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import config, kite, scanner, webhooks
 from app.store import db_stats, store
-from app.routes import account, admin, alerts, auth, bias, broker, inbound, indicators, notifications, oi
+from app.routes import account, admin, alerts, auth, bias, broker, inbound, indicators, notifications, oi, scans
 from app.security import Forbidden, LoginRequired, seed_superadmin
 from app.web import is_htmx, render
 
@@ -102,7 +102,7 @@ async def timing(request: Request, call_next):
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-for r in (auth, alerts, broker, notifications, inbound, oi, bias, admin, account):
+for r in (auth, alerts, broker, notifications, inbound, oi, bias, scans, admin, account):
     app.include_router(r.router)
 for r in indicators.routers:  # MA pullback, ADX trend
     app.include_router(r)

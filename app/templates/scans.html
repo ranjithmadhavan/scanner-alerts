@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Custom scanners{% endblock %}
+{% block width %}max-w-6xl{% endblock %}
+{% block content %}
+<div data-indicator-base="{{ base }}">
+  <p class="text-sm font-medium text-ink-soft">Indicator scanners</p>
+  <h1 class="text-4xl font-bold">Custom scanners</h1>
+  <p class="mt-2 max-w-2xl text-[17px] text-ink-soft">Your own scans on price, previous candles and indicators, over an index, the F&O stocks or your own list. Run one now, or keep it live and hear about each stock that newly matches.</p>
+</div>
+
+{% if not broker_ok %}
+<a href="/broker" class="mt-6 flex items-center gap-4 rounded-2xl border border-marigold/30 bg-marigold-50 px-5 py-3.5 text-[15px] transition hover:border-marigold/60">
+  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-marigold-dark">{{ icon('link', 'h-4 w-4') }}</span>
+  <span><strong class="font-semibold">Connect Kite to scan.</strong> <span class="text-ink-soft">Scans read candles with your own Kite session.</span></span>
+</a>
+{% endif %}
+
+<form id="scan-form" class="ma-form panel mt-6 p-6 shadow-soft sm:p-7 {{ 'ring-2 ring-peacock/40' if editing }}"
+      hx-post="/scans/screen" hx-target="#scan-screen" hx-swap="outerHTML">
+  {% if editing %}
+  <p class="mb-5 flex flex-wrap items-center gap-3">
+    <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-peacock text-white">{{ icon('edit', 'h-4 w-4') }}</span>
+    <span class="text-xl font-bold">Edit “{{ editing.name }}”</span>
+    <a href="/scans" class="btn-quiet ml-auto px-3 py-1.5 text-sm">New scan instead</a>
+  </p>
+  {% else %}
+  <div class="mb-6 flex flex-wrap items-center gap-2">
+    <span class="mr-1 text-sm text-ink-soft">Start from</span>
+    {% for s in registry.starters %}
+    <button type="button" class="rounded-full border border-line px-3 py-1.5 text-sm font-medium text-ink-soft transition hover:border-peacock/40 hover:text-peacock" data-scan-starter="{{ loop.index0 }}">{{ s.name }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% with prefix='cs-' %}{% include "partials/universe_fields.html" %}{% endwith %}
+
+  <div class="mt-5 grid gap-5 sm:grid-cols-[200px_1fr]">
+    <div>
+      <label for="cs-tf" class="label">Candle size</label>
+      <select id="cs-tf" name="tf" class="field" data-ma-tf>
+        {% for tf in timeframes %}<option value="{{ tf }}" {{ 'selected' if form_sc.tf == tf }}>{{ tf_label(tf) }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="cs-name" class="label">Name <span class="font-normal text-ink-soft">(for a live scanner)</span></label>
+      <input id="cs-name" name="name" maxlength="60" placeholder="e.g. Nifty 100 breakouts" value="{{ form_sc.name }}" class="field">
+    </div>
+  </div>
+
+  <h2 class="mt-7 text-lg font-bold">Conditions</h2>
+  <p class="mt-1 max-w-3xl text-[13px] leading-relaxed text-ink-soft">Each value is read on the latest completed candle. <strong>Candles ago</strong> looks back (1 is the previous candle); each value picks its own <strong>candle size</strong>: the scan's, a bigger one (15 min, 1 hour … built from the scan's candles), daily or weekly. On a bigger size the latest candle is the one still forming, so in a 5-minute scan “prev daily high” is yesterday's high, “daily high” is today's so far and “15 min close” is the latest 5-minute close. <strong>Crosses above</strong> means below or level on the candle before and above now.</p>
+  <script type="application/json" id="scan-registry">{{ registry|tojson }}</script>
+  <script type="application/json" id="scan-initial">{{ form_sc.logic|tojson }}</script>
+  <input type="hidden" name="logic" value="" data-scan-logic>
+  <div class="mt-4" data-scan-builder></div>
+  <p class="mt-4 rounded-2xl bg-canvas px-4 py-3 text-[15px]" aria-live="polite"><span class="text-ink-soft">Finds stocks where</span> <span class="font-semibold" data-scan-summary>…</span></p>
+
+  <div class="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-line pt-5">
+    <p class="mr-auto text-[13px] text-ink-soft">Scan now reads each stock's candles, about 2 stocks a second.</p>
+    <button class="btn-primary htmx-busy">{{ icon('refresh', 'h-4 w-4') }} Scan now</button>
+  </div>
+
+  <details class="mt-5 rounded-3xl border border-line" {{ 'open' if editing }}>
+    <summary class="flex cursor-pointer items-center gap-3 px-5 py-4">
+      <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-peacock-50 text-peacock">{{ icon('bell', 'h-4 w-4') }}</span>
+      <span class="font-semibold">{{ 'Live alerts' if editing else 'Keep it live and alert me' }}</span>
+      <span class="ml-auto hidden text-sm text-ink-soft sm:inline">{{ scanners|length }} of {{ max_scanners }} in use</span>
+    </summary>
+    <div class="border-t border-line px-5 pb-5 pt-4">
+      <p class="text-[13px] leading-relaxed text-ink-soft">At every close of the candle size above, each stock is checked again; you get one message listing the stocks that match now and didn't at the last close. A stock that keeps matching isn't repeated until it drops out and comes back. Live lists have a cap, to stay inside Kite's limits: 1 min up to 20 stocks, 3 min up to 60, 5 min up to 100, 10 min up to 200, 15 and 30 min up to 500, 1 hour and longer any list.</p>
+      {% with hook_ids=form_sc.hook_ids, hook_payload=form_sc.webhook_payload, prefix='cs-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
+      <div class="mt-5 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-sm text-ink-soft">Send to</span>
+          {% for ch in channels %}
+          <label class="{{ 'cursor-pointer' if ch.ready else 'cursor-not-allowed' }}" title="{{ '' if ch.ready else ch.label ~ ' isn’t set up yet' }}">
+            <input type="checkbox" name="channels" value="{{ ch.key }}" class="peer sr-only"
+                   {{ 'disabled' if not ch.ready else 'checked' if form_sc.channels is none or ch.key in form_sc.channels }}>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-sm font-medium text-ink-soft transition peer-checked:border-peacock/30 peer-checked:bg-peacock-50 peer-checked:text-peacock peer-focus-visible:ring-2 peer-focus-visible:ring-marigold peer-disabled:border-dashed peer-disabled:text-ink-soft/50">
+              <svg class="tick h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>{{ ch.label }}
+            </span>
+          </label>
+          {% endfor %}
+          {% if channels|rejectattr('ready')|list %}
+          <a href="/notifications" class="ml-1 text-sm font-medium text-peacock underline decoration-peacock/30 underline-offset-4 hover:decoration-peacock">Set up more</a>
+          {% endif %}
+        </div>
+        <button type="button" class="btn-outline htmx-busy" hx-post="/scans/scanners{{ '/' ~ editing.id if editing }}" hx-include="#scan-form"
+                hx-target="#scan-list" hx-swap="outerHTML">{{ icon('check', 'h-4 w-4') }} {{ 'Save changes' if editing else 'Save as a live scanner' }}</button>
+      </div>
+    </div>
+  </details>
+</form>
+
+{% if screen %}{% include "partials/scan_screen.html" %}{% else %}<div id="scan-screen"></div>{% endif %}
+
+<h2 class="mt-10 px-1 text-xl font-bold">Live scanners</h2>
+{% include "partials/scan_list.html" %}
+{% include "partials/scan_feed.html" %}
+{% endblock %}

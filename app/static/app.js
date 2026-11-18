@@ -1263,3 +1263,225 @@ function strategyLines(L, chart, got, legend, panelBox) {
     if (row) open(row);
   });
 })();
+
+// ---- Custom scanners: the condition builder ------------------------------------------------------
+// The scan lives here as data (the same shape the server keeps) and is written to the form's hidden `logic` field on
+// every change; the server checks it and says it back in words under the builder.
+(() => {
+  const root = document.querySelector("[data-scan-builder]");
+  if (!root) return;
+  const R = JSON.parse(document.getElementById("scan-registry").textContent);
+  let logic = JSON.parse(document.getElementById("scan-initial").textContent);
+  const form = root.closest("form");
+  const hidden = form.querySelector("[data-scan-logic]");
+  const summary = form.querySelector("[data-scan-summary]");
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const copy = (x) => JSON.parse(JSON.stringify(x));
+  const small = "rounded-lg border border-line bg-white px-2 py-1.5 text-[13px] text-ink focus:border-peacock focus:outline-none focus:ring-2 focus:ring-peacock-50";
+
+  function newValue(pick) {
+    const [kind, key] = pick.split(":");
+    if (kind === "num") return { kind: "num", value: 0 };
+    const base = { tf: "", ago: 0, pct: 100 };
+    if (kind === "price") return { kind: "price", field: key, ...base };
+    const ind = R.indicators[key];
+    const params = Object.fromEntries(ind.params.map((p) => [p.key, p.default]));
+    return { kind: "ind", ind: key, params, out: Object.keys(ind.outputs)[0] || "", ...base };
+  }
+  const newCondition = () => ({ lhs: newValue("price:close"), cmp: ">", rhs: newValue("ind:ema") });
+
+  // Where a condition lives: "3" (top level) or "3.1" (second in the group at 3).
+  function at(path) {
+    const [i, j] = path.split(".").map(Number);
+    return j === undefined ? { list: logic.items, i } : { list: logic.items[i].items, i: j };
+  }
+  const get = (path) => { const { list, i } = at(path); return list[i]; };
+
+  // A value's candle size: the scan's own, a bigger intraday size it divides into, daily or weekly.
+  const scanTf = () => form.querySelector("[name=tf]").value;
+  function fits(k, tf) {
+    if (k === "" || k === "1d" || k === "1w" || k === tf) return true;
+    const a = R.intraday[k], b = R.intraday[tf];
+    return Boolean(a && b && a > b && a % b === 0);
+  }
+  function tfSelect(v, d) {
+    const tf = scanTf();
+    const opts = R.tfOrder.filter((k) => k !== tf && (fits(k, tf) || k === v.tf)).map((k) =>  // in order: JSON sorts keys
+      `<option value="${k}" ${k === v.tf ? "selected" : ""}>${esc(k === "" ? R.tfs[tf] || R.tfs[k] : R.tfs[k])}${fits(k, tf) ? "" : " (too small)"}</option>`);
+    return `<select ${d} data-f="tf" class="${small} text-peacock" aria-label="Candle size">${opts.join("")}</select>`;
+  }
+
+  function valueHtml(v, path, side) {
+    const d = `data-c="${path}" data-side="${side}"`;
+    const pick = v.kind === "num" ? "num" : v.kind === "price" ? `price:${v.field}` : `ind:${v.ind}`;
+    const opt = (value, text) => `<option value="${value}" ${value === pick ? "selected" : ""}>${esc(text)}</option>`;
+    let html = v.kind === "num" ? "" : tfSelect(v, d);
+    html += `<select ${d} data-f="pick" class="${small} font-semibold" aria-label="Value">
+      <optgroup label="Price">${Object.entries(R.prices).map(([k, t]) => opt(`price:${k}`, t)).join("")}</optgroup>
+      <optgroup label="Indicator">${Object.entries(R.indicators).map(([k, i]) => opt(`ind:${k}`, i.name)).join("")}</optgroup>
+      <optgroup label="Other">${opt("num", "Number")}</optgroup></select>`;
+    if (v.kind === "num") {
+      return html + `<input ${d} data-f="value" type="number" step="any" value="${v.value}" class="${small} w-24 num" aria-label="Number">`;
+    }
+    if (v.kind === "ind") {
+      const ind = R.indicators[v.ind];
+      html += ind.params.map((p) => p.key === "src"
+        ? `<select ${d} data-f="param:src" class="${small}" aria-label="${esc(ind.label)} of">${Object.entries(R.sources).map(([k, t]) =>
+            `<option value="${k}" ${k === v.params.src ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
+        : `<label class="inline-flex items-center gap-1 text-[12px] text-ink-soft">${esc(p.label)}<input ${d} data-f="param:${p.key}" type="number"
+             min="${p.low}" max="${p.high}" step="${p.whole ? 1 : 0.1}" value="${v.params[p.key]}" class="${small} w-16 num"></label>`).join("");
+      if (Object.keys(ind.outputs).length) {
+        html += `<select ${d} data-f="out" class="${small}" aria-label="Which line">${Object.entries(ind.outputs).map(([k, t]) =>
+          `<option value="${k}" ${k === v.out ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+      }
+    }
+    return html + `<span class="flex basis-full flex-wrap items-center gap-1.5 text-[12px] text-ink-soft">
+      <input ${d} data-f="ago" type="number" min="0" max="${R.maxAgo}" step="1" value="${v.ago}" class="${small} w-14 py-1 num" aria-label="Candles ago"> candles ago
+      · <input ${d} data-f="pct" type="number" min="0.01" step="any" value="${v.pct}" class="${small} w-16 py-1 num" aria-label="Percent of"> % of</span>`;
+  }
+
+  function conditionHtml(c, path) {
+    return `<div class="grid items-start gap-2 rounded-2xl border border-line bg-white p-3 lg:grid-cols-[1fr_auto_1fr_auto]">
+      <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.lhs, path, "lhs")}</div>
+      <select data-c="${path}" data-f="cmp" class="${small} font-semibold text-peacock" aria-label="Comparison">${Object.entries(R.cmps).map(([k, t]) =>
+        `<option value="${k}" ${k === c.cmp ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+      <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.rhs, path, "rhs")}</div>
+      <button type="button" data-c="${path}" data-act="remove" class="justify-self-end rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove this condition" title="Remove">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>`;
+  }
+
+  const opSelect = (op, path) => `<select data-c="${path}" data-f="op" class="${small} font-semibold" aria-label="All or any">
+    <option value="all" ${op === "all" ? "selected" : ""}>all</option><option value="any" ${op === "any" ? "selected" : ""}>any</option></select>`;
+  const addBtn = (act, path, text) => `<button type="button" data-act="${act}" data-c="${path}" class="inline-flex items-center gap-1 rounded-full border border-dashed border-peacock/40 px-3 py-1.5 text-sm font-semibold text-peacock transition hover:bg-peacock-50">+ ${text}</button>`;
+
+  function render() {
+    root.innerHTML = `<p class="mb-3 flex items-center gap-2 text-[15px]">Stocks that pass ${opSelect(logic.op, "top")} of these:</p>
+      <div class="space-y-2">${logic.items.map((item, i) => item.items
+        ? `<div class="space-y-2 rounded-3xl border border-peacock/20 bg-peacock-50/40 p-3">
+             <p class="flex items-center gap-2 text-sm">Group: ${opSelect(item.op, String(i))} of
+               <button type="button" data-act="remove" data-c="${i}" class="ml-auto text-[13px] font-medium text-ink-soft hover:text-fall">Remove group</button></p>
+             ${item.items.map((c, j) => conditionHtml(c, `${i}.${j}`)).join("")}
+             ${addBtn("add-in", String(i), "Condition in this group")}</div>`
+        : conditionHtml(item, String(i))).join("")}</div>
+      <div class="mt-3 flex flex-wrap gap-2">${addBtn("add", "", "Add condition")}${addBtn("add-group", "", "Add group (any of…)")}</div>`;
+    save();
+  }
+
+  let timer;
+  function save() {
+    hidden.value = JSON.stringify(logic);
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const body = new FormData();
+      body.append("logic", hidden.value);
+      body.append("tf", scanTf());
+      try {
+        const got = await (await fetch("/scans/describe", { method: "POST", body })).json();
+        summary.textContent = got.text || got.error;
+        summary.classList.toggle("text-fall", !got.text);
+      } catch { /* the preview is a nicety */ }
+    }, 250);
+  }
+
+  root.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const act = btn.dataset.act, path = btn.dataset.c;
+    if (act === "add") logic.items.push(newCondition());
+    else if (act === "add-group") logic.items.push({ op: "any", items: [newCondition(), newCondition()] });
+    else if (act === "add-in") logic.items[Number(path)].items.push(newCondition());
+    else if (act === "remove") {
+      const { list, i } = at(path);
+      list.splice(i, 1);
+      logic.items = logic.items.filter((it) => !it.items || it.items.length);  // an emptied group goes too
+    }
+    render();
+  });
+
+  // Typing changes the data only (the inputs keep focus); a different value or line redraws.
+  function change(e, redraw) {
+    const el = e.target, f = el.dataset.f;
+    if (!f) return;
+    if (f === "op") {
+      (el.dataset.c === "top" ? logic : logic.items[Number(el.dataset.c)]).op = el.value;
+      return save();
+    }
+    const c = get(el.dataset.c);
+    if (f === "cmp") { c.cmp = el.value; return save(); }
+    const v = c[el.dataset.side];
+    if (f === "pick") {
+      const keep = v.kind === "num" ? {} : { tf: v.tf, ago: v.ago, pct: v.pct };
+      c[el.dataset.side] = { ...newValue(el.value), ...(el.value === "num" ? {} : keep) };
+      return redraw && render();
+    }
+    if (f.startsWith("param:")) {
+      const key = f.slice(6);
+      v.params[key] = key === "src" ? el.value : Number(el.value);
+    } else if (f === "tf" || f === "out") v[f] = el.value;
+    else v[f] = el.value === "" ? (f === "pct" ? 100 : 0) : Number(el.value);
+    save();
+  }
+  root.addEventListener("input", (e) => change(e, false));
+  root.addEventListener("change", (e) => change(e, true));
+
+  document.querySelectorAll("[data-scan-starter]").forEach((btn) => btn.addEventListener("click", () => {
+    const s = R.starters[Number(btn.dataset.scanStarter)];
+    logic = copy(s.logic);
+    const tf = form.querySelector("[name=tf]");
+    tf.value = s.tf;
+    tf.dispatchEvent(new Event("change", { bubbles: true }));
+    const name = form.querySelector("[name=name]");
+    if (!name.value) name.value = s.name;
+    render();
+  }));
+
+  // The candle sizes a value can use depend on the scan's.
+  form.querySelector("[name=tf]").addEventListener("change", render);
+
+  render();
+})();
+
+// ---- Custom scanners' Scan now: a matching stock's chart, with the scan's lines over its candles ----------------
+(() => {
+  let chart;
+  const COLORS = ["#0F5E5C", "#E9A23B", "#7A5AF8", "#C2475A", "#2E8B57", "#5F7476"];
+  async function show(symbol) {
+    const box = document.getElementById("scan-chart-box");
+    if (!box) return;
+    box.hidden = false;
+    document.querySelectorAll("[data-scan-symbol]").forEach((row) => row.toggleAttribute("data-selected", row.dataset.scanSymbol === symbol));
+    const title = document.getElementById("scan-chart-title");
+    const note = document.getElementById("scan-chart-note");
+    const legend = document.getElementById("scan-chart-legend");
+    title.textContent = symbol + " · loading…";
+    const r = await fetch("/scans/screen/chart?symbol=" + encodeURIComponent(symbol));
+    const got = await r.json();
+    if (!r.ok) { title.textContent = symbol; note.textContent = got.error; return; }
+    try { await loadChartLib(); } catch (e) { note.textContent = e.message; return; }
+    const L = window.LightweightCharts;
+    chart?.remove();
+    chart = L.createChart(document.getElementById("scan-chart"), chartLook(L));
+    chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
+    chart.addCandlestickSeries(candleLook).setData(got.candles);
+    legend.innerHTML = "";
+    got.lines.forEach((ln, i) => {
+      const color = COLORS[i % COLORS.length];
+      chart.addLineSeries({ color, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false }).setData(ln.points);
+      legend.insertAdjacentHTML("beforeend", `<span class="mr-3 inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-4" style="background:${color}"></span>${ln.name.replace(/[&<>"]/g, "")}</span>`);
+    });
+    title.textContent = symbol;
+    chart.timeScale().setVisibleLogicalRange({ from: got.candles.length - 80, to: got.candles.length + 3 });
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-scan-symbol]");
+    if (row) show(row.dataset.scanSymbol);
+  });
+  document.addEventListener("keydown", (e) => {
+    const row = e.target.matches?.("[data-scan-symbol]") ? e.target : null;
+    if (!row || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    show(row.dataset.scanSymbol);
+  });
+})();
