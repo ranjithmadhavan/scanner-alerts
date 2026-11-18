@@ -55,9 +55,30 @@
   <div class="mt-4" data-scan-builder></div>
   <p class="mt-4 rounded-2xl bg-canvas px-4 py-3 text-[15px]" aria-live="polite"><span class="text-ink-soft">Finds stocks where</span> <span class="font-semibold" data-scan-summary>…</span></p>
 
-  <div class="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-line pt-5">
-    <p class="mr-auto text-[13px] text-ink-soft">Scan now reads each stock's candles, about 2 stocks a second.</p>
-    <button class="btn-primary htmx-busy">{{ icon('refresh', 'h-4 w-4') }} Scan now</button>
+  <div class="group/when mt-6 border-t border-line pt-5">
+    <div class="flex flex-wrap items-center gap-3">
+      <span class="text-sm text-ink-soft">Scan</span>
+      <div class="inline-flex rounded-full bg-canvas p-1 text-sm font-medium" role="radiogroup" aria-label="Which candles to scan">
+        <label class="cursor-pointer"><input type="radio" name="when" value="latest" class="peer sr-only" checked>
+          <span class="block rounded-full px-3.5 py-1.5 text-ink-soft transition peer-checked:bg-white peer-checked:text-ink peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-marigold">The latest candle</span></label>
+        <label class="cursor-pointer"><input type="radio" name="when" value="range" id="cs-range" class="peer sr-only">
+          <span class="block rounded-full px-3.5 py-1.5 text-ink-soft transition peer-checked:bg-white peer-checked:text-ink peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-marigold">A date range</span></label>
+      </div>
+      <div class="hidden flex-wrap items-center gap-2 group-has-[#cs-range:checked]/when:flex">
+        <label class="sr-only" for="cs-from">From</label>
+        <input id="cs-from" type="date" name="from" value="{{ range_from }}" max="{{ today }}" class="field w-auto py-1.5 text-sm">
+        <span class="text-sm text-ink-soft">to</span>
+        <label class="sr-only" for="cs-to">To</label>
+        <input id="cs-to" type="date" name="to" value="{{ today }}" max="{{ today }}" class="field w-auto py-1.5 text-sm">
+        <label class="ml-1 inline-flex cursor-pointer items-center gap-2 text-sm">
+          <input type="checkbox" name="first_only" value="1" checked class="h-4 w-4 rounded border-line accent-peacock"> Only a stock's first match each day</label>
+      </div>
+    </div>
+    <div class="mt-4 flex flex-wrap items-center justify-end gap-3">
+      <p class="mr-auto text-[13px] text-ink-soft group-has-[#cs-range:checked]/when:hidden">Reads each stock's candles, about 2 stocks a second.</p>
+      <p class="mr-auto hidden max-w-xl text-[13px] text-ink-soft group-has-[#cs-range:checked]/when:block">Every candle in the range is checked, and each time a stock matched is listed. A range can be up to {{ range_days['1m'] }} days on 1 min candles, {{ range_days['5m'] }} on 5 min, {{ range_days['15m'] }} on 15 min, {{ range_days['1h'] }} on 1 hour and {{ range_days['1d'] }} on daily.</p>
+      <button class="btn-primary htmx-busy">{{ icon('refresh', 'h-4 w-4') }} <span class="group-has-[#cs-range:checked]/when:hidden">Scan now</span><span class="hidden group-has-[#cs-range:checked]/when:inline">Scan the range</span></button>
+    </div>
   </div>
 
   <details class="mt-5 rounded-3xl border border-line" {{ 'open' if editing }}>
@@ -67,7 +88,24 @@
       <span class="ml-auto hidden text-sm text-ink-soft sm:inline">{{ scanners|length }} of {{ max_scanners }} in use</span>
     </summary>
     <div class="border-t border-line px-5 pb-5 pt-4">
-      <p class="text-[13px] leading-relaxed text-ink-soft">At every close of the candle size above, each stock is checked again; you get one message listing the stocks that match now and didn't at the last close. A stock that keeps matching isn't repeated until it drops out and comes back. Live lists have a cap, to stay inside Kite's limits: 1 min up to 20 stocks, 3 min up to 60, 5 min up to 100, 10 min up to 200, 15 and 30 min up to 500, 1 hour and longer any list.</p>
+      {% set daily_run = form_sc.run_at %}
+      <fieldset class="group/run">
+        <legend class="label">When to run</legend>
+        <div class="mt-1 space-y-2">
+          <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-line px-4 py-3 transition has-[:checked]:border-peacock/40 has-[:checked]:bg-peacock-50/50">
+            <input type="radio" name="run_mode" value="close" class="mt-1 accent-peacock" {{ 'checked' if not daily_run }}>
+            <span><span class="font-semibold">At every candle close</span>
+              <span class="mt-0.5 block text-[13px] leading-relaxed text-ink-soft">Each stock is checked again as each candle of the size above closes, and you hear about the stocks that match now and didn't at the last close. A stock that keeps matching isn't repeated until it drops out and comes back. To stay inside Kite's limits the list is capped: 1 min up to 20 stocks, 3 min up to 60, 5 min up to 100, 10 min up to 200, 15 and 30 min up to 500, 1 hour and longer any list.</span></span>
+          </label>
+          <label class="flex cursor-pointer items-start gap-3 rounded-2xl border border-line px-4 py-3 transition has-[:checked]:border-peacock/40 has-[:checked]:bg-peacock-50/50">
+            <input type="radio" name="run_mode" value="daily" id="cs-daily" class="mt-1 accent-peacock" {{ 'checked' if daily_run }}>
+            <span class="flex-1"><span class="flex flex-wrap items-center gap-2 font-semibold">Once a day at
+                <input type="time" name="run_at" value="{{ daily_run or '15:15' }}" min="{{ market_open }}" step="300" aria-label="Time to run each day"
+                       class="rounded-lg border border-line bg-white px-2 py-1 text-[14px] font-semibold num focus:border-peacock focus:outline-none focus:ring-2 focus:ring-peacock-50"> <span class="font-normal text-ink-soft">IST, trading days</span></span>
+              <span class="mt-0.5 block text-[13px] leading-relaxed text-ink-soft">Checked once, on the candle that had closed by then, and you get the full list of stocks that match, even when it's the same as yesterday's (or a note that none do). Any list size. A daily-candle scan sees that day's candle from 15 minutes after the close; before that it reads the day before.</span></span>
+          </label>
+        </div>
+      </fieldset>
       {% with hook_ids=form_sc.hook_ids, hook_payload=form_sc.webhook_payload, prefix='cs-', test_url='' %}{% include "partials/webhook_fields.html" %}{% endwith %}
       <div class="mt-5 flex flex-wrap items-center justify-between gap-4">
         <div class="flex flex-wrap items-center gap-2">

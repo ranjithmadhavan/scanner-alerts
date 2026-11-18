@@ -1,12 +1,16 @@
 """Custom scanners: a person's own scans (app/scan_expr.py) over a list of stocks, run by hand ("Scan now") or live.
 
 Scan now judges every stock on the latest completed candle, in the background like the MA "Scan now" (the slower
-lane of Kite requests, one run per person, kept in memory until the next run or a restart).
+lane of Kite requests, one run per person, kept in memory until the next run or a restart). Given a date range, it
+judges every candle in it instead and lists each time a stock passed.
 
 A live scanner is judged at each close of its candle size, as MA scanners are (same window, same daily read 15
 minutes after the close). It reports the stocks that pass now and didn't at the last close, so a stock that keeps
 passing is reported once, and again only after it has dropped out and come back. Each stock is one Kite request per
 close; daily candles of earlier days, when a scan uses daily or weekly values, are read once a day.
+
+A scanner set to run once a day (`run_at`, "HH:MM") is judged instead on the candle that had closed by that time, and
+sends every stock that passes, whether or not it passed the day before.
 """
 
 import json
@@ -18,7 +22,7 @@ from datetime import date, datetime, timedelta
 from app import brokers, config, kite, ma_backtest, notify, scan_expr, universe, webhooks
 from app.kite import Candle, KiteAuthError, KiteError, instruments
 from app.ma_backtest import candle_end, label as tf_label
-from app.ma_scanner import AFTER_CLOSE, LIVE_LIMIT, latest_close, limit_problem  # noqa: F401 (used by the routes)
+from app.ma_scanner import AFTER_CLOSE, LIVE_LIMIT, SETTLE, latest_close, limit_problem  # noqa: F401 (used by the routes)
 from app.market import IST, MarketSettings, in_scan_window, is_trading_day, load_settings, now_ist
 from app.scan_expr import Stock
 from app.scanner import _ensure_session, session_notice
@@ -33,6 +37,10 @@ MAX_LINES = 25  # stocks listed in one message
 MAX_SHOWN = 3  # values shown per stock in a message
 FEED = "scan_match_days"  # {user}:{date} -> {"user", "date", "items": [...]}
 FEED_MAX = 2000
+# A date range can span up to this many calendar days, by candle size, so a scan judges at most a few thousand candles a
+# stock; and it's held to the backtests' request budget.
+RANGE_DAYS = {"1m": 7, "3m": 15, "5m": 30, "10m": 45, "15m": 60, "30m": 120, "1h": 250, "4h": 365, "1d": 1500}
+MAX_RANGE_ROWS = 5000
 
 
 def describe(sc: dict) -> str:
@@ -82,13 +90,60 @@ def read(client, token: int, sc: dict, s: MarketSettings, now: datetime, upto: d
     return Stock(tf, main, daily, s.open)
 
 
-def row(symbol: str, sc: dict, stock: Stock) -> dict:
-    """What's shown and sent for a stock that passed: its close, the change on the candle, and the scan's values."""
-    last = stock.main[-1]
-    prev = stock.main[-2].close if len(stock.main) > 1 else None
-    return {"symbol": symbol, "close": last.close, "change": (last.close - prev) / prev * 100 if prev else None,
-            "at": last.start.isoformat(),
-            "values": [[k, v] for k, v in scan_expr.readings(sc["logic"], stock) if k != "Close"]}
+def read_range(client, token: int, sc: dict, s: MarketSettings, now: datetime, first: date, last: date, lane=None) -> Stock:
+    """A stock's candles for judging every candle from `first` to `last`, with enough before them to warm up."""
+    tf = sc["tf"]
+    need = scan_expr.needs(sc["logic"], tf)
+    main = ma_backtest.fetch(client, token, tf, ma_backtest.warmup_start(tf, first, None, need["main"]), last, s, now, lane)
+    daily: list[Candle] = []
+    if need["daily"] and tf != "1d":  # each day reads only the days before it (Stock.candles)
+        daily = ma_backtest.fetch(client, token, "1d", ma_backtest.warmup_start("1d", first, None, need["daily"]), last, s, now, lane)
+    return Stock(tf, main, daily, s.open)
+
+
+def range_requests(sc: dict, n_stocks: int, first: date, last: date) -> int:
+    tf, need = sc["tf"], scan_expr.needs(sc["logic"], sc["tf"])
+    per = len(ma_backtest.chunks(tf, ma_backtest.warmup_start(tf, first, None, need["main"]), last))
+    if need["daily"] and tf != "1d":
+        per += len(ma_backtest.chunks("1d", ma_backtest.warmup_start("1d", first, None, need["daily"]), last))
+    return n_stocks * per
+
+
+def range_problem(sc: dict, n_stocks: int, first: date, last: date, today: date) -> str | None:
+    if first > last:
+        return "The start date is after the end date."
+    if last > today:
+        return "The end date can't be in the future."
+    if (last - first).days + 1 > (cap := RANGE_DAYS[sc["tf"]]):
+        return f"With {tf_label(sc['tf']).lower()} candles a range can be up to {cap} days. Pick fewer days or a longer candle."
+    if (n := range_requests(sc, n_stocks, first, last)) > ma_backtest.MAX_REQUESTS:
+        return (f"That's about {n} requests to Kite, more than the {ma_backtest.MAX_REQUESTS} one scan may use. "
+                "Pick fewer days, a shorter list or a longer candle.")
+    return None
+
+
+def row(symbol: str, sc: dict, stock: Stock, j: int | None = None) -> dict:
+    """What's shown and sent for a stock that passed on candle j (the last if not given): its close, the change on the
+    candle, and the scan's values."""
+    j = len(stock.main) - 1 if j is None else j
+    c = stock.main[j]
+    prev = stock.main[j - 1].close if j > 0 else None
+    return {"symbol": symbol, "close": c.close, "change": (c.close - prev) / prev * 100 if prev else None,
+            "at": c.start.isoformat(),
+            "values": [[k, v] for k, v in scan_expr.readings(sc["logic"], stock, j) if k != "Close"]}
+
+
+def hits(symbol: str, sc: dict, stock: Stock, first: date, last: date, first_only: bool) -> list[dict]:
+    """Each candle from `first` to `last` the stock passed on; with `first_only`, only its first of each day."""
+    out, seen = [], set()
+    for j, c in enumerate(stock.main):
+        day = _session_day(c)
+        if first <= day <= last and day not in seen and scan_expr.passes(sc["logic"], stock, j):
+            out.append(row(symbol, sc, stock, j))
+            if first_only:
+                seen.add(day)
+        stock.forget()
+    return out
 
 
 # ---- Scan now -----------------------------------------------------------------------------------
@@ -111,6 +166,10 @@ class Screen:
     no_data: list[str] = field(default_factory=list)
     stop: threading.Event = field(default_factory=threading.Event)
     stocks: dict = field(default_factory=dict)  # symbol -> Stock, of the ones that passed, for their charts
+    first: date | None = None  # a date range: every candle from `first` to `last` is judged
+    last: date | None = None
+    first_only: bool = True  # in a range, only a stock's first match of each day
+    capped: bool = False  # a range found more than MAX_RANGE_ROWS matches; the rest aren't listed
 
     @property
     def total(self) -> int:
@@ -125,16 +184,22 @@ def current(username: str) -> Screen | None:
     return _screens.get(username)
 
 
-def start(username: str, sc: dict) -> Screen:
+def start(username: str, sc: dict, first: date | None = None, last: date | None = None, first_only: bool = True) -> Screen:
+    """Scan now: on the latest completed candle, or given `first` and `last`, on every candle of those days."""
     s, now = load_settings(), now_ist()
     upto = latest_close(sc["tf"], s, now)
     if not upto:
         raise ValueError("There's no completed candle to scan yet.")
     symbols = universe.resolve(sc["spec"], now.date())
+    if first and last:
+        if problem := range_problem(sc, len(symbols), first, last, now.date()):
+            raise ValueError(problem)
+        upto = min(upto, s.close_at(datetime.combine(last, datetime.min.time(), IST)))
     with _lock:
         if (old := _screens.get(username)) and old.status == "running":
             raise ValueError("A scan is already running. Wait for it or cancel it first.")
-        screen = Screen(new_id(), username, sc, symbols, upto, now)
+        screen = Screen(new_id(), username, sc, symbols, upto, now, first=first if last else None,
+                        last=last if first else None, first_only=first_only)
         _screens[username] = screen
     threading.Thread(target=_work, args=(screen,), name=f"custom-screen-{username}", daemon=True).start()
     return screen
@@ -163,14 +228,25 @@ def _work(screen: Screen) -> None:
                 screen.missing.append(symbol)
             else:
                 try:
-                    stock = read(client, inst.token, sc, s, now_ist(), screen.upto, kite.BACKTESTS)
+                    if screen.first:
+                        stock = read_range(client, inst.token, sc, s, now_ist(), screen.first, screen.last, kite.BACKTESTS)
+                    else:
+                        stock = read(client, inst.token, sc, s, now_ist(), screen.upto, kite.BACKTESTS)
                 except KiteAuthError:
                     raise
                 except KiteError as e:
                     log.warning("custom screen: %s candles failed: %s", symbol, e)
                     screen.failed.append(symbol)
                     stock = None
-                if stock is not None:
+                if stock is not None and screen.first:
+                    if not any(screen.first <= _session_day(c) <= screen.last for c in stock.main):
+                        screen.no_data.append(symbol)
+                    elif found := hits(symbol, sc, stock, screen.first, screen.last, screen.first_only):
+                        room = MAX_RANGE_ROWS - len(screen.rows)
+                        screen.capped |= len(found) > room
+                        screen.rows += found[:max(0, room)]
+                        screen.stocks[symbol] = stock
+                elif stock is not None:
                     if not stock.main or _session_day(stock.main[-1]) != screen.upto.astimezone(IST).date():
                         screen.no_data.append(symbol)
                     elif scan_expr.passes(sc["logic"], stock):
@@ -191,13 +267,16 @@ def _work(screen: Screen) -> None:
              screen.total, len(screen.rows))
 
 
-def chart(screen: Screen, symbol: str) -> dict:
-    """A stock that passed: its last 150 candles, with the scan's price-scale indicators on its own candles drawn over them."""
+def chart(screen: Screen, symbol: str, at: str = "") -> dict:
+    """A stock that passed: its last 150 candles, or given `at` (a candle's start) the candles around it with it marked,
+    and the scan's price-scale indicators on its own candles drawn over them."""
     stock = screen.stocks.get(symbol)
     if not stock:
         raise KiteError(f"{symbol} isn't among this scan's results")
     daily = screen.sc["tf"] == "1d"
-    candles, first = stock.main, max(0, len(stock.main) - 150)
+    candles = stock.main
+    k = next((i for i, c in enumerate(candles) if c.start.isoformat() == at), None) if at else None
+    first, end = (max(0, k - 150), min(len(candles), k + 60)) if k is not None else (max(0, len(candles) - 150), len(candles))
 
     def t(c: Candle):
         return c.start.astimezone(IST).date().isoformat() if daily else int(c.start.timestamp()) + 19800
@@ -214,15 +293,31 @@ def chart(screen: Screen, symbol: str) -> dict:
             seen.add(name)
             values = ind.compute(candles, v["params"])[v["out"]]
             lines.append({"name": name, "points": [{"time": t(cd), "value": round(x, 4)}
-                                                   for cd, x in zip(candles[first:], values[first:]) if x is not None]})
-    return {"symbol": symbol, "daily": daily, "lines": lines,
-            "candles": [{"time": t(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close} for c in candles[first:]]}
+                                                   for cd, x in zip(candles[first:end], values[first:end]) if x is not None]})
+    return {"symbol": symbol, "daily": daily, "lines": lines, "mark": t(candles[k]) if k is not None else None,
+            "candles": [{"time": t(c), "open": c.open, "high": c.high, "low": c.low, "close": c.close} for c in candles[first:end]]}
+
+
+def csv_rows(screen: Screen) -> list[list]:
+    """A range scan's matches, oldest first, for download."""
+    labels = scan_expr.labels(screen.sc["logic"])
+    out = [["Time", "Stock", "Close", "Change %"] + [x for x in labels if x != "Close"]]
+    for r in sorted(screen.rows, key=lambda r: (r["at"], r["symbol"])):
+        values = dict(r["values"])
+        out.append([datetime.fromisoformat(r["at"]).astimezone(IST).strftime("%Y-%m-%d %H:%M"), r["symbol"], r["close"],
+                    "" if r["change"] is None else round(r["change"], 2)] + [values.get(x, "") for x in labels if x != "Close"])
+    return out
 
 
 # ---- live ---------------------------------------------------------------------------------------
 
-def message(sc: dict, items: list[dict], now: datetime) -> tuple[str, str]:
-    if len(items) == 1:
+def message(sc: dict, items: list[dict], now: datetime, upto: datetime | None = None) -> tuple[str, str]:
+    """The message for new matches, or for a once-a-day scanner (given `upto`), everything that matched by then."""
+    if upto is not None:
+        when = upto.astimezone(IST).strftime("%-I:%M %p")
+        subject = (f"🔎 {sc['name']}: {len(items)} stock{'s' if len(items) != 1 else ''} match (as of {when})" if items
+                   else f"🔎 {sc['name']}: no stock matches (as of {when})")
+    elif len(items) == 1:
         subject = f"🔎 {items[0]['symbol']} matched {sc['name']}"
     else:
         subject = f"🔎 {sc['name']}: {len(items)} new matches"
@@ -263,17 +358,19 @@ def feed(username: str, day: str) -> list[dict]:
     return sorted((store.get(FEED, f"{username}:{day}") or {}).get("items", []), key=lambda i: i["at"], reverse=True)
 
 
-def send(sc: dict, items: list[dict], now: datetime) -> dict:
-    if not items:
+def send(sc: dict, items: list[dict], now: datetime, upto: datetime | None = None) -> dict:
+    """Send new matches; a once-a-day scanner's list (given `upto`) goes out even when it's empty."""
+    if not items and upto is None:
         return {}
     record(sc, items, now)
-    subject, body = message(sc, items, now)
+    subject, body = message(sc, items, now, upto)
     results = notify.send(sc["user"], sc.get("channels", []), subject, body)
     if hooks := webhooks.targets(sc["user"], sc.get("hook_ids")):
         results["webhook"] = "sending"
     store.put("events", event_id := new_id(), {
-        "user": sc["user"], "alert_id": sc["id"], "key": f"scan:{sc['id']}", "symbol": items[0]["symbol"],
-        "summary": subject.split(" ", 1)[1], "price": items[0]["close"], "at": now.isoformat(), "delivery": results})
+        "user": sc["user"], "alert_id": sc["id"], "key": f"scan:{sc['id']}", "symbol": items[0]["symbol"] if items else "",
+        "summary": subject.split(" ", 1)[1], "price": items[0]["close"] if items else None, "at": now.isoformat(),
+        "delivery": results})
     webhooks.dispatch(hooks, hook_body(sc, items, now), event_id)
     log.info("scan %s for %s: %d new matches, %s", sc["id"], sc["user"], len(items), results)
     return results
@@ -286,10 +383,11 @@ def lock(scanner_id: str) -> threading.Lock:
     return _locks.setdefault(scanner_id, threading.Lock())
 
 
-def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime) -> dict:
-    """Judge every stock on the candle that closed at `upto`; report the ones newly passing. Returns the scanner as saved."""
+def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime, every: bool = False) -> dict:
+    """Judge every stock on the candle that closed at `upto`; report the ones newly passing, or with `every` (a
+    once-a-day scanner) all of them. Returns the scanner as saved."""
     known = instruments()
-    before = set(sc.get("matched") or [])
+    before = set() if every else set(sc.get("matched") or [])
     passing, found, missing, failed = [], [], [], []
     day = upto.astimezone(IST).date()
     for symbol in universe.resolve(sc["spec"], now.date()):
@@ -297,8 +395,8 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
         if not inst:
             missing.append(symbol)
             continue
-        try:
-            stock = read(client, inst.token, sc, s, now, upto, live=True)
+        try:  # once a day, in the slower lane, so scanners judging every candle keep their room
+            stock = read(client, inst.token, sc, s, now, upto, kite.BACKTESTS) if every else read(client, inst.token, sc, s, now, upto, live=True)
         except KiteAuthError:
             raise
         except KiteError as e:
@@ -322,9 +420,11 @@ def evaluate(sc: dict, client, s: MarketSettings, now: datetime, upto: datetime)
             return latest  # edited or resumed while the candles were being read
         changes = {"matched": passing, "evaluated_at": upto.isoformat(), "checked_at": now.isoformat(),
                    "missing": missing, "failed": failed, "error": ""}
+        if every:
+            changes["ran_on"] = now.astimezone(IST).date().isoformat()
         store.update(COL, sc["id"], changes)
     sc = {**sc, **changes}
-    send(sc, found, now)
+    send(sc, found, now, upto if every else None)
     return sc
 
 
@@ -341,8 +441,8 @@ def run_candles(now: datetime | None = None) -> None:
     if not (in_scan_window(s, now) or (is_trading_day(now) and s.close_at(now) <= now < s.close_at(now) + AFTER_CLOSE)):
         return
     for username, scanners in _active().items():
-        due = [(sc, upto) for sc in scanners
-               if (upto := latest_close(sc["tf"], s, now)) and upto.isoformat() > (sc.get("evaluated_at") or "")]
+        due = [(sc, upto) for sc in scanners if not sc.get("run_at")
+               and (upto := latest_close(sc["tf"], s, now)) and upto.isoformat() > (sc.get("evaluated_at") or "")]
         if not due:
             continue
         client = _ensure_session(username, len(scanners), now)
@@ -359,3 +459,46 @@ def run_candles(now: datetime | None = None) -> None:
                 log.exception("scan %s failed", sc["id"])
                 store.update(COL, sc["id"], {"error": str(e)[:200]})
 
+
+
+# ---- once a day ---------------------------------------------------------------------------------
+
+def run_time(sc: dict, day: datetime) -> datetime:
+    """When a once-a-day scanner runs on `day`."""
+    h, m = map(int, sc["run_at"].split(":"))
+    return day.astimezone(IST).replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+def due_daily(sc: dict, now: datetime) -> bool:
+    """Its time has come today and it hasn't run yet. One saved or resumed after today's time first runs tomorrow."""
+    at = run_time(sc, now)
+    return (bool(sc.get("run_at")) and now >= at and sc.get("ran_on") != now.astimezone(IST).date().isoformat()
+            and (sc.get("armed_at") or "") <= at.isoformat())
+
+
+def run_daily(now: datetime | None = None) -> None:
+    """Scheduler job: run each once-a-day scanner whose time has come, on the candle that had closed by then. One that
+    runs late (the server was asleep) reads the same candles it would have on time."""
+    s, now = load_settings(), now or now_ist()
+    if not is_trading_day(now):
+        return
+    for username, scanners in _active().items():
+        due = [sc for sc in scanners if due_daily(sc, now)]
+        if not due:
+            continue
+        client = _ensure_session(username, len(scanners), now)
+        if not client:
+            continue
+        for sc in due:
+            upto = latest_close(sc["tf"], s, run_time(sc, now) + SETTLE + timedelta(seconds=1))
+            try:
+                if not upto:
+                    raise KiteError("no completed candle to scan")
+                evaluate(sc, client, s, now, upto, every=True)
+            except KiteAuthError as e:
+                store.update(COL, sc["id"], {"error": "Kite session expired"})
+                session_notice(username, "expired", str(e), len(scanners), now)
+                break
+            except Exception as e:
+                log.exception("daily scan %s failed", sc["id"])
+                store.update(COL, sc["id"], {"error": str(e)[:200], "ran_on": now.date().isoformat()})

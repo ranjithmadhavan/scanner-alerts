@@ -1657,16 +1657,17 @@ function strategyLines(L, chart, got, legend, panelBox) {
 (() => {
   let chart;
   const COLORS = ["#0F5E5C", "#E9A23B", "#7A5AF8", "#C2475A", "#2E8B57", "#5F7476"];
-  async function show(symbol) {
+  async function show(symbol, at = "") {
     const box = document.getElementById("scan-chart-box");
     if (!box) return;
     box.hidden = false;
-    document.querySelectorAll("[data-scan-symbol]").forEach((row) => row.toggleAttribute("data-selected", row.dataset.scanSymbol === symbol));
+    document.querySelectorAll("[data-scan-symbol]").forEach((row) =>
+      row.toggleAttribute("data-selected", row.dataset.scanSymbol === symbol && (row.dataset.scanAt || "") === at));
     const title = document.getElementById("scan-chart-title");
     const note = document.getElementById("scan-chart-note");
     const legend = document.getElementById("scan-chart-legend");
     title.textContent = symbol + " · loading…";
-    const r = await fetch("/scans/screen/chart?symbol=" + encodeURIComponent(symbol));
+    const r = await fetch("/scans/screen/chart?symbol=" + encodeURIComponent(symbol) + (at ? "&at=" + encodeURIComponent(at) : ""));
     const got = await r.json();
     if (!r.ok) { title.textContent = symbol; note.textContent = got.error; return; }
     try { await loadChartLib(); } catch (e) { note.textContent = e.message; return; }
@@ -1674,7 +1675,11 @@ function strategyLines(L, chart, got, legend, panelBox) {
     chart?.remove();
     chart = L.createChart(document.getElementById("scan-chart"), chartLook(L));
     chart.applyOptions({ timeScale: { timeVisible: !got.daily, secondsVisible: false } });
-    chart.addCandlestickSeries(candleLook).setData(got.candles);
+    const candles = chart.addCandlestickSeries(candleLook);
+    candles.setData(got.candles);
+    if (got.mark !== null && got.mark !== undefined) {  // a date range's match: point at its candle
+      candles.setMarkers([{ time: got.mark, position: "aboveBar", color: "#E9A23B", shape: "arrowDown", text: "match" }]);
+    }
     legend.innerHTML = "";
     got.lines.forEach((ln, i) => {
       const color = COLORS[i % COLORS.length];
@@ -1682,17 +1687,18 @@ function strategyLines(L, chart, got, legend, panelBox) {
       legend.insertAdjacentHTML("beforeend", `<span class="mr-3 inline-flex items-center gap-1.5"><span class="inline-block h-0.5 w-4" style="background:${color}"></span>${ln.name.replace(/[&<>"]/g, "")}</span>`);
     });
     title.textContent = symbol;
-    chart.timeScale().setVisibleLogicalRange({ from: got.candles.length - 80, to: got.candles.length + 3 });
+    const k = got.mark == null ? got.candles.length - 1 : got.candles.findIndex((c) => c.time === got.mark);
+    chart.timeScale().setVisibleLogicalRange(got.mark == null ? { from: k - 80, to: k + 3 } : { from: k - 60, to: k + 25 });
     box.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   document.addEventListener("click", (e) => {
     const row = e.target.closest("[data-scan-symbol]");
-    if (row) show(row.dataset.scanSymbol);
+    if (row) show(row.dataset.scanSymbol, row.dataset.scanAt || "");
   });
   document.addEventListener("keydown", (e) => {
     const row = e.target.matches?.("[data-scan-symbol]") ? e.target : null;
     if (!row || (e.key !== "Enter" && e.key !== " ")) return;
     e.preventDefault();
-    show(row.dataset.scanSymbol);
+    show(row.dataset.scanSymbol, row.dataset.scanAt || "");
   });
 })();
