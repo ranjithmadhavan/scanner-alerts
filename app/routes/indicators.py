@@ -224,6 +224,15 @@ def symbols(q: str):
 
 def _read_setup(strat: Strategy, form, timeframes: list[str]):
     """(stocks, candle size, rules) from the form. Raises ValueError with something to show."""
+    spec = read_universe(form)
+    tf = form.get("tf", "")
+    if tf not in timeframes:
+        raise ValueError("Pick a candle size.")
+    return spec, tf, STRATEGY_FORMS[strat.key].read_rules(form)
+
+
+def read_universe(form) -> dict:
+    """Which stocks, from the form's list or typed symbols. Raises ValueError with something to show."""
     if form.get("universe_kind") == "symbols":
         picked = universe.parse_symbols(form.get("symbols", ""))
         if not picked:
@@ -240,10 +249,7 @@ def _read_setup(strat: Strategy, form, timeframes: list[str]):
         if key not in universe.UNIVERSES:
             raise ValueError("Pick a list of stocks.")
         spec = {"list": key}
-    tf = form.get("tf", "")
-    if tf not in timeframes:
-        raise ValueError("Pick a candle size.")
-    return spec, tf, STRATEGY_FORMS[strat.key].read_rules(form)
+    return spec
 
 
 def _rr(raw: str) -> float:

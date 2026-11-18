@@ -777,6 +777,9 @@ def _add_ma_jobs() -> None:
                       replace_existing=True)
     scheduler.add_job(ma_scanner.run_confirms, IntervalTrigger(seconds=30), id="ma-confirms", max_instances=1, coalesce=True,
                       replace_existing=True)
+    from app import custom_scan  # custom scanners: judged at each candle close, like the MA ones
+    scheduler.add_job(custom_scan.run_candles, IntervalTrigger(seconds=30), id="scan-candles", max_instances=1, coalesce=True,
+                      replace_existing=True)
 
 
 def start() -> None:
@@ -812,6 +815,8 @@ def _keep_alive() -> None:
                 _add_scan_job(load_settings().scan_interval)
             if not scheduler.get_job("bias"):
                 _add_bias_job()
+            if not scheduler.get_job("ma-candles") or not scheduler.get_job("scan-candles"):
+                _add_ma_jobs()
         except Exception:
             log.exception("scheduler watchdog failed")
         if config.KEEP_ALIVE_URL:

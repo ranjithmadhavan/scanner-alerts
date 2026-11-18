@@ -43,7 +43,7 @@ COL = "ma_scanners"
 TIMEFRAMES = ["5m", "10m", "15m", "30m", "1h", "4h", "1d"]
 # Stocks a scanner may watch on each candle size: Kite allows ~3 candle requests a second, and each stock
 # is one request per candle close.
-LIVE_LIMIT = {"5m": 100, "10m": 200, "15m": 500, "30m": 500, "1h": None, "4h": None, "1d": None}
+LIVE_LIMIT = {"1m": 20, "3m": 60, "5m": 100, "10m": 200, "15m": 500, "30m": 500, "1h": None, "4h": None, "1d": None}
 MAX_SCANNERS = 5
 MAX_LINES = 25  # stocks listed in one message
 KEEP_FIRED = 3000

@@ -63,6 +63,7 @@ class Candle:
     high: float
     low: float
     close: float
+    volume: float = 0.0
 
 
 class RateLimit:
@@ -300,7 +301,8 @@ class KiteClient:
             params["user_id"] = self.user_id
         data = self._get(f"/instruments/historical/{instrument_token}/{interval}", params, HISTORICAL)
         return [
-            Candle(datetime.fromisoformat(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]))
+            Candle(datetime.fromisoformat(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]),
+                   float(c[5]) if len(c) > 5 and c[5] is not None else 0.0)
             for c in data.get("candles", [])
         ]
 

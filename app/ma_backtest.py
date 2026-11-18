@@ -80,9 +80,9 @@ def group(candles: list[Candle], m: int, s: MarketSettings) -> list[Candle]:
         k = (start.date(), int((start - open_at).total_seconds() // (m * 60)))
         if k == key:
             last = out[-1]
-            out[-1] = Candle(last.start, last.open, max(last.high, c.high), min(last.low, c.low), c.close)
+            out[-1] = Candle(last.start, last.open, max(last.high, c.high), min(last.low, c.low), c.close, last.volume + c.volume)
         else:
-            out.append(Candle(open_at + timedelta(minutes=m * k[1]), c.open, c.high, c.low, c.close))
+            out.append(Candle(open_at + timedelta(minutes=m * k[1]), c.open, c.high, c.low, c.close, c.volume))
             key = k
     return out
 

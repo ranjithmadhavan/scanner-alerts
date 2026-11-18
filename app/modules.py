@@ -29,5 +29,7 @@ MODULES: dict[str, Module] = {
                "Indicator scanners"),
         Module("adx", "ADX trend", "/adx", "ADX/DMI trend with an ATR stop: live scanners, Scan now and backtests", "gauge",
                "Indicator scanners"),
+        Module("scans", "Custom scanners", "/scans", "Build your own scans on price and indicators, run them now or live",
+               "rows", "Indicator scanners"),
     ]
 }
