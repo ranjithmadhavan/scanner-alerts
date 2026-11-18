@@ -48,7 +48,7 @@
   </div>
 
   <h2 class="mt-7 text-lg font-bold">Conditions</h2>
-  <p class="mt-1 max-w-3xl text-[13px] leading-relaxed text-ink-soft">Each value is read on the latest completed candle. <strong>Candles ago</strong> looks back (1 is the previous candle); each value picks its own <strong>candle size</strong>: the scan's, a bigger one (15 min, 1 hour … built from the scan's candles), daily or weekly. On a bigger size the latest candle is the one still forming, so in a 5-minute scan “prev daily high” is yesterday's high, “daily high” is today's so far and “15 min close” is the latest 5-minute close. <strong>Crosses above</strong> means below or level on the candle before and above now.</p>
+  <p class="mt-1 max-w-3xl text-[13px] leading-relaxed text-ink-soft">Each value starts with <strong>which candle</strong>: the latest completed one, one a number of candles (or days, or weeks) back, or the day's 1st, 2nd … candle, as in an opening range. Each value picks its own <strong>candle size</strong>: the scan's, a bigger one (15 min, 1 hour … built from the scan's candles), daily or weekly. On a bigger size the latest candle is the one still forming, so in a 5-minute scan “prev daily high” is yesterday's high, “daily high” is today's so far and “15 min close” is the latest 5-minute close. <strong>Crosses above</strong> means below or level on the candle before and above now.</p>
   <script type="application/json" id="scan-registry">{{ registry|tojson }}</script>
   <script type="application/json" id="scan-initial">{{ form_sc.logic|tojson }}</script>
   <input type="hidden" name="logic" value="" data-scan-logic>

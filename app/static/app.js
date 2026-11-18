@@ -1311,11 +1311,37 @@ function strategyLines(L, chart, got, legend, panelBox) {
     return `<select ${d} data-f="tf" class="${small} text-peacock" aria-label="Candle size">${opts.join("")}</select>`;
   }
 
+  // Which candle: the latest, n back ("1 day ago" on daily candles), or the day's 1st, 2nd … (intraday only).
+  // Presets up to PRESET; beyond that the select shows "n … ago" / "nth candle of the day" with a number box.
+  const PRESET = { ago: 5, days: 3, nth: 5 };
+  const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th"));
+  function offsetSelect(v, d) {
+    const tf = v.tf || scanTf();
+    const unit = tf === "1d" ? "day" : tf === "1w" ? "week" : "";
+    const nth = v.nth || 0, ago = v.ago || 0;
+    const max = unit ? PRESET.days : PRESET.ago;
+    const pick = nth ? (nth <= PRESET.nth ? `nth:${nth}` : "nth:n") : (ago <= max ? `ago:${ago}` : "ago:n");
+    const opt = (value, text) => `<option value="${value}" ${value === pick ? "selected" : ""}>${esc(text)}</option>`;
+    const back = (n) => unit ? `${n} ${unit}${n > 1 ? "s" : ""} ago` : `${n} candle${n > 1 ? "s" : ""} ago`;
+    const latest = unit === "day" ? (scanTf() === "1d" ? "Latest day" : "Today") : unit === "week" ? "This week" : "Latest candle";
+    let html = `<select ${d} data-f="offset" class="${small}" aria-label="Which candle"><optgroup label="${unit ? "Counting back" : "Latest candles"}">
+      ${opt("ago:0", latest)}${Array.from({ length: max }, (_, i) => opt(`ago:${i + 1}`, back(i + 1))).join("")}
+      ${opt("ago:n", `n ${unit ? unit + "s" : "candles"} ago`)}</optgroup>`;
+    if (!unit) {
+      html += `<optgroup label="Today's candles">${Array.from({ length: PRESET.nth }, (_, i) => opt(`nth:${i + 1}`, `${ordinal(i + 1)} candle of the day`)).join("")}
+        ${opt("nth:n", "nth candle of the day")}</optgroup>`;
+    }
+    html += "</select>";
+    if (pick === "ago:n") html += `<input ${d} data-f="ago" type="number" min="1" max="${R.maxAgo}" step="1" value="${ago}" class="${small} w-14 num" aria-label="How many back">`;
+    if (pick === "nth:n") html += `<input ${d} data-f="nth" type="number" min="1" max="${R.maxNth}" step="1" value="${nth}" class="${small} w-14 num" aria-label="Which candle of the day">`;
+    return html;
+  }
+
   function valueHtml(v, path, side) {
     const d = `data-c="${path}" data-side="${side}"`;
     const pick = v.kind === "num" ? "num" : v.kind === "price" ? `price:${v.field}` : `ind:${v.ind}`;
     const opt = (value, text) => `<option value="${value}" ${value === pick ? "selected" : ""}>${esc(text)}</option>`;
-    let html = v.kind === "num" ? "" : tfSelect(v, d);
+    let html = v.kind === "num" ? "" : offsetSelect(v, d) + tfSelect(v, d);
     html += `<select ${d} data-f="pick" class="${small} font-semibold" aria-label="Value">
       <optgroup label="Price">${Object.entries(R.prices).map(([k, t]) => opt(`price:${k}`, t)).join("")}</optgroup>
       <optgroup label="Indicator">${Object.entries(R.indicators).map(([k, i]) => opt(`ind:${k}`, i.name)).join("")}</optgroup>
@@ -1336,8 +1362,7 @@ function strategyLines(L, chart, got, legend, panelBox) {
       }
     }
     return html + `<span class="flex basis-full flex-wrap items-center gap-1.5 text-[12px] text-ink-soft">
-      <input ${d} data-f="ago" type="number" min="0" max="${R.maxAgo}" step="1" value="${v.ago}" class="${small} w-14 py-1 num" aria-label="Candles ago"> candles ago
-      · <input ${d} data-f="pct" type="number" min="0.01" step="any" value="${v.pct}" class="${small} w-16 py-1 num" aria-label="Percent of"> % of</span>`;
+      <input ${d} data-f="pct" type="number" min="0.01" step="any" value="${v.pct}" class="${small} w-16 py-1 num" aria-label="Percent of"> % of</span>`;
   }
 
   function conditionHtml(c, path) {
@@ -1420,14 +1445,27 @@ function strategyLines(L, chart, got, legend, panelBox) {
     if (f === "cmp") { c.cmp = el.value; return save(); }
     const v = c[el.dataset.side];
     if (f === "pick") {
-      const keep = v.kind === "num" ? {} : { tf: v.tf, ago: v.ago, pct: v.pct };
+      const keep = v.kind === "num" ? {} : { tf: v.tf, ago: v.ago, pct: v.pct, ...(v.nth ? { nth: v.nth } : {}) };
       c[el.dataset.side] = { ...newValue(el.value), ...(el.value === "num" ? {} : keep) };
       return redraw && render();
     }
     if (f.startsWith("param:")) {
       const key = f.slice(6);
       v.params[key] = key === "src" ? el.value : Number(el.value);
-    } else if (f === "tf" || f === "out") v[f] = el.value;
+    } else if (f === "offset") {
+      const [kind, n] = el.value.split(":");
+      const unit = (v.tf || scanTf()) === "1d" || (v.tf || scanTf()) === "1w";
+      const num = n === "n" ? (kind === "nth" ? PRESET.nth + 1 : (unit ? PRESET.days : PRESET.ago) + 1) : Number(n);
+      v.ago = kind === "ago" ? num : 0;
+      if (kind === "nth") v.nth = num; else delete v.nth;
+      save();
+      return redraw && render();
+    } else if (f === "tf") {
+      v.tf = el.value;
+      if (v.nth && ["1d", "1w"].includes(v.tf || scanTf())) delete v.nth;  // daily/weekly have no "day's nth"
+      save();
+      return redraw && render();
+    } else if (f === "out") v[f] = el.value;
     else v[f] = el.value === "" ? (f === "pct" ? 100 : 0) : Number(el.value);
     save();
   }

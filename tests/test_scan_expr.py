@@ -240,3 +240,35 @@ def test_a_condition_switched_off_is_kept_but_left_out():
     with pytest.raises(ValueError, match="switched off"):
         validate({"op": "all", "items": [raw["items"][1]]})
 
+
+
+def test_the_days_nth_candle_and_days_ago():
+    from datetime import date
+    from app.scan_expr import fit
+    mon = five_min(date(2026, 1, 5), [50, 51, 52])
+    tue = five_min(date(2026, 1, 6), [10, 11, 12, 13, 14, 20])
+    stock = Stock("5m", mon + tue)
+
+    def nth(field, n, tf=""):
+        return {**P(field, tf=tf), "nth": n}
+    s = validate({"op": "all", "items": [{"lhs": P("close"), "cmp": ">", "rhs": nth("high", 1)}]})
+    assert s["items"][0]["rhs"] == {**P("high"), "nth": 1}
+    assert stock.value(s["items"][0]["rhs"], len(stock.main) - 1) == 11  # Tuesday's first 5-minute candle, not Monday's
+    assert stock.value(nth("close", 3), len(stock.main) - 1) == 12
+    assert stock.value(nth("close", 9), len(stock.main) - 1) is None  # not formed yet
+    assert stock.value(nth("high", 1, "15m"), len(stock.main) - 1) == 13  # 9:15-9:30 on Tuesday
+    assert passes(s, stock)
+    assert stock.value({**I("sma", n=2, src="close"), "nth": 2}, len(stock.main) - 1) == 10.5
+    assert describe(s) == "Close > Day's 1st candle high"
+    assert describe_value_of({**P("high", tf="15m"), "nth": 2}) == "Day's 2nd 15 min candle high"
+    assert describe_value_of(P("high", tf="1d", ago=2)) == "2 days ago high"
+    assert describe_value_of(P("close", tf="1w", ago=3)) == "3 weeks ago close"
+    with pytest.raises(ValueError, match="intraday"):
+        validate({"op": "all", "items": [{"lhs": P("close"), "cmp": ">", "rhs": nth("high", 1, "1d")}]})
+    with pytest.raises(ValueError, match="intraday"):
+        fit(s, "1d")
+
+
+def describe_value_of(v):
+    from app.scan_expr import describe_value
+    return describe_value(validate({"op": "all", "items": [{"lhs": v, "cmp": ">", "rhs": N(1)}]})["items"][0]["lhs"])

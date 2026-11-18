@@ -55,6 +55,9 @@ STARTERS.append(("Breaks out of yesterday's range past VWAP", "5m", {"op": "any"
                                 (_p("open"), ">", _p("low", tf="1d", ago=1)))["items"]}]}))
 STARTERS.append(("15-min uptrend, 5-min breakout", "5m", _all((_p("close", tf="15m"), ">", _i("ema", tf="15m", n=20)),
                                                               (_p("close"), "crosses_above", _p("high", ago=1)))))
+STARTERS.append(("Opening range breakout (first 15 min)", "5m", _all(
+    (_p("close"), "crosses_above", {**_p("high", tf="15m"), "nth": 1}),
+    (_p("close"), ">", _i("vwap")))))
 STARTERS = [(name, tf, scan_expr.fit(scan_expr.validate(logic), tf)) for name, tf, logic in STARTERS]
 BLANK = _all((_p("close"), ">", _i("ema", n=20)))
 
@@ -63,7 +66,7 @@ def _registry() -> dict:
     """What the builder offers, for app.js."""
     return {
         "prices": scan_expr.PRICE_FIELDS, "tfs": scan_expr.TFS, "tfOrder": list(scan_expr.TFS), "intraday": scan_expr.INTRADAY, "cmps": scan_expr.CMPS, "sources": ta.SOURCES,
-        "maxAgo": scan_expr.MAX_AGO,
+        "maxAgo": scan_expr.MAX_AGO, "maxNth": scan_expr.MAX_NTH,
         "indicators": {k: {"name": i.name, "label": i.label, "outputs": i.outputs,
                            "params": [{"key": p.key, "label": p.label, "default": p.default, "low": p.low, "high": p.high,
                                        "whole": p.whole} for p in i.params]} for k, i in ta.INDICATORS.items()},

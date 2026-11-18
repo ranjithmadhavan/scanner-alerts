@@ -34,6 +34,7 @@ CROSSES = ("crosses_above", "crosses_below")
 MAX_CONDITIONS = 20
 MAX_GROUPS = 5
 MAX_AGO = 50
+MAX_NTH = 75  # "the day's nth candle": a session has 75 five-minute candles
 MAX_JSON = 20_000
 
 
@@ -64,6 +65,11 @@ def _value(raw) -> dict:
         raise ValueError("Pick a candle size for each value.")
     common = {"tf": tf, "ago": _number(raw.get("ago", 0), "Candles ago", 0, MAX_AGO, True),
               "pct": _number(raw.get("pct", 100), "The % of a value", 0.01, 10_000, False)}
+    # The day's nth candle (1: the day's first) instead of counting back from the latest; 0 or absent: count back.
+    if nth := _number(raw.get("nth") or 0, "The day's candle number", 0, MAX_NTH, True):
+        if tf in ("1d", "1w"):
+            raise ValueError("The day's 1st, 2nd … candle needs an intraday candle size.")
+        common.update(ago=0, nth=nth)
     if kind == "price":
         if raw.get("field") not in PRICE_FIELDS:
             raise ValueError("Pick open, high, low, close or volume.")
@@ -165,6 +171,8 @@ def fit(logic: dict, tf: str) -> dict:
                                  f"whole number of {scan} candles, or make the scan's candle size smaller.")
             if v["tf"] == tf:
                 v["tf"] = ""
+            if v.get("nth") and not v["tf"] and tf not in INTRADAY:
+                raise ValueError("The day's 1st, 2nd … candle needs an intraday candle size.")
     return out
 
 
@@ -204,13 +212,22 @@ def describe_value(v: dict) -> str:
         what = f"{ind.label}({','.join(shown)})" if shown else ind.label
         if v["out"]:
             what += f" {ind.outputs[v['out']]}"
-    words = (["Prev"] if v["ago"] == 1 else [f"{v['ago']} candles ago"] if v["ago"] else []) + \
-        ([TFS[v["tf"]]] if v["tf"] else []) + [what]
+    tf, ago = v["tf"], v["ago"]
+    if v.get("nth"):  # "Day's 1st candle high", "Day's 2nd 15 min candle EMA(20)"
+        words = [f"Day's {_ordinal(v['nth'])}{' ' + TFS[tf] if tf else ''} candle", what]
+    elif ago >= 2 and tf in ("1d", "1w"):  # "2 days ago high", "3 weeks ago close"
+        words = [f"{ago} {'days' if tf == '1d' else 'weeks'} ago", what]
+    else:
+        words = (["Prev"] if ago == 1 else [f"{ago} candles ago"] if ago else []) + ([TFS[tf]] if tf else []) + [what]
     if v["pct"] != 100:
         words.insert(0, f"{_g(v['pct'])}% of")
     # Only the first word is capitalised: "Prev daily high", "102% of prev high", but "EMA(20)" keeps its capitals.
     words = [w if i == 0 or (w == what and v["kind"] == "ind") else w.lower() for i, w in enumerate(words)]
     return " ".join(words)
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
 
 
 def describe_condition(c: dict) -> str:
@@ -336,7 +353,7 @@ class Stock:
         own = self.own(v["tf"])
         if v["kind"] == "price":
             got = self._read(v["tf"], j)
-            k = len(got) - 1 - v["ago"]
+            k = self._index(got, v)
             x = getattr(got[k], v["field"]) if k >= 0 else None
         else:
             # Indicators are worked out once over all the scan's candles (they only look back); on a bigger timeframe,
@@ -346,9 +363,26 @@ class Stock:
                 got = self._read(v["tf"], len(self.main) - 1 if own else j)
                 self._cache[key] = (INDICATORS[v["ind"]].compute(got, v["params"]), len(got))
             series, length = self._cache[key]
-            k = (j if own else length - 1) - v["ago"]
+            if v.get("nth"):  # same candles as the series, up to the judged one
+                k = self._index(self._read(v["tf"], j), v)
+            else:
+                k = (j if own else length - 1) - v["ago"]
             x = series[v["out"]][k] if k >= 0 else None
         return None if x is None else x * v["pct"] / 100
+
+    @staticmethod
+    def _index(got: list[Candle], v: dict) -> int:
+        """Where in `got` (ending on the current candle) the value's candle is; -1 if there's none yet."""
+        if not got:
+            return -1
+        if nth := v.get("nth"):
+            today = _day(got[-1])
+            first = len(got) - 1
+            while first > 0 and _day(got[first - 1]) == today:
+                first -= 1
+            k = first + nth - 1
+            return k if k < len(got) else -1
+        return len(got) - 1 - v["ago"]
 
     def _read(self, tf: str, j: int) -> list[Candle]:
         key = ("candles", tf, j)
