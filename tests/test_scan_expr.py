@@ -222,3 +222,21 @@ def test_fit_checks_each_lines_candle_size_against_the_scans():
         fit(scan((P("close", tf="5m"), ">", N(1))), "3m")  # 5 isn't a whole number of 3s
     assert needs(fit(scan((P("close"), ">", I("sma", tf="1h", n=20, src="close"))), "5m"), "5m")["main"] >= 20 * 12
     assert describe(s) == "15 min close > 1 hour EMA(20) and 5 min close > Prev daily high"
+
+
+def test_a_condition_switched_off_is_kept_but_left_out():
+    from datetime import date
+    from app.scan_expr import conditions
+    stock = Stock("5m", five_min(date(2026, 1, 5), [10, 11, 12]))
+    raw = {"op": "all", "items": [{"lhs": P("close"), "cmp": ">", "rhs": N(11)},
+                                  {"lhs": P("close"), "cmp": ">", "rhs": N(50), "off": True},
+                                  {"op": "any", "items": [{"lhs": P("close"), "cmp": "<", "rhs": N(5), "off": True}]}]}
+    s = validate(raw)
+    assert s["items"][1]["off"] is True and len(conditions(s, every=True)) == 3  # kept when saved
+    assert passes(s, stock)  # close 12 > 50 would fail, but it's off; the group has nothing on, so it's left out
+    assert not passes(validate({**raw, "items": [{**raw["items"][1], "off": False}]}), stock)
+    assert describe(s) == "Close > 11"
+    assert readings(s, stock) == [("Close", 12)]
+    with pytest.raises(ValueError, match="switched off"):
+        validate({"op": "all", "items": [raw["items"][1]]})
+

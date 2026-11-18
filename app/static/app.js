@@ -1341,13 +1341,18 @@ function strategyLines(L, chart, got, legend, panelBox) {
   }
 
   function conditionHtml(c, path) {
-    return `<div class="grid items-start gap-2 rounded-2xl border border-line bg-white p-3 lg:grid-cols-[1fr_auto_1fr_auto]">
+    const on = !c.off;
+    const toggle = `<button type="button" role="switch" aria-checked="${on}" data-c="${path}" data-act="toggle"
+        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${on ? "bg-peacock" : "bg-line"}"
+        title="${on ? "Switch this condition off (kept, but left out of the scan)" : "Switch this condition back on"}" aria-label="Use this condition">
+        <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition ${on ? "translate-x-[18px]" : "translate-x-0.5"}"></span></button>`;
+    return `<div class="grid items-start gap-2 rounded-2xl border p-3 lg:grid-cols-[1fr_auto_1fr_auto] ${on ? "border-line bg-white" : "border-dashed border-line bg-canvas/60 [&>div]:opacity-50 [&>select]:opacity-50"}">
       <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.lhs, path, "lhs")}</div>
       <select data-c="${path}" data-f="cmp" class="${small} font-semibold text-peacock" aria-label="Comparison">${Object.entries(R.cmps).map(([k, t]) =>
         `<option value="${k}" ${k === c.cmp ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
       <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.rhs, path, "rhs")}</div>
-      <button type="button" data-c="${path}" data-act="remove" class="justify-self-end rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove this condition" title="Remove">
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      <span class="flex items-center gap-1 justify-self-end">${toggle}<button type="button" data-c="${path}" data-act="remove" class="rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove this condition" title="Remove">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>
     </div>`;
   }
 
@@ -1391,6 +1396,10 @@ function strategyLines(L, chart, got, legend, panelBox) {
     if (act === "add") logic.items.push(newCondition());
     else if (act === "add-group") logic.items.push({ op: "any", items: [newCondition(), newCondition()] });
     else if (act === "add-in") logic.items[Number(path)].items.push(newCondition());
+    else if (act === "toggle") {
+      const c = get(path);
+      if (c.off) delete c.off; else c.off = true;
+    }
     else if (act === "remove") {
       const { list, i } = at(path);
       list.splice(i, 1);
