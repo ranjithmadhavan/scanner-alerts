@@ -86,6 +86,8 @@ def test_page_builder_and_describe(web):
     assert web.get("/ma").status_code == 403
     assert web.post("/scans/describe", data={"logic": json.dumps(ABOVE_EMA)}).json() == {"text": "Close > EMA(20)"}
     assert "at least one" in web.post("/scans/describe", data={"logic": '{"op": "all", "items": []}'}).json()["error"]
+    two = {"op": "all", "items": [ABOVE_EMA["items"][0], {**ABOVE_EMA["items"][0], "off": True}]}
+    assert web.post("/scans/describe", data={"logic": json.dumps(two)}).json() == {"text": "Close > EMA(20) (1 condition switched off)"}
 
 
 def test_starters_are_valid_and_describe():

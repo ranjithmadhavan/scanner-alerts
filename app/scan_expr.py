@@ -97,6 +97,8 @@ def _condition(raw) -> dict:
     cond = {"lhs": _value(raw.get("lhs")), "cmp": raw["cmp"], "rhs": _value(raw.get("rhs"))}
     if cond["lhs"]["kind"] == "num" and cond["rhs"]["kind"] == "num":
         raise ValueError("A condition needs a price or an indicator on at least one side.")
+    if raw.get("off") is True:  # switched off: kept in the scan, left out when it runs
+        cond["off"] = True
     return cond
 
 
@@ -132,6 +134,8 @@ def validate(raw: str | dict) -> dict:
             count += 1
     if not count:
         raise ValueError("Add at least one condition.")
+    if not any(not c.get("off") for c in conditions({"items": items})):
+        raise ValueError("Every condition is switched off. Switch at least one on.")
     if count > MAX_CONDITIONS:
         raise ValueError(f"A scan can have up to {MAX_CONDITIONS} conditions.")
     if groups > MAX_GROUPS:
@@ -151,7 +155,7 @@ def fits(vtf: str, tf: str) -> bool:
 def fit(logic: dict, tf: str) -> dict:
     """The logic for a scan of `tf` candles: values on the scan's own size become "". Raises ValueError if one can't be read."""
     out = copy.deepcopy(logic)
-    for c in conditions(out):
+    for c in conditions(out, every=True):
         for v in (c["lhs"], c["rhs"]):
             if v["kind"] == "num":
                 continue
@@ -164,8 +168,21 @@ def fit(logic: dict, tf: str) -> dict:
     return out
 
 
-def conditions(logic: dict) -> list[dict]:
-    return [c for item in logic["items"] for c in (item["items"] if "items" in item else [item])]
+def conditions(logic: dict, every: bool = False) -> list[dict]:
+    """The scan's conditions, groups flattened: the ones switched on, or with `every`, all of them."""
+    return [c for item in logic["items"] for c in (item["items"] if "items" in item else [item]) if every or not c.get("off")]
+
+
+def active(logic: dict) -> dict:
+    """The scan as it runs: conditions switched off left out, and groups left with none."""
+    items = []
+    for item in logic["items"]:
+        if "items" in item:
+            if inner := [c for c in item["items"] if not c.get("off")]:
+                items.append({**item, "items": inner})
+        elif not item.get("off"):
+            items.append(item)
+    return {**logic, "items": items}
 
 
 # ---- in words -----------------------------------------------------------------------------------
@@ -201,6 +218,8 @@ def describe_condition(c: dict) -> str:
 
 
 def describe(logic: dict) -> str:
+    logic = active(logic)
+
     def join(items: list[str], op: str) -> str:
         return f" {'and' if op == 'all' else 'or'} ".join(items)
     parts = [f"({join([describe_condition(c) for c in item['items']], item['op'])})" if "items" in item and len(item["items"]) > 1
@@ -367,7 +386,8 @@ def check(c: dict, stock: Stock, j: int) -> bool:
 def passes(logic: dict, stock: Stock, j: int | None = None) -> bool:
     """Does the stock pass the scan on main candle j (the last one if not given)?"""
     j = len(stock.main) - 1 if j is None else j
-    if j < 0:
+    logic = active(logic)
+    if j < 0 or not logic["items"]:
         return False
 
     def group(op: str, results) -> bool:

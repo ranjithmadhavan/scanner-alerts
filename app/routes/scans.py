@@ -149,7 +149,10 @@ async def describe(request: Request, user: dict = Depends(guard)):
         logic = scan_expr.validate(form.get("logic", ""))
         if (tf := form.get("tf", "")) in custom_scan.TIMEFRAMES:
             logic = scan_expr.fit(logic, tf)
-        return JSONResponse({"text": scan_expr.describe(logic)})
+        text = scan_expr.describe(logic)
+        if off := len(scan_expr.conditions(logic, every=True)) - len(scan_expr.conditions(logic)):
+            text += f" ({off} condition{'s' if off != 1 else ''} switched off)"
+        return JSONResponse({"text": text})
     except ValueError as e:
         return JSONResponse({"error": str(e)})
 
