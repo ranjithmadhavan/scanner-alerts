@@ -1267,134 +1267,176 @@ function strategyLines(L, chart, got, legend, panelBox) {
 // ---- Custom scanners: the condition builder ------------------------------------------------------
 // The scan lives here as data (the same shape the server keeps) and is written to the form's hidden `logic` field on
 // every change; the server checks it and says it back in words under the builder.
+// Each condition reads as a sentence of chips, as on Chartink: [which candle] [value] [comparison] [which candle] [value].
+// A chip opens a small menu (searchable for values); the menu is one floating element, rebuilt for each chip.
 (() => {
   const root = document.querySelector("[data-scan-builder]");
   if (!root) return;
   const R = JSON.parse(document.getElementById("scan-registry").textContent);
   let logic = JSON.parse(document.getElementById("scan-initial").textContent);
+  // Any setting missing from a saved or default scan takes the indicator's default, so drawing never trips on it.
+  const fill = (v) => {
+    if (v.kind !== "ind" || !R.indicators[v.ind]) return;
+    v.params = v.params || {};
+    for (const p of R.indicators[v.ind].params) v.params[p.key] ??= p.default;
+  };
+  const fillAll = () => logic.items.forEach((it) => (it.items || [it]).forEach((c) => { fill(c.lhs); fill(c.rhs); }));
+  fillAll();
   const form = root.closest("form");
   const hidden = form.querySelector("[data-scan-logic]");
   const summary = form.querySelector("[data-scan-summary]");
+  const tfField = form.querySelector("[name=tf]");
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const copy = (x) => JSON.parse(JSON.stringify(x));
-  const small = "rounded-lg border border-line bg-white px-2 py-1.5 text-[13px] text-ink focus:border-peacock focus:outline-none focus:ring-2 focus:ring-peacock-50";
+  const scanTf = () => tfField.value;
+  const CMP_WORDS = { ">": "greater than", ">=": "greater than or equal to", "<": "less than", "<=": "less than or equal to",
+    "=": "equals", crosses_above: "crosses above", crosses_below: "crosses below" };
+  const PRESET = { ago: 5, days: 3, nth: 5 };
+  const picked = new Set();  // conditions ticked to group; kept as the objects themselves, so moving them keeps the ticks
+  const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th"));
 
-  function newValue(pick) {
+  // ---- the data ----
+  function newValue(pick, out) {
     const [kind, key] = pick.split(":");
     if (kind === "num") return { kind: "num", value: 0 };
     const base = { tf: "", ago: 0, pct: 100 };
     if (kind === "price") return { kind: "price", field: key, ...base };
     const ind = R.indicators[key];
     const params = Object.fromEntries(ind.params.map((p) => [p.key, p.default]));
-    return { kind: "ind", ind: key, params, out: Object.keys(ind.outputs)[0] || "", ...base };
+    return { kind: "ind", ind: key, params, out: out ?? (Object.keys(ind.outputs)[0] || ""), ...base };
   }
   const newCondition = () => ({ lhs: newValue("price:close"), cmp: ">", rhs: newValue("ind:ema") });
-
-  // Where a condition lives: "3" (top level) or "3.1" (second in the group at 3).
-  function at(path) {
+  function at(path) {  // "3" (top level) or "3.1" (second in the group at 3)
     const [i, j] = path.split(".").map(Number);
     return j === undefined ? { list: logic.items, i } : { list: logic.items[i].items, i: j };
   }
   const get = (path) => { const { list, i } = at(path); return list[i]; };
 
-  // A value's candle size: the scan's own, a bigger intraday size it divides into, daily or weekly.
-  const scanTf = () => form.querySelector("[name=tf]").value;
   function fits(k, tf) {
     if (k === "" || k === "1d" || k === "1w" || k === tf) return true;
     const a = R.intraday[k], b = R.intraday[tf];
     return Boolean(a && b && a > b && a % b === 0);
   }
-  function tfSelect(v, d) {
-    const tf = scanTf();
-    const opts = R.tfOrder.filter((k) => k !== tf && (fits(k, tf) || k === v.tf)).map((k) =>  // in order: JSON sorts keys
-      `<option value="${k}" ${k === v.tf ? "selected" : ""}>${esc(k === "" ? R.tfs[tf] || R.tfs[k] : R.tfs[k])}${fits(k, tf) ? "" : " (too small)"}</option>`);
-    return `<select ${d} data-f="tf" class="${small} text-peacock" aria-label="Candle size">${opts.join("")}</select>`;
+  const sizeOf = (v) => v.tf || scanTf();
+  const unitOf = (v) => ({ "1d": "day", "1w": "week" }[sizeOf(v)] || "");
+
+  // ---- words on the chips ----
+  function whenLabel(v) {
+    const size = R.tfs[sizeOf(v)], unit = unitOf(v);
+    if (v.nth) return `Day's ${ordinal(v.nth)} ${size}`;
+    if (unit === "day") return v.ago ? `${v.ago} day${v.ago > 1 ? "s" : ""} ago` : (scanTf() === "1d" ? "Daily" : "Today's");
+    if (unit === "week") return v.ago ? `${v.ago} week${v.ago > 1 ? "s" : ""} ago` : "Weekly";
+    return v.ago === 1 ? `Prev ${size}` : v.ago ? `${v.ago} back · ${size}` : size;
+  }
+  function whatLabel(v) {
+    if (v.kind === "price") return R.prices[v.field];
+    const ind = R.indicators[v.ind];
+    const item = R.picker.flatMap((g) => g.items).find((i) => i.pick === `ind:${v.ind}` && i.out === (v.out || ""));
+    return item ? item.label.split(" · ")[0] : ind.label;
+  }
+  function paramsLabel(v) {
+    const ind = R.indicators[v.ind];
+    const shown = ind.params.map((p) => {
+      const x = v.params[p.key] ?? p.default;
+      return p.key === "src" ? (R.sources[x] || x).toLowerCase() : x;
+    });
+    return shown.length ? `(${shown.join(", ")})` : "";
   }
 
-  // Which candle: the latest, n back ("1 day ago" on daily candles), or the day's 1st, 2nd … (intraday only).
-  // Presets up to PRESET; beyond that the select shows "n … ago" / "nth candle of the day" with a number box.
-  const PRESET = { ago: 5, days: 3, nth: 5 };
-  const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th"));
-  function offsetSelect(v, d) {
-    const tf = v.tf || scanTf();
-    const unit = tf === "1d" ? "day" : tf === "1w" ? "week" : "";
-    const nth = v.nth || 0, ago = v.ago || 0;
-    const max = unit ? PRESET.days : PRESET.ago;
-    const pick = nth ? (nth <= PRESET.nth ? `nth:${nth}` : "nth:n") : (ago <= max ? `ago:${ago}` : "ago:n");
-    const opt = (value, text) => `<option value="${value}" ${value === pick ? "selected" : ""}>${esc(text)}</option>`;
-    const back = (n) => unit ? `${n} ${unit}${n > 1 ? "s" : ""} ago` : `${n} candle${n > 1 ? "s" : ""} ago`;
-    const latest = unit === "day" ? (scanTf() === "1d" ? "Latest day" : "Today") : unit === "week" ? "This week" : "Latest candle";
-    let html = `<select ${d} data-f="offset" class="${small}" aria-label="Which candle"><optgroup label="${unit ? "Counting back" : "Latest candles"}">
-      ${opt("ago:0", latest)}${Array.from({ length: max }, (_, i) => opt(`ago:${i + 1}`, back(i + 1))).join("")}
-      ${opt("ago:n", `n ${unit ? unit + "s" : "candles"} ago`)}</optgroup>`;
-    if (!unit) {
-      html += `<optgroup label="Today's candles">${Array.from({ length: PRESET.nth }, (_, i) => opt(`nth:${i + 1}`, `${ordinal(i + 1)} candle of the day`)).join("")}
-        ${opt("nth:n", "nth candle of the day")}</optgroup>`;
-    }
-    html += "</select>";
-    if (pick === "ago:n") html += `<input ${d} data-f="ago" type="number" min="1" max="${R.maxAgo}" step="1" value="${ago}" class="${small} w-14 num" aria-label="How many back">`;
-    if (pick === "nth:n") html += `<input ${d} data-f="nth" type="number" min="1" max="${R.maxNth}" step="1" value="${nth}" class="${small} w-14 num" aria-label="Which candle of the day">`;
-    return html;
-  }
+  // ---- drawing ----
+  const chip = "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[14px] transition hover:bg-peacock-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-marigold";
+  const caret = `<svg class="h-3 w-3 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+  const btn = (menu, path, side, cls, text, label) =>
+    `<button type="button" class="${chip} ${cls}" data-menu="${menu}" data-c="${path}" data-side="${side || ""}" aria-haspopup="true" aria-label="${esc(label)}">${text}${caret}</button>`;
 
   function valueHtml(v, path, side) {
-    const d = `data-c="${path}" data-side="${side}"`;
-    const pick = v.kind === "num" ? "num" : v.kind === "price" ? `price:${v.field}` : `ind:${v.ind}`;
-    const opt = (value, text) => `<option value="${value}" ${value === pick ? "selected" : ""}>${esc(text)}</option>`;
-    let html = v.kind === "num" ? "" : offsetSelect(v, d) + tfSelect(v, d);
-    html += `<select ${d} data-f="pick" class="${small} font-semibold" aria-label="Value">
-      <optgroup label="Price">${Object.entries(R.prices).map(([k, t]) => opt(`price:${k}`, t)).join("")}</optgroup>
-      <optgroup label="Indicator">${Object.entries(R.indicators).map(([k, i]) => opt(`ind:${k}`, i.name)).join("")}</optgroup>
-      <optgroup label="Other">${opt("num", "Number")}</optgroup></select>`;
     if (v.kind === "num") {
-      return html + `<input ${d} data-f="value" type="number" step="any" value="${v.value}" class="${small} w-24 num" aria-label="Number">`;
+      return btn("what", path, side, "font-semibold text-ink", "Number", "Change this value") +
+        `<input data-c="${path}" data-side="${side}" data-f="value" type="number" step="any" value="${v.value}"
+           class="w-24 rounded-lg border border-line bg-white px-2 py-1 text-[14px] font-semibold num focus:border-peacock focus:outline-none focus:ring-2 focus:ring-peacock-50" aria-label="Number">`;
     }
-    if (v.kind === "ind") {
-      const ind = R.indicators[v.ind];
-      html += ind.params.map((p) => p.key === "src"
-        ? `<select ${d} data-f="param:src" class="${small}" aria-label="${esc(ind.label)} of">${Object.entries(R.sources).map(([k, t]) =>
-            `<option value="${k}" ${k === v.params.src ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
-        : `<label class="inline-flex items-center gap-1 text-[12px] text-ink-soft">${esc(p.label)}<input ${d} data-f="param:${p.key}" type="number"
-             min="${p.low}" max="${p.high}" step="${p.whole ? 1 : 0.1}" value="${v.params[p.key]}" class="${small} w-16 num"></label>`).join("");
-      if (Object.keys(ind.outputs).length) {
-        html += `<select ${d} data-f="out" class="${small}" aria-label="Which line">${Object.entries(ind.outputs).map(([k, t]) =>
-          `<option value="${k}" ${k === v.out ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
-      }
-    }
-    return html + `<span class="flex basis-full flex-wrap items-center gap-1.5 text-[12px] text-ink-soft">
-      <input ${d} data-f="pct" type="number" min="0.01" step="any" value="${v.pct}" class="${small} w-16 py-1 num" aria-label="Percent of"> % of</span>`;
+    const pct = v.pct !== 100 ? `<span class="text-[14px] text-ink-soft">${v.pct}% of</span>` : "";
+    const params = v.kind === "ind" && (R.indicators[v.ind].params.length || v.pct !== 100)
+      ? btn("params", path, side, "text-ink-soft", esc(paramsLabel(v)) || "%", "Settings for this value")
+      : btn("params", path, side, "text-ink-soft/60 opacity-0 group-hover/c:opacity-100 focus:opacity-100", "%", "Take a percentage of this value");
+    return pct + btn("when", path, side, "text-peacock", esc(whenLabel(v)), "Which candle") +
+      btn("what", path, side, "font-semibold text-ink", esc(whatLabel(v)), "Which value") + params;
   }
 
+  const icon = (d) => `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   function conditionHtml(c, path) {
     const on = !c.off;
-    const toggle = `<button type="button" role="switch" aria-checked="${on}" data-c="${path}" data-act="toggle"
-        class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${on ? "bg-peacock" : "bg-line"}"
-        title="${on ? "Switch this condition off (kept, but left out of the scan)" : "Switch this condition back on"}" aria-label="Use this condition">
-        <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition ${on ? "translate-x-[18px]" : "translate-x-0.5"}"></span></button>`;
-    return `<div class="grid items-start gap-2 rounded-2xl border p-3 lg:grid-cols-[1fr_auto_1fr_auto] ${on ? "border-line bg-white" : "border-dashed border-line bg-canvas/60 [&>div]:opacity-50 [&>select]:opacity-50"}">
-      <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.lhs, path, "lhs")}</div>
-      <select data-c="${path}" data-f="cmp" class="${small} font-semibold text-peacock" aria-label="Comparison">${Object.entries(R.cmps).map(([k, t]) =>
-        `<option value="${k}" ${k === c.cmp ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
-      <div class="flex flex-wrap items-center gap-1.5">${valueHtml(c.rhs, path, "rhs")}</div>
-      <span class="flex items-center gap-1 justify-self-end">${toggle}<button type="button" data-c="${path}" data-act="remove" class="rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" aria-label="Remove this condition" title="Remove">
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>
-    </div>`;
+    const ticked = picked.has(c);
+    return `<div class="group/c flex flex-wrap items-center gap-x-0.5 gap-y-1 rounded-xl px-2 py-1.5 transition ${ticked ? "bg-peacock-50 ring-1 ring-peacock/30" : "hover:bg-canvas"} ${on ? "" : "opacity-50"}">
+      <input type="checkbox" data-c="${path}" data-act="pick" ${ticked ? "checked" : ""} title="Select, to group it with others" aria-label="Select this condition"
+        class="mr-1 h-4 w-4 shrink-0 cursor-pointer rounded border-line accent-peacock transition ${picked.size ? "" : "opacity-40 group-hover/c:opacity-100 focus:opacity-100"}">
+      ${valueHtml(c.lhs, path, "lhs")}
+      ${btn("cmp", path, "", "font-semibold text-marigold-dark", esc(CMP_WORDS[c.cmp]), "Comparison")}
+      ${valueHtml(c.rhs, path, "rhs")}
+      <span class="ml-auto flex items-center gap-0.5 pl-2">
+        <button type="button" role="switch" aria-checked="${on}" data-c="${path}" data-act="toggle" title="${on ? "Switch off (kept, but left out of the scan)" : "Switch back on"}" aria-label="Use this condition"
+          class="relative mr-1 inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${on ? "bg-peacock" : "bg-line"}">
+          <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition ${on ? "translate-x-[18px]" : "translate-x-0.5"}"></span></button>
+        <button type="button" data-c="${path}" data-act="copy" class="rounded-full p-1.5 text-ink-soft transition hover:bg-white hover:text-ink" title="Duplicate" aria-label="Duplicate this condition">${icon('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>')}</button>
+        <button type="button" data-c="${path}" data-act="remove" class="rounded-full p-1.5 text-ink-soft transition hover:bg-fall-50 hover:text-fall" title="Remove" aria-label="Remove this condition">${icon('<path d="M18 6 6 18M6 6l12 12"/>')}</button>
+      </span></div>`;
   }
 
-  const opSelect = (op, path) => `<select data-c="${path}" data-f="op" class="${small} font-semibold" aria-label="All or any">
-    <option value="all" ${op === "all" ? "selected" : ""}>all</option><option value="any" ${op === "any" ? "selected" : ""}>any</option></select>`;
-  const addBtn = (act, path, text) => `<button type="button" data-act="${act}" data-c="${path}" class="inline-flex items-center gap-1 rounded-full border border-dashed border-peacock/40 px-3 py-1.5 text-sm font-semibold text-peacock transition hover:bg-peacock-50">+ ${text}</button>`;
+  const opChip = (op, path) => `<button type="button" data-act="op" data-c="${path}" class="${chip} font-bold text-peacock underline decoration-peacock/30 decoration-dotted underline-offset-4"
+      title="Switch between all and any">${op === "all" ? "all" : "any 1"}</button>`;
+  const addBtn = (act, path, text) => `<button type="button" data-act="${act}" data-c="${path}" class="inline-flex items-center gap-1 rounded-full border border-dashed border-peacock/40 px-3 py-1 text-[13px] font-semibold text-peacock transition hover:bg-peacock-50">+ ${text}</button>`;
+
+  // ---- ticking conditions and grouping them ----
+  const everyCondition = () => logic.items.flatMap((it) => it.items || [it]);
+  const groupCount = () => logic.items.filter((it) => it.items).length;
+  function pickBar() {
+    if (!picked.size) return "";
+    const n = picked.size, few = n < 2;
+    // Taking every condition out of the groups they're in may free up room for the new one.
+    const emptied = logic.items.filter((it) => it.items && it.items.every((c) => picked.has(c))).length;
+    const full = groupCount() - emptied >= R.maxGroups;
+    const off = few || full;
+    const why = few ? "Tick one more to group" : full ? `A scan can have up to ${R.maxGroups} groups` : "";
+    const b = (op, text) => `<button type="button" data-act="group" data-op="${op}" ${off ? "disabled" : ""}
+        class="rounded-full px-3 py-1 text-[13px] font-semibold transition ${off ? "cursor-not-allowed bg-white/60 text-ink-soft" : "bg-peacock text-white hover:bg-peacock/90"}">${text}</button>`;
+    return `<div class="sticky bottom-3 z-10 mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-peacock/30 bg-peacock-50 px-3 py-2 shadow-soft" role="toolbar" aria-label="Selected conditions">
+      <span class="text-[14px] font-semibold text-peacock">${n} selected</span>
+      ${b("all", "Group: all must pass")}${b("any", "Group: any 1 passes")}
+      ${why ? `<span class="text-[13px] text-ink-soft">${why}</span>` : ""}
+      <button type="button" data-act="unpick" class="ml-auto text-[13px] font-medium text-ink-soft hover:text-ink">Clear</button></div>`;
+  }
+  // The ticked conditions become one group, where the first of them was; groups they leave empty go.
+  function groupPicked(op) {
+    const group = { op, items: [] }, out = [];
+    for (const it of logic.items) {
+      const inner = it.items || [it];
+      const took = inner.filter((c) => picked.has(c));
+      if (took.length && !group.items.length) out.push(group);
+      group.items.push(...took);
+      if (!it.items) { if (!took.length) out.push(it); continue; }
+      it.items = inner.filter((c) => !picked.has(c));
+      if (it.items.length) out.push(it);
+    }
+    logic.items = out;
+    picked.clear();
+  }
 
   function render() {
-    root.innerHTML = `<p class="mb-3 flex items-center gap-2 text-[15px]">Stocks that pass ${opSelect(logic.op, "top")} of these:</p>
-      <div class="space-y-2">${logic.items.map((item, i) => item.items
-        ? `<div class="space-y-2 rounded-3xl border border-peacock/20 bg-peacock-50/40 p-3">
-             <p class="flex items-center gap-2 text-sm">Group: ${opSelect(item.op, String(i))} of
-               <button type="button" data-act="remove" data-c="${i}" class="ml-auto text-[13px] font-medium text-ink-soft hover:text-fall">Remove group</button></p>
-             ${item.items.map((c, j) => conditionHtml(c, `${i}.${j}`)).join("")}
-             ${addBtn("add-in", String(i), "Condition in this group")}</div>`
+    closeMenu();
+    const all = new Set(everyCondition());
+    for (const c of picked) if (!all.has(c)) picked.delete(c);  // removed ones drop their tick
+    root.innerHTML = `<p class="mb-2 text-[15px]">Stock passes ${opChip(logic.op, "top")} of the below:</p>
+      <div class="space-y-1 border-l-2 border-line pl-3">${logic.items.map((item, i) => item.items
+        ? `<div class="rounded-2xl border border-peacock/20 bg-peacock-50/40 p-2">
+             <p class="flex items-center gap-1 px-2 text-[14px]">Passes ${opChip(item.op, String(i))} of these:
+               <button type="button" data-act="ungroup" data-c="${i}" class="ml-auto text-[13px] font-medium text-ink-soft hover:text-peacock" title="Keep the conditions, drop the group">Ungroup</button>
+               <button type="button" data-act="remove" data-c="${i}" class="ml-2 text-[13px] font-medium text-ink-soft hover:text-fall">Remove group</button></p>
+             <div class="mt-1 space-y-1 border-l-2 border-peacock/20 pl-2">${item.items.map((c, j) => conditionHtml(c, `${i}.${j}`)).join("")}</div>
+             <div class="mt-1 pl-3">${addBtn("add-in", String(i), "Condition")}</div></div>`
         : conditionHtml(item, String(i))).join("")}</div>
-      <div class="mt-3 flex flex-wrap gap-2">${addBtn("add", "", "Add condition")}${addBtn("add-group", "", "Add group (any of…)")}</div>`;
+      ${pickBar()}
+      <div class="mt-3 flex flex-wrap gap-2">${addBtn("add", "", "Condition")}${addBtn("add-group", "", "Group (any of…)")}</div>
+      ${picked.size ? "" : `<p class="mt-2 text-[13px] text-ink-soft">Tip: tick two or more conditions to group them.</p>`}`;
     save();
   }
 
@@ -1414,17 +1456,172 @@ function strategyLines(L, chart, got, legend, panelBox) {
     }, 250);
   }
 
-  root.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-act]");
-    if (!btn) return;
-    const act = btn.dataset.act, path = btn.dataset.c;
-    if (act === "add") logic.items.push(newCondition());
-    else if (act === "add-group") logic.items.push({ op: "any", items: [newCondition(), newCondition()] });
-    else if (act === "add-in") logic.items[Number(path)].items.push(newCondition());
-    else if (act === "toggle") {
-      const c = get(path);
-      if (c.off) delete c.off; else c.off = true;
+  // ---- the menu ----
+  const menu = document.createElement("div");
+  menu.className = "fixed z-50 hidden w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-line bg-white text-[14px] shadow-soft";
+  menu.setAttribute("role", "dialog");
+  document.body.appendChild(menu);
+  let opener = null;
+
+  function closeMenu() {
+    if (menu.classList.contains("hidden")) return;
+    menu.classList.add("hidden");
+    opener?.setAttribute("aria-expanded", "false");
+    opener = null;
+  }
+  function place(el) {
+    const r = el.getBoundingClientRect();
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    const left = Math.max(16, Math.min(r.left, window.innerWidth - w - 16));
+    const below = r.bottom + 6 + h < window.innerHeight || r.top < h + 6;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${below ? r.bottom + 6 : r.top - h - 6}px`;
+  }
+  const item = (attrs, text, selected, extra = "") =>
+    `<button type="button" ${attrs} class="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition hover:bg-peacock-50 ${selected ? "bg-peacock-50 font-semibold text-peacock" : ""}">${text}${extra}</button>`;
+  const heading = (t) => `<p class="px-3 pb-1 pt-2 text-[12px] font-semibold uppercase tracking-wide text-ink-soft">${esc(t)}</p>`;
+
+  function openMenu(el) {
+    const kind = el.dataset.menu, path = el.dataset.c, side = el.dataset.side;
+    const c = get(path), v = side ? c[side] : null;
+    let html = "";
+    if (kind === "cmp") {
+      html = `<div class="p-1.5">${Object.keys(CMP_WORDS).map((k) => item(`data-set="cmp" data-val="${k}"`, esc(CMP_WORDS[k]), c.cmp === k)).join("")}</div>`;
+    } else if (kind === "what") {
+      html = `<div class="border-b border-line p-2"><input type="search" data-search placeholder="Search: close, ema, rsi, vwap…" class="field py-1.5 text-[14px]" aria-label="Search values"></div>
+        <div class="max-h-[340px] overflow-y-auto p-1.5" data-list>${R.picker.map((g) => `<div data-section>${heading(g.title)}${g.items.map((i) => {
+          const sel = v.kind === "num" ? i.pick === "num" : v.kind === "price" ? i.pick === `price:${v.field}` : i.pick === `ind:${v.ind}` && i.out === (v.out || "");
+          return item(`data-set="what" data-val="${i.pick}" data-out="${i.out}" data-text="${esc(i.label.toLowerCase())}"`, esc(i.label), sel);
+        }).join("")}</div>`).join("")}<p data-none hidden class="px-3 py-3 text-ink-soft">Nothing matches.</p></div>`;
+    } else if (kind === "when") {
+      const tf = scanTf(), size = sizeOf(v), unit = unitOf(v);
+      const sizes = R.tfOrder.filter((k) => k !== tf && fits(k, tf));
+      html = `<div class="border-b border-line p-2">${heading("Candle size")}<div class="flex flex-wrap gap-1 px-1 pb-1">${sizes.map((k) => {
+        const on = (k || tf) === size;
+        return `<button type="button" data-set="tf" data-val="${k}" class="rounded-full border px-2.5 py-1 text-[13px] font-medium transition ${on ? "border-peacock bg-peacock text-white" : "border-line text-ink-soft hover:border-peacock/40 hover:text-peacock"}">${esc(k ? R.tfs[k] : R.tfs[tf])}</button>`;
+      }).join("")}</div></div><div class="max-h-[300px] overflow-y-auto p-1.5">`;
+      const max = unit ? PRESET.days : PRESET.ago;
+      const back = (n) => unit ? `${n} ${unit}${n > 1 ? "s" : ""} ago` : `${n} candle${n > 1 ? "s" : ""} ago`;
+      const latest = unit === "day" ? (tf === "1d" ? "Latest day" : "Today (so far)") : unit === "week" ? "This week (so far)" : "Latest candle";
+      html += heading(unit ? "Counting back" : "Latest candles") + item(`data-set="ago" data-val="0"`, latest, !v.nth && !v.ago);
+      for (let n = 1; n <= max; n++) html += item(`data-set="ago" data-val="${n}"`, back(n), !v.nth && v.ago === n);
+      html += `<label class="flex items-center gap-2 rounded-lg px-3 py-1.5 ${!v.nth && v.ago > max ? "bg-peacock-50 font-semibold text-peacock" : ""}">
+        <input type="number" min="1" max="${R.maxAgo}" value="${!v.nth && v.ago > max ? v.ago : max + 1}" data-n="ago" class="w-16 rounded-lg border border-line px-2 py-1 num" aria-label="How many back"> ${unit ? unit + "s" : "candles"} ago
+        <button type="button" data-set="ago-n" class="ml-auto rounded-full bg-peacock px-2.5 py-0.5 text-[12px] font-semibold text-white">Use</button></label>`;
+      if (!unit) {
+        html += heading("Today's candles");
+        for (let n = 1; n <= PRESET.nth; n++) html += item(`data-set="nth" data-val="${n}"`, `${ordinal(n)} candle of the day`, v.nth === n);
+        html += `<label class="flex items-center gap-2 rounded-lg px-3 py-1.5 ${v.nth > PRESET.nth ? "bg-peacock-50 font-semibold text-peacock" : ""}">
+          <input type="number" min="1" max="${R.maxNth}" value="${v.nth > PRESET.nth ? v.nth : PRESET.nth + 1}" data-n="nth" class="w-16 rounded-lg border border-line px-2 py-1 num" aria-label="Which candle of the day"> th candle of the day
+          <button type="button" data-set="nth-n" class="ml-auto rounded-full bg-peacock px-2.5 py-0.5 text-[12px] font-semibold text-white">Use</button></label>`;
+      }
+      html += "</div>";
+    } else if (kind === "params") {
+      const ind = v.kind === "ind" ? R.indicators[v.ind] : null;
+      const field = "w-20 rounded-lg border border-line px-2 py-1 num focus:border-peacock focus:outline-none";
+      html = `<div class="space-y-2 p-3">${ind ? ind.params.map((p) => `<label class="flex items-center justify-between gap-3">${esc(p.label)}${p.key === "src"
+          ? `<select data-p="src" class="rounded-lg border border-line px-2 py-1">${Object.entries(R.sources).map(([k, t]) => `<option value="${k}" ${k === v.params.src ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
+          : `<input data-p="${p.key}" type="number" min="${p.low}" max="${p.high}" step="${p.whole ? 1 : 0.1}" value="${v.params[p.key]}" class="${field}">`}</label>`).join("") : ""}
+        <label class="flex items-center justify-between gap-3">Take a % of it <span class="flex items-center gap-1"><input data-p="pct" type="number" min="0.01" step="any" value="${v.pct}" class="${field}"> %</span></label>
+        <p class="text-[12px] text-ink-soft">e.g. 102 for “2% above”, 150 for “one and a half times”.</p></div>`;
     }
+    menu.innerHTML = html;
+    menu.dataset.c = path;
+    menu.dataset.side = side || "";
+    menu.classList.remove("hidden");
+    opener?.setAttribute("aria-expanded", "false");
+    opener = el;
+    el.setAttribute("aria-expanded", "true");
+    place(el);
+    (menu.querySelector("[data-search]") || menu.querySelector("[data-p]") || menu.querySelector(".font-semibold") || menu.querySelector("button"))?.focus();
+  }
+
+  // Choosing in the menu.
+  menu.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-set]");
+    if (!b) return;
+    const c = get(menu.dataset.c), side = menu.dataset.side, v = side ? c[side] : null;
+    const set = b.dataset.set;
+    if (set === "cmp") c.cmp = b.dataset.val;
+    else if (set === "what") {
+      const keep = v.kind === "num" ? {} : { tf: v.tf, ago: v.ago, pct: v.pct, ...(v.nth ? { nth: v.nth } : {}) };
+      c[side] = { ...newValue(b.dataset.val, b.dataset.out), ...(b.dataset.val === "num" ? {} : keep) };
+    } else if (set === "tf") {
+      v.tf = b.dataset.val;
+      if (v.nth && unitOf(v)) delete v.nth;  // daily/weekly have no "day's nth"
+      if (unitOf(v) && v.ago > R.maxAgo) v.ago = 0;
+      render();
+      const again = root.querySelector(`[data-menu="when"][data-c="${menu.dataset.c}"][data-side="${side}"]`);
+      return again && openMenu(again);  // keep the menu open to pick which candle
+    } else if (set === "ago" || set === "ago-n") {
+      v.ago = set === "ago" ? Number(b.dataset.val) : Math.max(1, Math.min(R.maxAgo, Number(menu.querySelector('[data-n="ago"]').value) || 1));
+      delete v.nth;
+    } else if (set === "nth" || set === "nth-n") {
+      v.nth = set === "nth" ? Number(b.dataset.val) : Math.max(1, Math.min(R.maxNth, Number(menu.querySelector('[data-n="nth"]').value) || 1));
+      v.ago = 0;
+    }
+    render();
+  });
+  // Indicator settings change as they're typed; the chip's words follow when the menu closes.
+  menu.addEventListener("input", (e) => {
+    const el = e.target;
+    if (el.dataset.search !== undefined) {
+      const q = el.value.trim().toLowerCase();
+      let any = false;
+      menu.querySelectorAll("[data-section]").forEach((s) => {
+        let shown = 0;
+        s.querySelectorAll("[data-text]").forEach((b) => { const ok = !q || b.dataset.text.includes(q); b.classList.toggle("hidden", !ok); shown += ok; });
+        s.hidden = !shown;
+        any ||= shown > 0;
+      });
+      menu.querySelector("[data-none]").hidden = any;
+      return;
+    }
+    const key = el.dataset.p;
+    if (!key) return;
+    const v = get(menu.dataset.c)[menu.dataset.side];
+    if (key === "pct") v.pct = el.value === "" ? 100 : Number(el.value);
+    else v.params[key] = key === "src" ? el.value : Number(el.value);
+    save();
+  });
+  menu.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { const o = opener; render(); o && root.querySelector(`[data-menu="${o.dataset.menu}"][data-c="${o.dataset.c}"][data-side="${o.dataset.side}"]`)?.focus(); }
+    if (e.key === "Enter" && e.target.dataset.search !== undefined) {
+      e.preventDefault();
+      menu.querySelector("[data-text]:not(.hidden)")?.click();
+    }
+    if (e.key === "Enter" && e.target.dataset.n) { e.preventDefault(); menu.querySelector(`[data-set="${e.target.dataset.n}-n"]`).click(); }
+    if (e.key === "Enter" && e.target.dataset.p) { e.preventDefault(); render(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (menu.classList.contains("hidden") || menu.contains(e.target) || e.target.closest("[data-menu]")) return;
+    render();  // closing redraws, so settings typed into the menu show on the chips
+  });
+  window.addEventListener("resize", closeMenu);
+  document.addEventListener("scroll", () => opener && !menu.classList.contains("hidden") && place(opener), true);
+
+  // ---- the builder's own buttons ----
+  root.addEventListener("click", (e) => {
+    const m = e.target.closest("[data-menu]");
+    if (m) {
+      if (opener === m && !menu.classList.contains("hidden")) return render();
+      return openMenu(m);
+    }
+    const b = e.target.closest("[data-act]");
+    if (!b) return;
+    const act = b.dataset.act, path = b.dataset.c;
+    if (act === "pick") { const c = get(path); if (picked.has(c)) picked.delete(c); else picked.add(c); }
+    else if (act === "unpick") picked.clear();
+    else if (act === "group") groupPicked(b.dataset.op);
+    else if (act === "ungroup") { const i = Number(path); logic.items.splice(i, 1, ...logic.items[i].items); }
+    else if (act === "op") {
+      const g = path === "top" ? logic : logic.items[Number(path)];
+      g.op = g.op === "all" ? "any" : "all";
+    } else if (act === "add") logic.items.push(newCondition());
+    else if (act === "add-group") { if (groupCount() >= R.maxGroups) return; logic.items.push({ op: "any", items: [newCondition(), newCondition()] }); }
+    else if (act === "add-in") logic.items[Number(path)].items.push(newCondition());
+    else if (act === "toggle") { const c = get(path); if (c.off) delete c.off; else c.off = true; }
+    else if (act === "copy") { const { list, i } = at(path); list.splice(i + 1, 0, copy(list[i])); }
     else if (act === "remove") {
       const { list, i } = at(path);
       list.splice(i, 1);
@@ -1432,59 +1629,26 @@ function strategyLines(L, chart, got, legend, panelBox) {
     }
     render();
   });
-
-  // Typing changes the data only (the inputs keep focus); a different value or line redraws.
-  function change(e, redraw) {
-    const el = e.target, f = el.dataset.f;
-    if (!f) return;
-    if (f === "op") {
-      (el.dataset.c === "top" ? logic : logic.items[Number(el.dataset.c)]).op = el.value;
-      return save();
-    }
-    const c = get(el.dataset.c);
-    if (f === "cmp") { c.cmp = el.value; return save(); }
-    const v = c[el.dataset.side];
-    if (f === "pick") {
-      const keep = v.kind === "num" ? {} : { tf: v.tf, ago: v.ago, pct: v.pct, ...(v.nth ? { nth: v.nth } : {}) };
-      c[el.dataset.side] = { ...newValue(el.value), ...(el.value === "num" ? {} : keep) };
-      return redraw && render();
-    }
-    if (f.startsWith("param:")) {
-      const key = f.slice(6);
-      v.params[key] = key === "src" ? el.value : Number(el.value);
-    } else if (f === "offset") {
-      const [kind, n] = el.value.split(":");
-      const unit = (v.tf || scanTf()) === "1d" || (v.tf || scanTf()) === "1w";
-      const num = n === "n" ? (kind === "nth" ? PRESET.nth + 1 : (unit ? PRESET.days : PRESET.ago) + 1) : Number(n);
-      v.ago = kind === "ago" ? num : 0;
-      if (kind === "nth") v.nth = num; else delete v.nth;
-      save();
-      return redraw && render();
-    } else if (f === "tf") {
-      v.tf = el.value;
-      if (v.nth && ["1d", "1w"].includes(v.tf || scanTf())) delete v.nth;  // daily/weekly have no "day's nth"
-      save();
-      return redraw && render();
-    } else if (f === "out") v[f] = el.value;
-    else v[f] = el.value === "" ? (f === "pct" ? 100 : 0) : Number(el.value);
+  root.addEventListener("input", (e) => {  // a number value, typed in place
+    const el = e.target;
+    if (el.dataset.f !== "value") return;
+    get(el.dataset.c)[el.dataset.side].value = el.value === "" ? 0 : Number(el.value);
     save();
-  }
-  root.addEventListener("input", (e) => change(e, false));
-  root.addEventListener("change", (e) => change(e, true));
+  });
 
-  document.querySelectorAll("[data-scan-starter]").forEach((btn) => btn.addEventListener("click", () => {
-    const s = R.starters[Number(btn.dataset.scanStarter)];
+  document.querySelectorAll("[data-scan-starter]").forEach((b) => b.addEventListener("click", () => {
+    const s = R.starters[Number(b.dataset.scanStarter)];
     logic = copy(s.logic);
-    const tf = form.querySelector("[name=tf]");
-    tf.value = s.tf;
-    tf.dispatchEvent(new Event("change", { bubbles: true }));
+    fillAll();
+    tfField.value = s.tf;
+    tfField.dispatchEvent(new Event("change", { bubbles: true }));
     const name = form.querySelector("[name=name]");
     if (!name.value) name.value = s.name;
     render();
   }));
 
   // The candle sizes a value can use depend on the scan's.
-  form.querySelector("[name=tf]").addEventListener("change", render);
+  tfField.addEventListener("change", render);
 
   render();
 })();
