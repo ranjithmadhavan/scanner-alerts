@@ -333,6 +333,11 @@ class Stock:
     def own(self, tf: str) -> bool:
         return not tf or tf == self.tf
 
+    def forget(self) -> None:
+        """Drop what was read for one judged candle, keeping indicators worked out over all the candles: a date-range
+        scan judges thousands of candles, one after another."""
+        self._cache = {k: v for k, v in self._cache.items() if k[0] != "candles" and k[-1] is None}
+
     def candles(self, tf: str, j: int) -> list[Candle]:
         """The candles a value on `tf` is read from when judging main candle j: the last one is the current one."""
         if self.own(tf):

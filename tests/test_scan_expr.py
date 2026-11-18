@@ -272,3 +272,18 @@ def test_the_days_nth_candle_and_days_ago():
 def describe_value_of(v):
     from app.scan_expr import describe_value
     return describe_value(validate({"op": "all", "items": [{"lhs": v, "cmp": ">", "rhs": N(1)}]})["items"][0]["lhs"])
+
+
+def test_vwap_on_the_days_first_candle():
+    """VWAP read at the day's 1st candle is that candle's VWAP, not the latest one's."""
+    from datetime import date
+    from app.scan_expr import Stock, validate
+    main = five_min(date(2026, 1, 5), [100, 110, 120, 130])
+    s = Stock("5m", main, [])
+    first = {"kind": "ind", "ind": "vwap", "params": {}, "out": "", "tf": "", "ago": 0, "pct": 100, "nth": 1}
+    latest = {**first, "nth": 0}
+    v = validate({"op": "all", "items": [{"lhs": first, "cmp": ">", "rhs": {"kind": "num", "value": 0}},
+                                          {"lhs": latest, "cmp": ">", "rhs": {"kind": "num", "value": 0}}]})
+    a, b = (s.value(c["lhs"], len(main) - 1) for c in v["items"])
+    assert a == 100  # the first candle's typical price
+    assert b == 115  # the whole day so far

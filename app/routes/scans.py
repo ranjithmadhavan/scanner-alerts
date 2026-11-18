@@ -1,14 +1,16 @@
 """Custom scanners page (/scans): build a scan, run it now over a list, and keep it as a live scanner that alerts."""
 
-from datetime import timedelta
+import csv
+import io
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from app import brokers, custom_scan, notify, scan_expr, ta, universe, webhooks
 from app.kite import KiteError
 from app.ma_backtest import label as tf_label
-from app.market import now_ist
+from app.market import load_settings, now_ist
 from app.routes.indicators import UNIVERSE_DEFAULTS, read_universe, symbols as symbol_search
 from app.security import require
 from app.store import new_id, store
@@ -105,8 +107,14 @@ def _own(scanner_id: str, user: dict) -> dict | None:
     return sc if sc and sc["user"] == user["username"] else None
 
 
+def _clock(hhmm: str) -> str:
+    """'09:30' -> '9:30 AM'"""
+    return datetime.strptime(hhmm, "%H:%M").strftime("%-I:%M %p")
+
+
 def _view(sc: dict, eps: list[dict]) -> dict:
     return {**sc, "summary": scan_expr.describe(sc["logic"]), "describe": custom_scan.describe(sc),
+            "schedule": f"once a day at {_clock(sc['run_at'])}" if sc.get("run_at") else "at every candle close",
             "sends_to": [notify.CHANNELS[c] for c in sc.get("channels", [])] + [e["name"] for e in webhooks.pick(eps, sc.get("hook_ids"))]}
 
 
@@ -122,16 +130,23 @@ def _feed_ctx(username: str, day: str) -> dict:
     return {"feed": custom_scan.feed(username, day), "feed_day": day, "feed_days": days}
 
 
+RANGE_SHOWN = 500  # a range's matches listed on the page; the CSV has all of them
+
+
 def _screen_ctx(screen: custom_scan.Screen | None) -> dict:
     if not screen:
         return {"screen": None}
-    rows = sorted(screen.rows, key=lambda r: r["symbol"])
+    if screen.first:  # newest first
+        rows = sorted(screen.rows, key=lambda r: (r["at"], r["symbol"]), reverse=True)[:RANGE_SHOWN]
+    else:
+        rows = sorted(screen.rows, key=lambda r: r["symbol"])
     return {"screen": screen, "screen_rows": rows, "screen_summary": scan_expr.describe(screen.sc["logic"]),
             "screen_spec": universe.describe(screen.sc["spec"]), "screen_tf": tf_label(screen.sc["tf"]),
-            "screen_columns": [k for k, _ in rows[0]["values"]] if rows else []}
+            "screen_columns": [k for k, _ in rows[0]["values"]] if rows else [],
+            "screen_stocks": len({r["symbol"] for r in screen.rows}), "range_shown": RANGE_SHOWN}
 
 
-NEW = {"name": "", "tf": "5m", "logic": BLANK, "channels": None, "hook_ids": None, "webhook_payload": ""}
+NEW = {"name": "", "tf": "5m", "logic": BLANK, "channels": None, "hook_ids": None, "webhook_payload": "", "run_at": ""}
 
 
 def _ctx(user: dict, edit_id: str = "") -> dict:
@@ -147,6 +162,9 @@ def _ctx(user: dict, edit_id: str = "") -> dict:
         **_list_ctx(user), **_feed_ctx(username, ""), **_screen_ctx(custom_scan.current(username)),
         "editing": editing, "form_sc": form_sc, "setup": setup, "universes": universe.UNIVERSES,
         "timeframes": custom_scan.TIMEFRAMES, "tf_label": tf_label, "live_limit": custom_scan.LIVE_LIMIT,
+        "today": now_ist().date().isoformat(), "range_from": (now_ist().date() - timedelta(days=6)).isoformat(),
+        "range_days": custom_scan.RANGE_DAYS,
+        "market_open": load_settings().open.strftime("%H:%M"),
         "registry": _registry(), "base": "/scans",
         "channels": [{"key": k, "label": v, "ready": notify.sender_ready(k) and notify.recipient_ready(k, contacts)}
                      for k, v in notify.CHANNELS.items()],
@@ -193,9 +211,24 @@ def _read_scan(form) -> dict:
     return {"spec": spec, "tf": tf, "logic": logic, "name": name}
 
 
+def _read_run_at(form) -> str:
+    """"" to run at every candle close, or "HH:MM" to run once a day then."""
+    if form.get("run_mode") != "daily":
+        return ""
+    try:
+        at = datetime.strptime((form.get("run_at") or "").strip(), "%H:%M").time()
+    except ValueError:
+        raise ValueError("Pick the time to run it each day.") from None
+    if at <= (s := load_settings()).open:
+        raise ValueError(f"Pick a time after the market opens ({s.open:%-I:%M %p}).")
+    return at.strftime("%H:%M")
+
+
 def _read_scanner(form, username: str) -> dict:
-    settings = _read_scan(form)
-    if problem := custom_scan.limit_problem(len(universe.resolve(settings["spec"], now_ist().date())), settings["tf"]):
+    settings = {**_read_scan(form), "run_at": _read_run_at(form)}
+    # Once a day, any list: it runs in the slower lane and doesn't have to finish before the next candle closes.
+    n = len(universe.resolve(settings["spec"], now_ist().date()))
+    if not settings["run_at"] and (problem := custom_scan.limit_problem(n, settings["tf"])):
         raise ValueError(problem)
     hooks, error = webhooks.selection(username, form.get("hook_mode", "default"), form.getlist("hook_ids"), form.get("webhook_payload", ""))
     if error:
@@ -224,8 +257,9 @@ async def create(request: Request, user: dict = Depends(guard)):
           "matched": [], "evaluated_at": ""}
     store.put(custom_scan.COL, sc["id"], sc)
     nowhere = not sc["channels"] and not webhooks.targets(username, sc["hook_ids"])
-    return toast(_list(request, user), "Scanner saved. From the next candle close you'll hear about each stock that newly "
-                 "matches." + (" It has nowhere to send yet." if nowhere else ""))
+    first = (f"Scanner saved. Each trading day at {_clock(sc['run_at'])} you'll get the list of stocks that match."
+             if sc["run_at"] else "Scanner saved. From the next candle close you'll hear about each stock that newly matches.")
+    return toast(_list(request, user), first + (" It has nowhere to send yet." if nowhere else ""))
 
 
 @router.post("/scanners/{scanner_id}")
@@ -237,9 +271,10 @@ async def update(request: Request, scanner_id: str, user: dict = Depends(guard))
     except ValueError as e:
         return fail(str(e))
     msg = "Scanner updated."
-    if any(settings[k] != sc.get(k) for k in ("spec", "tf", "logic")):  # a different scan: start afresh
+    if any(settings[k] != sc.get(k, "") for k in ("spec", "tf", "logic", "run_at")):  # a different scan: start afresh
         settings.update(armed_at=now_ist().isoformat(), matched=[], evaluated_at="")
-        msg += " It starts afresh at the next candle close."
+        msg += (f" It next runs at {_clock(settings['run_at'])}" + (" today." if custom_scan.run_time(settings, now_ist()) > now_ist() else " tomorrow.")
+                if settings["run_at"] else " It starts afresh at the next candle close.")
     with custom_scan.lock(scanner_id):
         store.update(custom_scan.COL, scanner_id, settings)
     return toast(_list(request, user), msg)
@@ -253,6 +288,8 @@ def pause(request: Request, scanner_id: str, user: dict = Depends(guard)):
         store.update(custom_scan.COL, scanner_id, {"status": "paused"})
         return toast(_list(request, user), "Paused")
     store.update(custom_scan.COL, scanner_id, {"status": "active", "armed_at": now_ist().isoformat(), "matched": [], "evaluated_at": ""})
+    if sc.get("run_at"):
+        return toast(_list(request, user), f"On again: it runs each trading day at {_clock(sc['run_at'])}")
     return toast(_list(request, user), "Watching again from the next candle close")
 
 
@@ -271,7 +308,7 @@ def test(scanner_id: str, user: dict = Depends(guard)):
     now = now_ist()
     values = [[label, 1234.5] for label in scan_expr.labels(sc["logic"]) if label != "Close"]
     item = {"symbol": "SAMPLE", "close": 1534.5, "change": 1.25, "at": now.isoformat(), "values": values}
-    subject, body = custom_scan.message(sc, [item], now)
+    subject, body = custom_scan.message(sc, [item], now, now if sc.get("run_at") else None)
     results = notify.send(user["username"], sc.get("channels", []), "[Test] " + subject, body)
     if hooks := webhooks.targets(user["username"], sc.get("hook_ids")):
         results["webhook"] = webhooks.send_now(hooks, custom_scan.hook_body(sc, [item], now, test=True))
@@ -288,9 +325,16 @@ def test(scanner_id: str, user: dict = Depends(guard)):
 
 @router.post("/screen")
 async def screen_start(request: Request, user: dict = Depends(guard)):
+    form = await request.form()
     try:
-        sc = _read_scan(await request.form())
-        screen = custom_scan.start(user["username"], {**sc, "id": ""})
+        sc = _read_scan(form)
+        first = last = None
+        if form.get("when") == "range":
+            try:
+                first, last = date.fromisoformat(form.get("from") or ""), date.fromisoformat(form.get("to") or "")
+            except ValueError:
+                raise ValueError("Pick the first and last day of the range.") from None
+        screen = custom_scan.start(user["username"], {**sc, "id": ""}, first, last, first_only=bool(form.get("first_only")))
     except (ValueError, KiteError) as e:
         return fail(str(e))
     return render(request, "partials/scan_screen.html", _screen_ctx(screen))
@@ -309,14 +353,25 @@ def screen_cancel(user: dict = Depends(guard)):
 
 
 @router.get("/screen/chart")
-def screen_chart(symbol: str, user: dict = Depends(guard)):
+def screen_chart(symbol: str, at: str = "", user: dict = Depends(guard)):
     screen = custom_scan.current(user["username"])
     if not screen:
         return JSONResponse({"error": "Run a scan first."}, status_code=404)
     try:
-        return JSONResponse(custom_scan.chart(screen, symbol))
+        return JSONResponse(custom_scan.chart(screen, symbol, at))
     except KiteError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
+
+
+@router.get("/screen/csv")
+def screen_csv(user: dict = Depends(guard)):
+    screen = custom_scan.current(user["username"])
+    if not screen or not screen.first or screen.status == "running":
+        return Response("No finished date-range scan", status_code=404)
+    out = io.StringIO()
+    csv.writer(out).writerows(custom_scan.csv_rows(screen))
+    name = f"scan-{screen.sc['tf']}-{screen.first}-{screen.last}.csv"
+    return Response(out.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get("/feed")

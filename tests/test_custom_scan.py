@@ -210,3 +210,102 @@ def test_intraday_scan_reads_daily_candles_once_a_day(kite):
         seen.append(passes(sc["logic"], stock))
     assert seen == [False, True]
     assert [tf for tf, *_ in calls].count("1d") == 1
+
+
+def _wait(user="tara"):
+    for _ in range(200):
+        if custom_scan.current(user).status != "running":
+            return custom_scan.current(user)
+        clock.sleep(0.05)
+    raise AssertionError("scan still running")
+
+
+def test_scan_a_date_range_lists_each_match(web):
+    """Every candle in the range is judged; each one a stock passed on is listed, newest first, with a chart and a CSV."""
+    rng = {**FORM, "when": "range", "from": "2026-09-21", "to": "2026-09-30", "first_only": "1"}
+    web.post("/scans/screen", data=rng)
+    screen = _wait()
+    assert screen.status == "done" and screen.first == date(2026, 9, 21)
+    days = [r["at"][:10] for r in screen.rows]
+    assert {r["symbol"] for r in screen.rows} == {"INFY"} and len(days) == 8  # each trading day, INFY rising
+    assert sorted(days)[0] == "2026-09-21" and sorted(days)[-1] == "2026-09-30"
+    html = web.get("/scans/screen/status").text
+    assert "8 matches in 1 stock, of 2 scanned" in html and "Download CSV" in html and 'data-scan-at="2026-09-21' in html
+    body = html[html.index("<tbody"):]
+    assert body.index("Wed 30 Sep") < body.index("Mon 21 Sep")  # newest first
+    at = next(r["at"] for r in screen.rows if r["at"].startswith("2026-09-23"))
+    chart = web.get("/scans/screen/chart", params={"symbol": "INFY", "at": at}).json()
+    assert chart["mark"] == "2026-09-23" and chart["candles"][-1]["time"] == "2026-09-30"
+    got = web.get("/scans/screen/csv")
+    assert got.headers["content-type"].startswith("text/csv")
+    lines = got.text.strip().splitlines()
+    assert lines[0].startswith("Time,Stock,Close,Change %,EMA(20)") and len(lines) == 9 and lines[1].startswith("2026-09-21")
+    # Problems are said before anything is read.
+    bad = web.post("/scans/screen", data={**rng, "from": "2026-09-30", "to": "2026-09-21"}).headers["HX-Trigger"]
+    assert "start date is after the end date" in bad
+    bad = web.post("/scans/screen", data={**rng, "tf": "5m", "from": "2026-07-01"}).headers["HX-Trigger"]
+    assert "up to 30 days" in bad
+    assert "first and last day" in web.post("/scans/screen", data={**rng, "from": ""}).headers["HX-Trigger"]
+
+
+def test_range_without_first_only_lists_every_candle(kite):
+    """On intraday candles, a stock that keeps passing is listed at each candle, or only once a day with first_only."""
+    wed = datetime(2026, 9, 30, 9, 15, tzinfo=IST)
+    five = [Candle(wed + timedelta(minutes=5 * i), p, p + 0.2, p - 0.2, p, 10) for i, p in enumerate([100, 101, 102, 103])]
+    from app.scan_expr import Stock, validate
+    logic = validate({"op": "all", "items": [{"lhs": {"kind": "price", "field": "close"}, "cmp": ">",
+                                              "rhs": {"kind": "num", "value": 100.5}}]})
+    sc = {"tf": "5m", "logic": logic}
+    every = custom_scan.hits("X", sc, Stock("5m", five), LAST, LAST, first_only=False)
+    assert [r["close"] for r in every] == [101, 102, 103]
+    assert [r["close"] for r in custom_scan.hits("X", sc, Stock("5m", five), LAST, LAST, first_only=True)] == [101]
+
+
+def test_once_a_day_scanner_sends_the_full_list_at_its_time(web, kite, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append((subject, body)) or {"telegram": "sent"})
+    monkeypatch.setattr(custom_scan, "_ensure_session", lambda u, n, now: kite)
+    monkeypatch.setattr(universe, "symbols", lambda key, today, refresh=False: [f"S{i}" for i in range(150)])
+    big = {**FORM, "universe_kind": "list", "universe_list": "nifty200", "tf": "5m", "run_mode": "daily", "run_at": "15:45"}
+    assert "Scanner saved. Each trading day at 3:45 PM" in web.post("/scans/scanners", data=big).headers["HX-Trigger"]  # no live cap
+    assert "after the market opens" in web.post("/scans/scanners", data={**big, "run_at": "09:00"}).headers["HX-Trigger"]
+    for sc in store.list(custom_scan.COL):
+        store.delete(custom_scan.COL, sc["id"])
+
+    r = web.post("/scans/scanners", data={**FORM, "run_mode": "daily", "run_at": "15:45", "channels": ["telegram"]})
+    assert "runs once a day at 3:45 PM" in r.text
+    sc = store.list(custom_scan.COL, user="tara")[0]
+    assert sc["run_at"] == "15:45"
+    store.update(custom_scan.COL, sc["id"], {"armed_at": "2026-09-28T10:00:00+05:30"})
+
+    custom_scan.run_candles(datetime(2026, 9, 29, 15, 50, tzinfo=IST))  # not judged at candle closes
+    custom_scan.run_daily(datetime(2026, 9, 29, 15, 40, tzinfo=IST))  # not yet
+    assert sent == []
+    custom_scan.run_daily(datetime(2026, 9, 29, 15, 50, tzinfo=IST))
+    custom_scan.run_daily(datetime(2026, 9, 29, 15, 55, tzinfo=IST))  # once a day
+    assert [s for s, _ in sent] == ["🔎 Above EMA: 1 stock match (as of 3:30 PM)"] and "INFY" in sent[0][1]
+    custom_scan.run_daily(datetime(2026, 9, 30, 15, 50, tzinfo=IST))  # the next day: the full list again, not just new ones
+    assert len(sent) == 2 and "INFY" in sent[1][1]
+    assert store.get(custom_scan.COL, sc["id"])["ran_on"] == "2026-09-30"
+
+    # Saved or resumed after the day's time, it first runs the next day.
+    store.update(custom_scan.COL, sc["id"], {"armed_at": "2026-10-01T16:00:00+05:30"})
+    custom_scan.run_daily(datetime(2026, 10, 1, 16, 5, tzinfo=IST))
+    assert len(sent) == 2
+    # Back to every candle close.
+    r = web.post(f"/scans/scanners/{sc['id']}", data={**FORM, "run_mode": "close", "channels": ["telegram"]})
+    assert "starts afresh" in r.headers["HX-Trigger"] and store.get(custom_scan.COL, sc["id"])["run_at"] == ""
+
+
+def test_once_a_day_with_nothing_matching_still_reports(kite, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda user, ch, subject, body: sent.append(subject) or {})
+    monkeypatch.setattr(custom_scan, "_ensure_session", lambda u, n, now: kite)
+    from app.scan_expr import validate
+    below = {"op": "all", "items": [{"lhs": {"kind": "price", "field": "close"}, "cmp": "<", "rhs": {"kind": "num", "value": 1}}]}
+    store.put(custom_scan.COL, "d1", {"id": "d1", "user": "tara", "name": "Penny", "status": "active", "tf": "1d",
+                                      "spec": {"symbols": ["INFY", "TCS"]}, "logic": validate(below), "run_at": "15:45", "channels": [],
+                                      "armed_at": "2026-09-28T10:00:00+05:30", "evaluated_at": "", "matched": []})
+    custom_scan.run_daily(datetime(2026, 9, 30, 15, 46, tzinfo=IST))
+    assert sent == ["🔎 Penny: no stock matches (as of 3:30 PM)"]
+    store.delete(custom_scan.COL, "d1")

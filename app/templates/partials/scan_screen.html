@@ -4,7 +4,7 @@
 <div id="scan-screen" class="panel mt-5 px-6 py-5" hx-get="/scans/screen/status" hx-trigger="every 1500ms" hx-swap="outerHTML" aria-live="polite">
   <div class="flex flex-wrap items-center gap-3">
     <span class="spinner" aria-hidden="true"></span>
-    <p class="text-[15px]"><span class="font-semibold">Scanning {{ screen.total }} stock{{ 's' if screen.total != 1 }}</span>
+    <p class="text-[15px]"><span class="font-semibold">Scanning {{ screen.total }} stock{{ 's' if screen.total != 1 }}{% if screen.first %}, {{ screen.first.strftime('%-d %b') }} to {{ screen.last.strftime('%-d %b') }}{% endif %}</span>
       <span class="num text-ink-soft">· {{ screen.done }} done · {{ screen.rows|length }} found so far</span></p>
     <button type="button" class="btn-quiet ml-auto px-3 py-1.5 text-sm" hx-post="/scans/screen/cancel" hx-swap="none">Cancel</button>
   </div>
@@ -16,8 +16,14 @@
 {% else %}
 {% set fmt = '%a %-d %b' if screen.sc.tf == '1d' else '%a %-d %b, %-I:%M %p' %}
 <div id="scan-screen" class="arrive panel mt-5 px-6 py-5">
+  {% if screen.first %}
+  <p class="flex flex-wrap items-center gap-x-3 text-sm font-medium text-ink-soft">{{ screen_spec }} · {{ screen_tf|lower }} candles · {{ screen.first.strftime('%a %-d %b') }} to {{ screen.last.strftime('%a %-d %b %Y') }}{{ ' · first match of each day' if screen.first_only }}
+    {% if screen.rows and screen.status != 'running' %}<a href="/scans/screen/csv" class="ml-auto font-semibold text-peacock underline decoration-peacock/30 underline-offset-4 hover:decoration-peacock" download>Download CSV</a>{% endif %}</p>
+  <p class="mt-1 font-display text-xl font-bold">{{ screen.rows|length }}{{ '+' if screen.capped }} match{{ 'es' if screen.rows|length != 1 }} in {{ screen_stocks }} stock{{ 's' if screen_stocks != 1 }}, of {{ screen.done }} scanned</p>
+  {% else %}
   <p class="text-sm font-medium text-ink-soft">{{ screen_spec }} · {{ screen_tf|lower }} candles · candle closed {{ screen.upto|ist(fmt) }}</p>
   <p class="mt-1 font-display text-xl font-bold">{{ screen.rows|length }} stock{{ 's' if screen.rows|length != 1 }} match, of {{ screen.done }} scanned</p>
+  {% endif %}
   <p class="mt-1 text-[15px] text-ink-soft">{{ screen_summary }}</p>
   {% if screen.status == 'failed' %}<p class="mt-3 rounded-2xl bg-fall-50 px-4 py-3 text-[15px] text-fall">{{ screen.error }}</p>
   {% elif screen.status == 'cancelled' %}<p class="mt-3 rounded-2xl bg-marigold-50 px-4 py-3 text-[15px] text-marigold-dark">Cancelled after {{ screen.done }} of {{ screen.total }} stocks.</p>{% endif %}
@@ -27,7 +33,8 @@
     <table class="w-full text-sm">
       <thead class="sticky top-0 z-10 bg-white text-[13px] text-ink-soft">
         <tr class="border-b border-line">
-          <th class="py-2.5 pl-4 pr-3 text-left font-medium">Stock</th>
+          {% if screen.first %}<th class="py-2.5 pl-4 pr-3 text-left font-medium">{{ 'Day' if screen.sc.tf == '1d' else 'Candle' }}</th>{% endif %}
+          <th class="py-2.5 {{ 'pr-3' if screen.first else 'pl-4 pr-3' }} text-left font-medium">Stock</th>
           <th class="py-2.5 pr-3 text-right font-medium">Close</th>
           <th class="py-2.5 pr-3 text-right font-medium">Change</th>
           {% for c in screen_columns %}<th class="py-2.5 pr-4 text-right font-medium">{{ c }}</th>{% endfor %}
@@ -35,8 +42,9 @@
       </thead>
       <tbody class="num divide-y divide-line/70 whitespace-nowrap">
         {% for r in screen_rows %}
-        <tr class="bt-row" data-scan-symbol="{{ r.symbol }}" tabindex="0" title="Show on the chart">
-          <td class="py-2 pl-4 pr-3 font-semibold">{{ r.symbol }}</td>
+        <tr class="bt-row" data-scan-symbol="{{ r.symbol }}"{% if screen.first %} data-scan-at="{{ r.at }}"{% endif %} tabindex="0" title="Show on the chart">
+          {% if screen.first %}<td class="py-2 pl-4 pr-3 text-ink-soft">{{ r.at|ist(fmt) }}</td>{% endif %}
+          <td class="py-2 {{ 'pr-3' if screen.first else 'pl-4 pr-3' }} font-semibold">{{ r.symbol }}</td>
           <td class="py-2 pr-3 text-right">₹{{ r.close|price }}</td>
           <td class="py-2 pr-3 text-right {{ 'text-rise' if (r.change or 0) >= 0 else 'text-fall' }}">{{ '%+.2f'|format(r.change) ~ '%' if r.change is not none else '–' }}</td>
           {% for k, v in r['values'] %}<td class="py-2 pr-4 text-right">{{ v|price if v is not none else '–' }}</td>{% endfor %}
@@ -45,6 +53,10 @@
       </tbody>
     </table>
   </div>
+  {% if screen.first and (screen.rows|length > range_shown or screen.capped) %}
+  <p class="mt-2 text-[13px] text-ink-soft">{% if screen.rows|length > range_shown %}Showing the latest {{ range_shown }}; the CSV has all {{ screen.rows|length }}.{% endif %}
+    {% if screen.capped %}The scan stopped listing at {{ screen.rows|length }} matches; try fewer days or "first match of each day".{% endif %}</p>
+  {% endif %}
   <div id="scan-chart-box" class="mt-5 rounded-2xl border border-line p-2" hidden>
     <p class="flex flex-wrap items-center gap-x-3 px-2 pt-1 text-sm">
       <span id="scan-chart-title" class="font-semibold"></span>
@@ -54,14 +66,14 @@
     <p id="scan-chart-note" class="px-2 pb-1 pt-2 text-[13px] text-ink-soft">The scan's moving averages, bands and levels worked out on these candles are drawn over them.</p>
   </div>
   {% elif screen.status == 'done' %}
-  <p class="mt-3 text-[15px] text-ink-soft">No stock matches right now.</p>
+  <p class="mt-3 text-[15px] text-ink-soft">{{ 'No stock matched on any candle in the range.' if screen.first else 'No stock matches right now.' }}</p>
   {% endif %}
 
   {% if screen.missing or screen.failed or screen.no_data %}
   <p class="mt-4 text-[13px] text-ink-soft">
     {% if screen.missing %}Not on Kite's list: {{ screen.missing|join(', ') }}. {% endif %}
     {% if screen.failed %}Kite gave no candles for: {{ screen.failed|join(', ') }}. {% endif %}
-    {% if screen.no_data %}Not traded in the latest session: {{ screen.no_data|length }} stock{{ 's' if screen.no_data|length != 1 }}.{% endif %}
+    {% if screen.no_data %}{{ 'No candles in the range' if screen.first else 'Not traded in the latest session' }}: {{ screen.no_data|length }} stock{{ 's' if screen.no_data|length != 1 }}.{% endif %}
   </p>
   {% endif %}
   <p class="mt-3 text-[13px] text-ink-soft">Nothing is saved or sent; the latest scan stays here until the next one or a restart.</p>
