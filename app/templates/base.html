@@ -21,14 +21,15 @@
 <div class="lg:grid lg:grid-cols-[260px_1fr] min-h-screen">
   <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-[260px] -translate-x-full p-3 transition-transform duration-300 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0">
    <div class="sidebar-panel relative flex h-full flex-col overflow-hidden rounded-[28px] bg-ink px-4 py-6 text-white">
-    <a href="/" class="flex items-center gap-3 px-2">
+    <a href="/" class="flex shrink-0 items-center gap-3 px-2">
       <span class="grid h-10 w-10 place-items-center rounded-2xl bg-marigold text-ink shadow-soft">
         <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
       </span>
       <span class="font-display text-[19px] font-bold leading-tight">{{ app_name }}</span>
     </a>
 
-    <nav class="mt-10 space-y-1" aria-label="Main">
+    {# The links scroll inside the panel when the window is short, so the account card below always shows. #}
+    <nav class="[scrollbar-color:rgba(255,255,255,.18)_transparent] [scrollbar-width:thin] -mx-1 mt-8 min-h-0 flex-1 space-y-1 overflow-y-auto px-1 pb-2" aria-label="Main">
       {% for m in nav %}
         {% if m.group and (loop.first or loop.previtem.group != m.group) %}<p class="px-3 pb-1 pt-5 text-sm font-medium text-white/40">{{ m.group }}</p>{% endif %}
         {% if not m.group and not loop.first and loop.previtem.group %}<div class="pt-4"></div>{% endif %}
@@ -48,7 +49,7 @@
       {% endif %}
     </nav>
 
-    <div class="relative mt-auto flex items-center gap-1 rounded-2xl bg-white/[.06] p-1.5">
+    <div class="relative mt-3 flex shrink-0 items-center gap-1 rounded-2xl bg-white/[.06] p-1.5">
       <a href="/settings" class="group flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1.5 transition {{ 'bg-white/10' if path.startswith('/settings') else 'hover:bg-white/[.06]' }}" title="Your settings">
         <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-marigold font-display font-bold text-ink">{{ (user.name or user.username)[:1]|upper }}</span>
         <span class="min-w-0 flex-1">

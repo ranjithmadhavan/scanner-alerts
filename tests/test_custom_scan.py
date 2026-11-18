@@ -82,6 +82,8 @@ FORM = {"universe_kind": "symbols", "symbols": "INFY, TCS", "tf": "1d", "name": 
 def test_page_builder_and_describe(web):
     page = web.get("/scans").text
     assert "Custom scanners" in page and "data-scan-builder" in page and "Breaks above the previous day" in page
+    # A new scan starts from a filled-in condition: the builder draws every indicator setting.
+    assert '"params": {"n": 20, "src": "close"}' in page
     assert '<option value="5m" selected>' in page and '<option value="1m" >1 min</option>' in page  # new scans start on 5 min
     assert web.get("/ma").status_code == 403
     assert web.post("/scans/describe", data={"logic": json.dumps(ABOVE_EMA)}).json() == {"text": "Close > EMA(20)"}

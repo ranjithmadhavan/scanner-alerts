@@ -59,14 +59,34 @@ STARTERS.append(("Opening range breakout (first 15 min)", "5m", _all(
     (_p("close"), "crosses_above", {**_p("high", tf="15m"), "nth": 1}),
     (_p("close"), ">", _i("vwap")))))
 STARTERS = [(name, tf, scan_expr.fit(scan_expr.validate(logic), tf)) for name, tf, logic in STARTERS]
-BLANK = _all((_p("close"), ">", _i("ema", n=20)))
+BLANK = scan_expr.validate(_all((_p("close"), ">", _i("ema", n=20))))  # filled in, as the builder expects
+
+
+# The value picker's sections: (title, [(pick, output, label)]); an indicator with several lines lists each one.
+PICKER = [
+    ("Price", [(f"price:{k}", "", v) for k, v in scan_expr.PRICE_FIELDS.items()]),
+    ("Moving averages", [("ind:sma", "", "SMA · simple moving average"), ("ind:ema", "", "EMA · exponential moving average"),
+                         ("ind:wma", "", "WMA · weighted moving average")]),
+    ("Momentum", [("ind:rsi", "", "RSI"), ("ind:macd", "line", "MACD line"), ("ind:macd", "signal", "MACD signal"),
+                  ("ind:macd", "hist", "MACD histogram"), ("ind:stoch", "k", "Stochastic %K"), ("ind:stoch", "d", "Stochastic %D")]),
+    ("Trend & volatility", [("ind:supertrend", "line", "Supertrend line"),
+                            ("ind:supertrend", "dir", "Supertrend direction (1 up, -1 down)"),
+                            ("ind:adx", "adx", "ADX"), ("ind:adx", "pdi", "+DI"), ("ind:adx", "mdi", "-DI"),
+                            ("ind:atr", "", "ATR · average true range"), ("ind:bb", "upper", "Bollinger upper band"),
+                            ("ind:bb", "mid", "Bollinger middle band"), ("ind:bb", "lower", "Bollinger lower band")]),
+    ("Levels", [("ind:highest", "", "Highest of N candles"), ("ind:lowest", "", "Lowest of N candles"),
+                ("ind:vwap", "", "VWAP (intraday)")]),
+    ("Other", [("num", "", "Number")]),
+]
+assert {p.split(":")[1] for _, items in PICKER for p, _, _ in items if p.startswith("ind:")} == set(ta.INDICATORS)
 
 
 def _registry() -> dict:
     """What the builder offers, for app.js."""
     return {
         "prices": scan_expr.PRICE_FIELDS, "tfs": scan_expr.TFS, "tfOrder": list(scan_expr.TFS), "intraday": scan_expr.INTRADAY, "cmps": scan_expr.CMPS, "sources": ta.SOURCES,
-        "maxAgo": scan_expr.MAX_AGO, "maxNth": scan_expr.MAX_NTH,
+        "maxAgo": scan_expr.MAX_AGO, "maxNth": scan_expr.MAX_NTH, "maxGroups": scan_expr.MAX_GROUPS,
+        "picker": [{"title": t, "items": [{"pick": p, "out": o, "label": l} for p, o, l in items]} for t, items in PICKER],
         "indicators": {k: {"name": i.name, "label": i.label, "outputs": i.outputs,
                            "params": [{"key": p.key, "label": p.label, "default": p.default, "low": p.low, "high": p.high,
                                        "whole": p.whole} for p in i.params]} for k, i in ta.INDICATORS.items()},
